@@ -1,0 +1,106 @@
+# WhatsApp SaaS — production stack.
+#
+# Pulls prebuilt images from GHCR, so standing this up on a brand new Docker
+# host is: copy this file + a .env, then `docker compose up -d`.
+# To build from source instead, add: -f docker-compose.yml -f docker-compose.build.yml
+#
+# Only the frontend is routable, and only via a Traefik that already runs on
+# the host. Neither the backend nor MySQL publishes a port, so neither is
+# reachable from outside the Docker network.
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-whatsapp_saas}
+      MYSQL_USER: ${MYSQL_USER:?required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks: [app]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/shahzad11/whatsapp-saas-backend:latest}
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      BIND_HOST: 0.0.0.0
+      DATA_DIR: /data
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Without this the process refuses to start — see middleware/auth.js.
+      BACKEND_API_KEY: ${BACKEND_API_KEY:?required}
+    volumes:
+      - wa-data:/data
+    networks: [app]
+    # No `ports:` — deliberately. The only route in is via the frontend.
+    stop_grace_period: 40s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/shahzad11/whatsapp-saas-frontend:latest}
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    environment:
+      APP_NAME: ${APP_NAME:-WhatsApp SaaS}
+      APP_HOST: ${APP_HOST:?required}
+      APP_URL: https://${APP_HOST}
+      BACKEND_URL: http://backend:3001
+      BACKEND_API_KEY: ${BACKEND_API_KEY:?required}
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-whatsapp_saas}
+      MYSQL_USER: ${MYSQL_USER:?required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+      SESSION_SECURE: ${SESSION_SECURE:-true}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      DEV_MODE: ${DEV_MODE:-false}
+      DEFAULT_PLAN_CODE: ${DEFAULT_PLAN_CODE:-free}
+      MAIL_FROM: ${MAIL_FROM:-noreply@${APP_HOST}}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrator}
+    volumes:
+      - php-sessions:/var/lib/php/sessions
+    networks: [app]
+    labels:
+      traefik.enable: "true"
+      # Traefik runs with network_mode: host, so it must be told which network
+      # to dial the container on.
+      traefik.docker.network: whatsapp-saas-app
+      traefik.http.routers.wasaas.rule: Host(`${APP_HOST}`)
+      traefik.http.routers.wasaas.entrypoints: websecure
+      traefik.http.routers.wasaas.tls.certresolver: letsencrypt
+      traefik.http.services.wasaas.loadbalancer.server.port: "80"
+      traefik.http.routers.wasaas.middlewares: wasaas-hsts
+      traefik.http.middlewares.wasaas-hsts.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.wasaas-hsts.headers.stsIncludeSubdomains: "true"
+      traefik.http.middlewares.wasaas-hsts.headers.forceSTSHeader: "true"
+
+networks:
+  app:
+    name: whatsapp-saas-app
+
+volumes:
+  mysql-data:
+    name: whatsapp-saas-mysql-data
+  wa-data:
+    name: whatsapp-saas-wa-data
+  php-sessions:
+    name: whatsapp-saas-php-sessions

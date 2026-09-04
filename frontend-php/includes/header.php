@@ -1,0 +1,45 @@
+<?php
+$currentPage = currentPage();
+$user = getCurrentUser();
+$pageTitle = $pageTitle ?? 'Dashboard';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= sanitize($pageTitle) ?> - <?= APP_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="<?= APP_URL ?>/assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+<div class="app-wrapper">
+    <?php require_once dirname(__DIR__) . '/includes/sidebar.php'; ?>
+    <div class="app-main">
+        <nav class="app-topbar">
+            <div class="d-flex align-items-center">
+                <button class="btn btn-link sidebar-toggle d-lg-none me-2" onclick="toggleSidebar()">
+                    <i class="bi bi-list fs-4"></i>
+                </button>
+                <h5 class="mb-0 fw-600"><?= sanitize($pageTitle) ?></h5>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <div class="dropdown">
+                    <button class="btn btn-link dropdown-toggle user-menu-btn" data-bs-toggle="dropdown">
+                        <div class="user-avatar-sm">
+                            <?= strtoupper(substr($user['name'] ?? 'U', 0, 1)) ?>
+                        </div>
+                        <span class="d-none d-md-inline"><?= sanitize($user['name'] ?? 'User') ?></span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="<?= APP_URL ?>/profile.php"><i class="bi bi-person me-2"></i>Profile</a></li>
+                        <li><a class="dropdown-item" href="<?= APP_URL ?>/settings.php"><i class="bi bi-gear me-2"></i>Settings</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item text-danger" href="<?= APP_URL ?>/logout.php"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+        <div class="app-content">

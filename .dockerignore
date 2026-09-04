@@ -1,0 +1,18 @@
+# Never ship dependencies, runtime state, or secrets into an image.
+**/node_modules
+**/data
+**/logs
+**/.env
+**/.env.*
+!**/.env.example
+
+# Project documentation stays local — it must not reach the server.
+*.md
+**/*.md
+
+.git
+.github
+.DS_Store
+**/.DS_Store
+*.tar.gz
+*.bak

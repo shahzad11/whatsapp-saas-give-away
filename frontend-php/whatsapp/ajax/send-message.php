@@ -1,0 +1,43 @@
+<?php
+require_once dirname(__DIR__, 2) . '/config/init.php';
+
+header('Content-Type: application/json');
+
+if (!isLoggedIn()) {
+    echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
+    exit;
+}
+
+$input = json_decode(file_get_contents('php://input'), true);
+$sessionId = $input['session_id'] ?? '';
+$chatId = $input['chat_id'] ?? '';
+$text = trim($input['text'] ?? '');
+
+if (empty($sessionId) || empty($chatId) || empty($text)) {
+    echo json_encode(['ok' => false, 'error' => 'Missing required fields']);
+    exit;
+}
+
+[$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
+
+// Metered: enforce the plan's monthly send limit before touching the backend.
+[$quotaOk, $used, $limit] = checkMessageQuota($conn, $userId);
+if (!$quotaOk) {
+    echo json_encode([
+        'ok' => false,
+        'error' => 'Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
+        'quotaExceeded' => true,
+    ]);
+    exit;
+}
+
+$resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages', [
+    'text' => $text
+]);
+
+// Only count sends that actually left the building.
+if ($resp && !empty($resp['ok'])) {
+    incrementUsage($conn, $userId, 'messages_sent');
+}
+
+echo json_encode($resp ?: ['ok' => false, 'error' => 'Backend error']);
