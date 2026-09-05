@@ -146,13 +146,21 @@ function currentPage() {
     return basename($_SERVER['PHP_SELF'], '.php');
 }
 
+// A tenant's own timezone wins; otherwise they inherit the instance default the
+// admin set. Previously this fell back to 'UTC' while every other layer assumed
+// Asia/Karachi, so a tenant who never opened Settings saw timestamps five hours
+// off the rest of the app.
 function getUserTimezone($conn, $userId) {
     $stmt = $conn->prepare("SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = 'timezone'");
     $stmt->bind_param("i", $userId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    return $row ? $row['setting_value'] : 'UTC';
+
+    if ($row && isValidTimezone($row['setting_value'])) {
+        return $row['setting_value'];
+    }
+    return appTimezone($conn);
 }
 
 function convertToUserTz($utcDatetime, $timezone) {

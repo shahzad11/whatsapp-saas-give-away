@@ -16,8 +16,10 @@ CREATE TABLE IF NOT EXISTS plans (
     code VARCHAR(40) NOT NULL UNIQUE,
     name VARCHAR(100) NOT NULL,
     description VARCHAR(255) DEFAULT NULL,
+    -- Minor units (paisa for PKR, cents for USD). Never a float: 19.99 is not
+    -- representable in binary and money must not drift.
     price_cents INT NOT NULL DEFAULT 0,
-    currency CHAR(3) NOT NULL DEFAULT 'USD',
+    currency CHAR(3) NOT NULL DEFAULT 'PKR',
     billing_period ENUM('month','year','none') NOT NULL DEFAULT 'month',
     -- NULL means unlimited for every quota column below.
     max_wa_accounts INT DEFAULT NULL,
@@ -29,19 +31,26 @@ CREATE TABLE IF NOT EXISTS plans (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
-INSERT INTO plans (code, name, description, price_cents, billing_period, max_wa_accounts, max_contacts, max_messages_per_month, sort_order)
+-- Seeded prices are PKR minor units: 150000 paisa = Rs. 1,500.
+--
+-- This is a seed, not a fixture. `ON DUPLICATE KEY UPDATE code = code` is a
+-- deliberate no-op: the file re-runs on every container start, and the previous
+-- version reassigned name/description/price/limits every time, so any plan an
+-- admin edited in the UI silently reverted on the next restart.
+INSERT INTO plans (code, name, description, price_cents, currency, billing_period, max_wa_accounts, max_contacts, max_messages_per_month, sort_order)
 VALUES
-  ('free',    'Free',    'Try it out with a single WhatsApp number.',   0,    'month', 1,    1000,   1000,  1),
-  ('starter', 'Starter', 'For solo operators and small teams.',         1900, 'month', 3,    25000,  25000, 2),
-  ('pro',     'Pro',     'For agencies running many numbers.',          4900, 'month', 10,   NULL,   NULL,  3)
-ON DUPLICATE KEY UPDATE
-  name = VALUES(name),
-  description = VALUES(description),
-  price_cents = VALUES(price_cents),
-  max_wa_accounts = VALUES(max_wa_accounts),
-  max_contacts = VALUES(max_contacts),
-  max_messages_per_month = VALUES(max_messages_per_month),
-  sort_order = VALUES(sort_order);
+  ('free',    'Free',    'Try it out with a single WhatsApp number.',   0,      'PKR', 'month', 1,    1000,   1000,  1),
+  ('starter', 'Starter', 'For solo operators and small teams.',         150000, 'PKR', 'month', 3,    25000,  25000, 2),
+  ('pro',     'Pro',     'For agencies running many numbers.',          450000, 'PKR', 'month', 10,   NULL,   NULL,  3)
+ON DUPLICATE KEY UPDATE code = code;
+
+-- One-off conversion of deployments seeded before PKR was the default.
+-- Guarded on the exact old seeded USD amounts, so a plan whose price an admin
+-- has since changed is left alone — relabelling an edited price as PKR without
+-- converting it would misstate what tenants are charged.
+UPDATE plans SET price_cents = 0,      currency = 'PKR' WHERE code = 'free'    AND currency = 'USD' AND price_cents = 0;
+UPDATE plans SET price_cents = 150000, currency = 'PKR' WHERE code = 'starter' AND currency = 'USD' AND price_cents = 1900;
+UPDATE plans SET price_cents = 450000, currency = 'PKR' WHERE code = 'pro'     AND currency = 'USD' AND price_cents = 4900;
 
 -- ---------------------------------------------------------------------------
 -- Tenants (one user == one tenant)
@@ -94,6 +103,21 @@ CREATE TABLE IF NOT EXISTS user_settings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY unique_user_setting (user_id, setting_key)
+) ENGINE=InnoDB;
+
+-- Instance-wide settings: the platform owner's, not a tenant's. Defined after
+-- `users` because updated_by references it.
+--
+-- Deliberately schemaless key/value: the admin settings pages accrete knobs
+-- (currency, timezone, SMTP, payment instructions) and each one should not cost
+-- a migration. Defaults live in includes/settings.php, so an absent row still
+-- resolves and the seed cannot drift from the code.
+CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key VARCHAR(64) NOT NULL PRIMARY KEY,
+    setting_value TEXT DEFAULT NULL,
+    updated_by INT DEFAULT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 -- Metered usage, bucketed per calendar month so quotas can reset.

@@ -136,10 +136,10 @@ require_once dirname(__DIR__) . '/includes/header.php';
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="change_plan">
                             <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
-                            <select name="plan_id" class="form-select form-select-sm" style="min-width:110px">
+                            <select name="plan_id" class="form-select form-select-sm" style="min-width:150px">
                                 <?php foreach ($plans as $p): ?>
                                     <option value="<?= (int)$p['id'] ?>" <?= $p['id'] == $u['plan_id'] ? 'selected' : '' ?>>
-                                        <?= sanitize($p['name']) ?>
+                                        <?= sanitize($p['name']) ?> — <?= sanitize(formatPrice($p)) ?>
                                     </option>
                                 <?php endforeach; ?>
                             </select>

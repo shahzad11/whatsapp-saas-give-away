@@ -120,12 +120,18 @@ function formatLimit($limit) {
     return $limit === null ? 'Unlimited' : number_format($limit);
 }
 
+// No currency is hardcoded here. The symbol comes from the instance-wide
+// `currency` setting (PKR by default), so changing it in the admin area
+// re-renders every price without touching a template.
 function formatPrice($plan) {
-    $cents = (int)($plan['price_cents'] ?? 0);
-    if ($cents === 0) return 'Free';
-    $amount = number_format($cents / 100, 2);
-    $period = $plan['billing_period'] === 'year' ? '/yr' : '/mo';
-    return '$' . $amount . $period;
+    $minor = (int)($plan['price_cents'] ?? 0);
+    if ($minor === 0) return 'Free';
+
+    $amount = formatMoney($minor, appCurrency());
+    if (($plan['billing_period'] ?? 'month') === 'none') return $amount;
+
+    $period = ($plan['billing_period'] ?? 'month') === 'year' ? '/year' : '/month';
+    return $amount . $period;
 }
 
 function assignPlan(mysqli $conn, $userId, $planId) {
