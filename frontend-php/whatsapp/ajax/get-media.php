@@ -70,6 +70,11 @@ curl_setopt_array($ch, [
         if ($colon === false) {
             return $len;
         }
+        // An error response is JSON that this proxy replaces with plain text —
+        // forwarding its Content-Type would mislabel the reply.
+        if ($upstreamStatus >= 400) {
+            return $len;
+        }
         $name = strtolower(substr($trimmed, 0, $colon));
         if (in_array($name, $forward, true)) {
             header($trimmed);

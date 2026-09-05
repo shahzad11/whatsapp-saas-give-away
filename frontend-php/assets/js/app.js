@@ -182,7 +182,10 @@ function applyInlineMarker(html, marker, tag) {
 function formatMessageText(raw) {
     if (raw === null || raw === undefined) return '';
     // Null bytes are the placeholder marker; a message may not smuggle one in.
-    let text = String(raw).replace(/\u0000/g, '');
+    // CRLF is normalised because JS treats \r as a line terminator: '.' does not
+    // match it, so a "1. item\r" line silently failed to be seen as a list at
+    // all. Plenty of forwarded messages arrive with Windows line endings.
+    let text = String(raw).replace(/\u0000/g, '').replace(/\r\n?/g, '\n');
     if (text === '') return '';
 
     let html = waEscapeHtml(text);
@@ -200,8 +203,10 @@ function formatMessageText(raw) {
     // 2. Links. Lifted out before inline formatting so underscores and tildes
     //    inside a URL survive; www. is included because people paste it.
     html = html.replace(/\b((?:https?:\/\/|www\.)[^\s<]+)/gi, (match) => {
-        // Trailing punctuation belongs to the sentence, not the URL.
-        const trail = match.match(/[.,;:!?)\]}'"]+$/);
+        // Trailing punctuation belongs to the sentence, not the URL — and the
+        // formatting markers belong to the run around it. "*see https://x.com*"
+        // used to put the closing asterisk inside the href.
+        const trail = match.match(/[.,;:!?)\]}'"*_~]+$/);
         const url = trail ? match.slice(0, -trail[0].length) : match;
         const href = /^www\./i.test(url) ? 'https://' + url : url;
         return keep(`<a href="${href}" target="_blank" rel="noopener noreferrer nofollow">${url}</a>`) + (trail ? trail[0] : '');
@@ -250,10 +255,21 @@ function formatMessageText(raw) {
     return html.replace(new RegExp(WA_PLACEHOLDER + '(\\d+)' + WA_PLACEHOLDER, 'g'), (_, i) => stash[Number(i)]);
 }
 
+// Two rounds, because nesting is order-dependent: in "_*name*_" the bold pass
+// sees an asterisk hugged by underscores and skips it, and only after the italic
+// pass has wrapped the run in a tag does that asterisk sit against a '>' it can
+// use as a boundary. One round formatted "*_x_*" but left "_*x*_" literal.
+// The cap is one round per marker: the worst case, "~_*x*_~", unwraps exactly
+// one layer per pass. The loop exits as soon as a round changes nothing.
 function formatInline(line) {
-    let s = applyInlineMarker(line, '*', 'strong');
-    s = applyInlineMarker(s, '_', 'em');
-    s = applyInlineMarker(s, '~', 'del');
+    let s = line;
+    for (let round = 0; round < 3; round++) {
+        const before = s;
+        s = applyInlineMarker(s, '*', 'strong');
+        s = applyInlineMarker(s, '_', 'em');
+        s = applyInlineMarker(s, '~', 'del');
+        if (s === before) break;
+    }
     return s;
 }
 
