@@ -159,7 +159,16 @@ APP_NAME="WhatsApp SaaS"
 STACK_NAME="${STACK_NAME}"
 COMPOSE_PROJECT_NAME="${STACK_NAME}"
 
+# Internal shared secret between the frontend and backend containers — not an
+# external API key. The backend refuses to boot without it.
 BACKEND_API_KEY="$(openssl rand -hex 32)"
+
+# Encrypts secrets at rest (SMTP password, LLM API keys). Generated here so the
+# .env is complete: without it the crypto layer falls back to BACKEND_API_KEY,
+# and rotating that would silently make every stored secret undecryptable.
+# Rotating APP_SECRET_KEY itself has the same effect, so treat it as permanent.
+APP_SECRET_KEY="$(openssl rand -hex 32)"
+
 MYSQL_ROOT_PASSWORD="$(openssl rand -hex 24)"
 MYSQL_PASSWORD="$(openssl rand -hex 24)"
 MYSQL_DATABASE="whatsapp_saas"

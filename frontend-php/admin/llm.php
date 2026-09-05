@@ -49,18 +49,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $existing = llmModels($conn, null, false);
         $hasAny = false;
         foreach ($existing as $m) if ($m['provider_code'] === $code) { $hasAny = true; break; }
+        $granted = 0;
         if (!$hasAny) {
             foreach ($catalogue[$code]['models'] as [$modelCode, $label, $kind]) {
                 llmAddModel($conn, (int)$provider['id'], $modelCode, $label, $kind);
             }
+            // Seeding the catalogue alone left the models granted to no plan,
+            // so tenants still saw "No models are available on your plan yet"
+            // and the fix was a checkbox matrix most admins never found. The
+            // grant only ever adds, and only to plans that already have the
+            // chatbot feature on — so it cannot hand the feature to a plan the
+            // admin has not opted in.
+            $granted = llmGrantChatModelsToChatbotPlans($conn, (int)$provider['id']);
         }
 
         // Never log the key itself — only that a key was replaced.
         logAudit($conn, 'llm.provider_saved', 'llm_provider', $code, [
             'enabled' => !empty($_POST['is_enabled']),
             'key_replaced' => $key !== '',
+            'models_granted' => $granted,
         ]);
-        flash('success', $catalogue[$code]['label'] . ' saved.');
+        $message = $catalogue[$code]['label'] . ' saved.';
+        if ($granted > 0) {
+            $message .= ' Its chat models are now available to every active plan with the AI chatbot feature on.';
+        }
+        // A provider saved as enabled with no key is inert: no Test button
+        // appears and tenants see no models, with nothing on screen saying why.
+        if (!empty($_POST['is_enabled']) && !llmProviderHasKey(llmProviderByCode($conn, $code))) {
+            flash('error', 'This provider is enabled but has no API key — tenants cannot use it until you add one.');
+        }
+        flash('success', $message);
         redirect(APP_URL . '/admin/llm.php');
     }
 

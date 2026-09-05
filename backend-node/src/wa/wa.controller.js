@@ -93,11 +93,20 @@ export async function getChats(req, res, next) {
 export async function getMessages(req, res, next) {
   try {
     const { sessionId, chatId } = req.params
-    const messages = getSessionMessages(req.tenantId, sessionId, chatId)
+
+    // Optional epoch-ms watermark. Anything unparseable is treated as absent
+    // rather than as 0 — a NaN comparison would silently return nothing, which
+    // would look like an empty chat instead of a bad request.
+    const rawSince = req.query.since
+    const parsedSince = rawSince === undefined ? NaN : Number(rawSince)
+    const since = Number.isFinite(parsedSince) && parsedSince > 0 ? parsedSince : null
+
+    const messages = getSessionMessages(req.tenantId, sessionId, chatId, since)
     if (messages === null) {
       return res.status(404).json({ ok: false, error: 'Session not found' })
     }
-    return res.json({ ok: true, messages })
+    // Echoed so the caller can tell a filtered response from a full one.
+    return res.json({ ok: true, messages, since: since })
   } catch (e) {
     next(e)
   }

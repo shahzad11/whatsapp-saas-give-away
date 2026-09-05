@@ -144,6 +144,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $savedId = $isNew ? $conn->insert_id : $planId;
             $stmt->close();
 
+            // Model grants live in plan_llm_models and were previously only
+            // reachable from a sidebar matrix on admin/llm.php — a page an
+            // admin editing a plan has already left. Enabling the chatbot
+            // feature here without granting a model there leaves every tenant
+            // on the plan with "no models available", so both belong together.
+            //
+            // Gated on the hidden marker, not on the presence of llm_models:
+            // an unticked list posts nothing, and so does a form that rendered
+            // no list at all. Without the marker those two are indistinguishable
+            // and a save from the latter would silently wipe grants made in the
+            // matrix.
+            if (!empty($_POST['llm_models_present'])) {
+                // Intersected with the real chat-model ids rather than trusted:
+                // the ids arrive from checkboxes, and a hand-built POST could
+                // otherwise grant a transcribe model, which is not selectable
+                // as a chatbot model and would just be a dead option.
+                $chatModelIds = array_map(fn($m) => (int)$m['id'], llmModels($conn, 'chat', false));
+                $picked = array_map('intval', (array)($_POST['llm_models'] ?? []));
+                llmSetPlanModels($conn, $savedId, array_values(array_intersect($chatModelIds, $picked)));
+            }
+
             logAudit($conn, $isNew ? 'admin.plan.create' : 'admin.plan.update', 'plan', $savedId, [
                 'code' => $code, 'price_cents' => $priceMinor, 'currency' => $currency,
             ]);
@@ -181,6 +202,16 @@ $plans = $conn->query(
 )->fetch_all(MYSQLI_ASSOC);
 
 $defaultCode = defaultPlanCode($conn);
+
+// The chatbot feature toggle below is useless on its own — a plan also needs at
+// least one granted model. Both are rendered here so an admin never has to know
+// the matrix on admin/llm.php exists.
+$chatModels = llmModels($conn, 'chat', false);
+// On a redisplay after a validation error the ticks must survive, so they come
+// from the POST rather than the database.
+$grantedModelIds = ($_SERVER['REQUEST_METHOD'] === 'POST')
+    ? array_map('intval', (array)($_POST['llm_models'] ?? []))
+    : (($editing && !empty($editing['id'])) ? llmPlanModelIds($conn, (int)$editing['id']) : []);
 
 function pErr($k) { global $errors; return empty($errors[$k]) ? '' : '<div class="invalid-feedback d-block">' . sanitize($errors[$k]) . '</div>'; }
 function pCls($k) { global $errors; return empty($errors[$k]) ? '' : ' is-invalid'; }
@@ -383,6 +414,36 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </div>
                 <?php endforeach; ?>
             </div>
+
+            <?php if ($chatModels): ?>
+            <hr class="my-4">
+            <h6 class="fw-600 mb-1">AI models</h6>
+            <p class="text-muted x-small">
+                Which models tenants on this plan may choose in Chatbot → Model. The
+                <strong>AI chatbot</strong> feature above must also be on. Writes the same table as
+                <a href="<?= APP_URL ?>/admin/llm.php">AI / LLM</a>, so either page can be used.
+            </p>
+            <?php // Marks the section as rendered. The save handler will not touch
+                  // plan_llm_models without it — see the comment there. ?>
+            <input type="hidden" name="llm_models_present" value="1">
+            <div class="row g-2">
+                <?php foreach ($chatModels as $m): ?>
+                <div class="col-md-6">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="llm_models[]"
+                               value="<?= (int)$m['id'] ?>" id="llmModel_<?= (int)$m['id'] ?>"
+                               <?= in_array((int)$m['id'], $grantedModelIds, true) ? 'checked' : '' ?>>
+                        <label class="form-check-label" for="llmModel_<?= (int)$m['id'] ?>">
+                            <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?>
+                            <?php if (!$m['is_enabled'] || !$m['provider_enabled']): ?>
+                                <span class="badge bg-secondary x-small">disabled</span>
+                            <?php endif; ?>
+                        </label>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
 
             <hr class="my-4">
             <div class="form-check form-switch mb-4">

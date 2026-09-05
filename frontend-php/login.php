@@ -4,6 +4,10 @@ requireGuest();
 
 $error = '';
 $success = flash('success');
+// Set only for the "not activated" case, so the resend link appears exactly
+// when it is the thing that unblocks the user — and never as a hint that some
+// other address does have an account.
+$showResend = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrf()) {
@@ -33,7 +37,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 recordLoginAttempt($conn, $email, false);
                 $error = 'This account has been suspended. Please contact support.';
             } elseif (!$user['is_active']) {
-                $error = 'Your account is not activated. Please check your email.';
+                $error = 'Your account is not activated. Please check your email for the activation link.';
+                $showResend = true;
             } else {
                 recordLoginAttempt($conn, $email, true);
                 clearLoginAttempts($conn, $email);
@@ -57,7 +62,14 @@ require_once __DIR__ . '/includes/auth-header.php';
     </div>
 
     <?php if ($error): ?>
-        <div class="alert alert-danger"><?= sanitize($error) ?></div>
+        <div class="alert alert-danger mb-3">
+            <?= sanitize($error) ?>
+            <?php if ($showResend): ?>
+                <div class="mt-2">
+                    <a href="<?= APP_URL ?>/resend-activation.php" class="alert-link small">Resend activation email</a>
+                </div>
+            <?php endif; ?>
+        </div>
     <?php endif; ?>
     <?php if ($success): ?>
         <div class="alert alert-success"><?= sanitize($success) ?></div>
@@ -78,7 +90,13 @@ require_once __DIR__ . '/includes/auth-header.php';
               // attribute and no handler, so it could not even be submitted. A
               // persistent login needs a signed long-lived cookie and a way to
               // revoke it; until that exists, offering the control is a lie. ?>
-        <div class="d-flex justify-content-end align-items-center mb-4">
+        <?php // Both links are always present. resend-activation.php answers
+              // identically for every address, so offering it unconditionally
+              // reveals nothing — and a signup whose activation mail failed
+              // lands here from register.php, where the page has no way to
+              // know the account is unactivated. ?>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <a href="<?= APP_URL ?>/resend-activation.php" class="small text-decoration-none">Resend activation email</a>
             <a href="<?= APP_URL ?>/forgot-password.php" class="small text-decoration-none">Forgot password?</a>
         </div>
         <button type="submit" class="btn btn-primary w-100 mb-3">Sign In</button>

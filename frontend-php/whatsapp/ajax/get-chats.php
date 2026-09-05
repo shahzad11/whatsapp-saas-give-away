@@ -27,17 +27,26 @@ $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '
 $contactsCapped = false;
 
 if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
-    // Which chats are already stored, so a capped tenant can still receive
-    // updates for them. One query beats a per-chat existence check.
-    $known = [];
-    if ($contactLimit !== null) {
-        $stmtKnown = $conn->prepare("SELECT chat_id FROM wa_contacts WHERE account_id = ?");
-        $stmtKnown->bind_param("i", $accountId);
-        $stmtKnown->execute();
-        $res = $stmtKnown->get_result();
-        while ($k = $res->fetch_assoc()) $known[$k['chat_id']] = true;
-        $stmtKnown->close();
-    }
+    // What is already stored, so an unchanged chat can be skipped entirely.
+    // This poll runs every 10s and used to run the upsert over every chat in
+    // the list each time, whether or not anything about it had moved.
+    //
+    // Loaded unconditionally now — it used to be fetched only when a contact
+    // cap applied, purely for the existence check below, which it still serves.
+    // One indexed read replaces N writes.
+    $stored = [];
+    $stmtKnown = $conn->prepare("SELECT chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived
+        FROM wa_contacts WHERE account_id = ?");
+    $stmtKnown->bind_param("i", $accountId);
+    $stmtKnown->execute();
+    $res = $stmtKnown->get_result();
+    while ($k = $res->fetch_assoc()) $stored[$k['chat_id']] = $k;
+    $stmtKnown->close();
+
+    // Presence map for the contact-cap check below. Kept separate from $stored
+    // because the cap loop adds entries to it for chats accepted during this
+    // pass, and $stored must keep meaning "what the database currently holds".
+    $known = array_fill_keys(array_keys($stored), true);
 
     $stmtUpsert = $conn->prepare("INSERT INTO wa_contacts (account_id, session_id, chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -87,6 +96,26 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
         if (!$phone && str_ends_with($chatId, '@s.whatsapp.net')) {
             $phone = explode('@', $chatId)[0];
         }
+        // Provable no-op: every column this statement could write already holds
+        // exactly what would be written, so the upsert cannot change the row
+        // whatever the CASE branches decide. Skipping is the whole point of
+        // #17 — in the steady state almost every chat in the list is unchanged.
+        //
+        // Compared field-by-field against the stored row rather than by a
+        // timestamp watermark, because a chat can change *without* its
+        // last_message_time moving: archiving one, or a contact name finally
+        // resolving. A watermark would have frozen both.
+        $prev = $stored[$chatId] ?? null;
+        if ($prev !== null
+            && (string)$prev['contact_name'] === $name
+            && (string)$prev['phone_number'] === (string)$phone
+            && (string)$prev['last_message'] === $lastMsg
+            && (string)$prev['last_message_time'] === (string)$lastTime
+            && (int)$prev['is_group'] === $isGroup
+            && (int)$prev['is_archived'] === $isArchived) {
+            continue;
+        }
+
         // A chat we have never stored is new, and a new one counts against the
         // plan. Skip it rather than upserting, or the INSERT would create the
         // row the cap exists to prevent.

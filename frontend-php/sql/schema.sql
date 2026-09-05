@@ -427,6 +427,28 @@ PREPARE stmt_add_sender_jid FROM @add_sender_jid;
 EXECUTE stmt_add_sender_jid;
 DEALLOCATE PREPARE stmt_add_sender_jid;
 
+-- The shared-contact and location payloads (#17). Everything else a message
+-- needs to render was already stored, but these two were only ever read from
+-- the backend's live response and re-attached on the fly. That worked only
+-- because every poll re-fetched the entire thread — the thing #17 exists to
+-- stop. Without them stored, a contact or location message older than the
+-- incremental watermark would fall through to the "unsupported media"
+-- placeholder.
+--
+-- JSON rather than two sets of typed columns: a vCard list is variable-length,
+-- and neither payload is ever queried by value — it is written once and read
+-- back whole.
+SET @add_media_meta := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_messages ADD COLUMN media_meta JSON DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_messages' AND COLUMN_NAME = 'media_meta'
+);
+PREPARE stmt_add_media_meta FROM @add_media_meta;
+EXECUTE stmt_add_media_meta;
+DEALLOCATE PREPARE stmt_add_media_meta;
+
 -- ---------------------------------------------------------------------------
 -- LLM chatbot (issues #9, #14, #16, #22)
 -- ---------------------------------------------------------------------------

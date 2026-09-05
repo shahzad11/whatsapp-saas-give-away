@@ -49,8 +49,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $defaultPlan = getPlanByCode($conn, defaultPlanCode($conn));
                 $planId = $defaultPlan['id'] ?? null;
 
-                $stmt = $conn->prepare("INSERT INTO users (name, email, password, activation_token, is_active, plan_id) VALUES (?, ?, ?, ?, 0, ?)");
-                $stmt->bind_param("ssssi", $name, $email, $hashedPassword, $activationToken, $planId);
+                // Activation puts the account behind a link that only arrives by
+                // email. If this instance cannot send email at all, that gate
+                // can never be opened, so raising it would strand every signup
+                // at is_active = 0 with no way out — which is exactly what used
+                // to happen. Only gate the account when there is a transport to
+                // deliver the key.
+                $canSendMail = smtpConfigured($conn);
+                $isActive = $canSendMail ? 0 : 1;
+                $storedToken = $canSendMail ? $activationToken : null;
+
+                $stmt = $conn->prepare("INSERT INTO users (name, email, password, activation_token, is_active, plan_id) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("ssssii", $name, $email, $hashedPassword, $storedToken, $isActive, $planId);
 
                 if ($stmt->execute()) {
                     $newUserId = $conn->insert_id;
@@ -58,18 +68,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         assignPlan($conn, $newUserId, $planId);
                     }
                     logAudit($conn, 'register', 'user', $newUserId, ['email' => $email]);
+
+                    if (!$canSendMail) {
+                        // Recorded because it is a real deviation from the
+                        // normal flow: an admin reading the log should be able
+                        // to see which accounts skipped email verification and
+                        // why.
+                        logAudit($conn, 'register.auto_activated', 'user', $newUserId, ['reason' => 'smtp_not_configured']);
+                        flash('success', 'Account created. You can sign in now.');
+                        redirect(APP_URL . '/login.php');
+                    }
+
                     $activationLink = APP_URL . '/activate.php?token=' . $activationToken;
                     [$html, $text] = mailActivation($name, $activationLink);
                     $sent = sendEmail($email, 'Activate your account', $html, $text);
 
                     // The account exists either way — a mail failure must not
                     // lose a signup. But do not tell someone to check an inbox
-                    // that will never receive anything.
+                    // that will never receive anything, and do not leave them
+                    // with "contact support" and no address to contact.
                     if ($sent) {
                         flash('success', 'Account created! Please check your email to activate your account.');
                     } else {
                         error_log("Activation email could not be sent to {$email}");
-                        flash('error', 'Your account was created, but the activation email could not be sent. Please contact support.');
+                        flash('error', 'Your account was created, but the activation email could not be sent. '
+                            . 'Use "Resend activation email" below to try again, or contact ' . MAIL_FROM . '.');
                     }
                     redirect(APP_URL . '/login.php');
                 } else {

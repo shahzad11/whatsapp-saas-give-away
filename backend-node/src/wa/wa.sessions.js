@@ -1527,11 +1527,32 @@ export function getSessionChats(tenantId, sessionId) {
   return chatList
 }
 
-export function getSessionMessages(tenantId, sessionId, chatId) {
+// `since` (epoch ms, exclusive) returns only messages newer than that instant.
+// Callers that omit it still get the whole thread, so the chatbot history fetch
+// and any existing client are unaffected.
+//
+// The caller polls every 5s; without this it received — and re-wrote — every
+// message in the chat each time, up to MAX_MESSAGES_PER_CHAT.
+export function getSessionMessages(tenantId, sessionId, chatId, since = null) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
   if (!s) return null
 
-  const msgs = s.messages.get(chatId) || []
+  let msgs = s.messages.get(chatId) || []
+
+  // Binary search, not filter: the array is kept sorted oldest → newest (see
+  // insertMessageSorted), so the cut point is findable in log n instead of
+  // walking thousands of entries on every poll.
+  if (since !== null && msgs.length > 0) {
+    let lo = 0
+    let hi = msgs.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (msgTime(msgs[mid]) <= since) lo = mid + 1
+      else hi = mid
+    }
+    msgs = msgs.slice(lo)
+  }
+
   if (!chatId.endsWith('@g.us')) return msgs
 
   // Group threads show who spoke. Re-resolve per read for the same reason as

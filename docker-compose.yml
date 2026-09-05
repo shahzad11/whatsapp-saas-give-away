@@ -67,6 +67,13 @@ services:
       APP_URL: https://${APP_HOST}
       BACKEND_URL: http://backend:3001
       BACKEND_API_KEY: ${BACKEND_API_KEY:?required}
+      # Encrypts secrets at rest (SMTP password, LLM API keys). Optional, and
+      # deliberately so: an empty value makes crypto.php fall back to
+      # BACKEND_API_KEY, which is what every deployment predating this line
+      # already encrypted with. Setting it on such a deployment would make
+      # those stored secrets undecryptable, so it is only generated for fresh
+      # installs — see deploy/install.sh.
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       MYSQL_HOST: mysql
       MYSQL_DATABASE: ${MYSQL_DATABASE:-whatsapp_saas}
       MYSQL_USER: ${MYSQL_USER:?required}

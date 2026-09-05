@@ -217,6 +217,41 @@ function llmSetPlanModels(mysqli $conn, $planId, array $modelIds) {
     $stmt->close();
 }
 
+// Grants a provider's chat models to every active plan whose `chatbot` feature
+// is on, and returns how many grants were created.
+//
+// Called when a provider's catalogue is first seeded. Without it the models
+// exist but belong to no plan, so an admin who completes the two obvious steps
+// — save a provider with a key, enable the chatbot feature on a plan — still
+// leaves every tenant, themselves included, looking at "No models are available
+// on your plan yet". The one step that fixes it is a checkbox matrix in a
+// sidebar card on a page they have already left.
+//
+// INSERT IGNORE rather than llmSetPlanModels(): this may only ever add. The
+// table's PRIMARY KEY (plan_id, model_id) makes an existing grant a no-op, so
+// re-seeding cannot duplicate rows, and a matrix the admin curated by hand is
+// never clobbered.
+//
+// Chat models only. A transcribe model is not selectable as a chatbot model and
+// granting it would put a nonsense option in front of the tenant.
+function llmGrantChatModelsToChatbotPlans(mysqli $conn, $providerId) {
+    $stmt = $conn->prepare(
+        "INSERT IGNORE INTO plan_llm_models (plan_id, model_id)
+         SELECT ?, id FROM llm_models WHERE provider_id = ? AND kind = 'chat'"
+    );
+    $providerId = (int)$providerId;
+    $granted = 0;
+    foreach (getActivePlans($conn) as $plan) {
+        if (!planHasFeature($plan, 'chatbot')) continue;
+        $planId = (int)$plan['id'];
+        $stmt->bind_param('ii', $planId, $providerId);
+        $stmt->execute();
+        if ($stmt->affected_rows > 0) $granted += $stmt->affected_rows;
+    }
+    $stmt->close();
+    return $granted;
+}
+
 // The models a given tenant may actually pick: enabled model, enabled provider,
 // provider has a key, and the tenant's plan has been granted access.
 function llmModelsForPlan(mysqli $conn, $planId) {

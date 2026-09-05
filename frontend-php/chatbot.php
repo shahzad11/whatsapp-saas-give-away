@@ -225,7 +225,15 @@ require_once __DIR__ . '/includes/header.php';
                         </select>
                         <?php if (!$availableModels): ?>
                             <div class="form-text text-warning">
-                                No models are available on your plan yet. Contact the administrator.
+                                <?php // "Contact the administrator" is a dead end when the viewer
+                                      // *is* the administrator — which is the common case on a
+                                      // fresh instance, where the admin is also the first tenant. ?>
+                                <?php if (isAdmin()): ?>
+                                    No models have been assigned to your plan yet.
+                                    <a href="<?= APP_URL ?>/admin/llm.php">Set up a provider and assign models to plans</a>.
+                                <?php else: ?>
+                                    No models are available on your plan yet. Contact the administrator.
+                                <?php endif; ?>
                             </div>
                         <?php endif; ?>
                     </div>

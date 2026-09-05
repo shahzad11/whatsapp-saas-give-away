@@ -19,21 +19,58 @@ if (empty($sessionId) || empty($chatId)) {
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
 $userTz = getUserTimezone($conn, $userId);
 
-$resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages');
+// High-water mark for the incremental fetch. This poll runs every 5s, and it
+// used to ask for the entire thread and re-run the upsert over every row —
+// thousands of pointless writes per poll on a chat near the backend's
+// MAX_MESSAGES_PER_CHAT (5,000).
+//
+// The mark is read from MySQL rather than kept in the session: it is one
+// indexed MAX() over (account_id, chat_id), it cannot drift out of sync with
+// what is actually stored, and it survives a new PHP worker or a second tab.
+//
+// needs_backfill counts rows stored before media_meta existed. Those messages
+// have no payload to render, and the incremental fetch would never look far
+// enough back to recover one — so a chat containing any of them takes one more
+// full fetch, which populates the column and lets every later poll go
+// incremental. Self-healing, and it costs one extra fetch per affected chat
+// rather than a migration that cannot reach data only the backend holds.
+$stmtMark = $conn->prepare(
+    "SELECT MAX(message_timestamp) AS mark,
+            SUM(media_type IN ('contact', 'location') AND media_meta IS NULL) AS needs_backfill
+     FROM wa_messages WHERE account_id = ? AND chat_id = ?"
+);
+$stmtMark->bind_param("is", $accountId, $chatId);
+$stmtMark->execute();
+$markRow = $stmtMark->get_result()->fetch_assoc() ?: [];
+$mark = $markRow['mark'] ?? null;
+$needsBackfill = (int)($markRow['needs_backfill'] ?? 0) > 0;
+$stmtMark->close();
+
+// Deliberately rewound by a minute. message_timestamp has second granularity,
+// so `> mark` alone would drop a message that arrived in the same second as the
+// newest stored one. Overlapping re-upserts a handful of recent rows — which
+// also keeps the sender_name refresh below working for them — while still
+// replacing thousands of writes with a few.
+$sinceParam = '';
+if ($mark !== null && !$needsBackfill) {
+    $sinceMs = (strtotime($mark . ' UTC') - 60) * 1000;
+    if ($sinceMs > 0) $sinceParam = '?since=' . $sinceMs;
+}
+
+$resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages' . $sinceParam);
 
 if ($resp && !empty($resp['ok']) && !empty($resp['messages'])) {
     // INSERT IGNORE skips a row that already exists, so a sender name resolved
     // after the fact would never land. The name is therefore also refreshed on
     // duplicate — but only ever to a *better* value, never back to NULL.
     $stmtIns = $conn->prepare("INSERT INTO wa_messages
-        (account_id, session_id, message_id, chat_id, sender_name, sender_jid, from_me, message_text, media_type, media_mime, media_filename, message_timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (account_id, session_id, message_id, chat_id, sender_name, sender_jid, from_me, message_text, media_type, media_mime, media_filename, message_timestamp, media_meta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
         sender_name = COALESCE(VALUES(sender_name), sender_name),
-        sender_jid = COALESCE(VALUES(sender_jid), sender_jid)");
+        sender_jid = COALESCE(VALUES(sender_jid), sender_jid),
+        media_meta = COALESCE(VALUES(media_meta), media_meta)");
 
-    // Store extra media data (contact/location) in a lookup for the response
-    $extraData = [];
     foreach ($resp['messages'] as $msg) {
         $msgId = $msg['id'] ?? '';
         if (empty($msgId)) continue;
@@ -53,15 +90,21 @@ if ($resp && !empty($resp['ok']) && !empty($resp['messages'])) {
         if (!empty($msg['time'])) {
             $msgTime = gmdate('Y-m-d H:i:s', strtotime($msg['time']));
         }
-        // Types must line up with the 12 columns above:
+        // The shared-contact / location payload, persisted rather than
+        // re-attached from each response. NULL when there is none, so the
+        // COALESCE above cannot blank a stored payload if a later poll happens
+        // to report the message without it.
+        $meta = [];
+        if (!empty($msg['contactInfo'])) $meta['contactInfo'] = $msg['contactInfo'];
+        if (!empty($msg['locationInfo'])) $meta['locationInfo'] = $msg['locationInfo'];
+        $mediaMeta = $meta ? json_encode($meta) : null;
+
+        // Types must line up with the 13 columns above:
         // account_id(i) session_id(s) message_id(s) chat_id(s) sender_name(s)
         // sender_jid(s) from_me(i) message_text(s) media_type(s) media_mime(s)
-        // media_filename(s) message_timestamp(s)
-        $stmtIns->bind_param("isssssisssss", $accountId, $sessionId, $msgId, $chatId, $senderName, $senderJid, $fromMe, $text, $mediaType, $mediaMime, $mediaFilename, $msgTime);
+        // media_filename(s) message_timestamp(s) media_meta(s)
+        $stmtIns->bind_param("isssssissssss", $accountId, $sessionId, $msgId, $chatId, $senderName, $senderJid, $fromMe, $text, $mediaType, $mediaMime, $mediaFilename, $msgTime, $mediaMeta);
         $stmtIns->execute();
-
-        if (!empty($msg['contactInfo'])) $extraData[$msgId]['contactInfo'] = $msg['contactInfo'];
-        if (!empty($msg['locationInfo'])) $extraData[$msgId]['locationInfo'] = $msg['locationInfo'];
     }
     $stmtIns->close();
 }
@@ -75,6 +118,7 @@ $isGroupChat = str_ends_with($chatId, '@g.us');
 // Scoped by account_id so it cannot read another tenant's contacts.
 $stmtFetch = $conn->prepare("SELECT m.message_id, m.sender_name, m.sender_jid, m.from_me,
            m.message_text, m.media_type, m.media_mime, m.media_filename, m.message_timestamp,
+           m.media_meta,
            c.contact_name AS sender_contact_name, c.phone_number AS sender_phone
     FROM wa_messages m
     LEFT JOIN wa_contacts c ON c.account_id = m.account_id AND c.chat_id = m.sender_jid
@@ -106,8 +150,17 @@ while ($r = $result->fetch_assoc()) {
         'senderName' => $sender,
         'time' => convertToUserTz($r['message_timestamp'], $userTz)
     ];
-    if (isset($extraData[$r['message_id']]['contactInfo'])) $msgEntry['contactInfo'] = $extraData[$r['message_id']]['contactInfo'];
-    if (isset($extraData[$r['message_id']]['locationInfo'])) $msgEntry['locationInfo'] = $extraData[$r['message_id']]['locationInfo'];
+    // From the stored column, so a contact or location message renders the same
+    // whether or not this poll happened to fetch it. It used to come from the
+    // live backend response, which only worked while every poll re-fetched the
+    // whole thread.
+    if (!empty($r['media_meta'])) {
+        $meta = json_decode($r['media_meta'], true);
+        if (is_array($meta)) {
+            if (!empty($meta['contactInfo'])) $msgEntry['contactInfo'] = $meta['contactInfo'];
+            if (!empty($meta['locationInfo'])) $msgEntry['locationInfo'] = $meta['locationInfo'];
+        }
+    }
     $messages[] = $msgEntry;
 }
 $stmtFetch->close();
