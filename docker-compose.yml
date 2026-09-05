@@ -79,28 +79,37 @@ services:
     volumes:
       - php-sessions:/var/lib/php/sessions
     networks: [app]
+    # List syntax, not mapping syntax, and deliberately so: Compose interpolates
+    # only YAML *values*, never keys. As a mapping, the router name would have
+    # been the literal string "${STACK_NAME:-whatsapp-saas}" and Traefik would
+    # never have matched the host. See docs/reference/compose-file/interpolation.
     labels:
-      traefik.enable: "true"
+      - "traefik.enable=true"
       # Traefik runs with network_mode: host, so it must be told which network
       # to dial the container on.
-      traefik.docker.network: whatsapp-saas-app
-      traefik.http.routers.wasaas.rule: Host(`${APP_HOST}`)
-      traefik.http.routers.wasaas.entrypoints: websecure
-      traefik.http.routers.wasaas.tls.certresolver: letsencrypt
-      traefik.http.services.wasaas.loadbalancer.server.port: "80"
-      traefik.http.routers.wasaas.middlewares: wasaas-hsts
-      traefik.http.middlewares.wasaas-hsts.headers.stsSeconds: "31536000"
-      traefik.http.middlewares.wasaas-hsts.headers.stsIncludeSubdomains: "true"
-      traefik.http.middlewares.wasaas-hsts.headers.forceSTSHeader: "true"
+      - "traefik.docker.network=${STACK_NAME:-whatsapp-saas}-app"
+      # APP_HOST comes from .env, so the same file deploys to any domain and
+      # Let's Encrypt issues for whatever it is set to.
+      - "traefik.http.routers.${STACK_NAME:-whatsapp-saas}.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.${STACK_NAME:-whatsapp-saas}.entrypoints=websecure"
+      - "traefik.http.routers.${STACK_NAME:-whatsapp-saas}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${STACK_NAME:-whatsapp-saas}.loadbalancer.server.port=80"
+      - "traefik.http.routers.${STACK_NAME:-whatsapp-saas}.middlewares=${STACK_NAME:-whatsapp-saas}-hsts"
+      - "traefik.http.middlewares.${STACK_NAME:-whatsapp-saas}-hsts.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.${STACK_NAME:-whatsapp-saas}-hsts.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.${STACK_NAME:-whatsapp-saas}-hsts.headers.forceSTSHeader=true"
 
+# Every resource is namespaced by STACK_NAME so two deployments (two domains)
+# can share a host without colliding. Unset falls back to the original
+# `whatsapp-saas` names — renaming a volume would orphan the database.
 networks:
   app:
-    name: whatsapp-saas-app
+    name: ${STACK_NAME:-whatsapp-saas}-app
 
 volumes:
   mysql-data:
-    name: whatsapp-saas-mysql-data
+    name: ${STACK_NAME:-whatsapp-saas}-mysql-data
   wa-data:
-    name: whatsapp-saas-wa-data
+    name: ${STACK_NAME:-whatsapp-saas}-wa-data
   php-sessions:
-    name: whatsapp-saas-php-sessions
+    name: ${STACK_NAME:-whatsapp-saas}-php-sessions
