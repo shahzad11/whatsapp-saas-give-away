@@ -245,6 +245,12 @@ function sortMessages(msgs) {
   return msgs.sort((a, b) => msgTime(a) - msgTime(b))
 }
 
+// Mirrors the no-content check in storeMessage(), but for an already-normalised
+// entry. Used to evict protocol/system messages persisted by earlier versions.
+function hasRenderableContent(m) {
+  return !!(m?.text || (m?.mediaType && m.mediaType !== 'text') || m?.contactInfo || m?.locationInfo)
+}
+
 // Binary insert: a bulk history dump is mostly out of order, so re-sorting the
 // whole chat on every message would be O(n² log n) over a sync of thousands.
 function insertMessageSorted(arr, entry) {
@@ -309,7 +315,10 @@ async function readMessages(sessionPath) {
       const shard = JSON.parse(raw)
       // Sort on load: shards written before the ordering fix are shuffled, and
       // the sorted-array invariant has to hold before anything is inserted.
-      if (shard?.chatId && Array.isArray(shard.msgs)) map.set(shard.chatId, sortMessages(shard.msgs))
+      // Filter too: earlier versions persisted content-less protocol messages.
+      if (shard?.chatId && Array.isArray(shard.msgs)) {
+        map.set(shard.chatId, sortMessages(shard.msgs.filter(hasRenderableContent)))
+      }
     } catch (_) {
       // skip unreadable/corrupt shard rather than failing the whole restore
     }
@@ -339,6 +348,39 @@ async function readMessages(sessionPath) {
   return map
 }
 
+const MEDIA_LABELS = { image: '📷 Photo', video: '🎥 Video', audio: '🎵 Audio', voice: '🎤 Voice message', document: '📄 Document', sticker: '🏷️ Sticker', contact: '👤 Contact', location: '📍 Location' }
+const MEDIA_ICONS = { image: '📷', video: '🎥', audio: '🎵', voice: '🎤', document: '📄', sticker: '🏷️', contact: '👤', location: '📍' }
+
+// The chat-list preview for a stored message: caption prefixed with a type
+// icon, or a bare label when there is no caption.
+function previewFor(entry) {
+  const type = entry.mediaType || 'text'
+  if (type === 'text') return entry.text || ''
+  if (!entry.text) return MEDIA_LABELS[type] || type
+  return `${MEDIA_ICONS[type] || ''} ${entry.text}`.trim()
+}
+
+// A chat whose lastMessage/lastTime came from a protocol message that has since
+// been filtered out stays wrongly pinned to the top, because the summary is
+// only ever allowed to move forwards in time. Re-derive it from the newest
+// surviving message. Chats with no stored messages are left alone: their
+// lastTime legitimately comes from WhatsApp's conversationTimestamp.
+function repairChatSummaries(chats, messages) {
+  let repaired = 0
+  for (const chat of chats.values()) {
+    const msgs = messages.get(chat.id)
+    if (!msgs || msgs.length === 0) continue
+
+    const newest = msgs[msgs.length - 1]
+    if (!chat.lastTime || msgTime(newest) >= Date.parse(chat.lastTime)) continue
+
+    chat.lastTime = newest.time
+    chat.lastMessage = previewFor(newest)
+    repaired++
+  }
+  return repaired
+}
+
 function scheduleMessageSave(sessionState, chatId) {
   if (chatId) sessionState.dirtyChats.add(chatId)
 
@@ -350,6 +392,31 @@ function scheduleMessageSave(sessionState, chatId) {
       await writeDirtyMessages(sessionPath(sessionState), sessionState.messages, sessionState.dirtyChats)
     } catch (_) {}
   }, 5000))
+}
+
+// WhatsApp nests real content inside these envelopes. Without unwrapping, a
+// disappearing message or a view-once photo looks like an empty message and
+// would be discarded by the no-content check in storeMessage().
+const CONTENT_WRAPPERS = [
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+  'documentWithCaptionMessage',
+  'deviceSentMessage',
+  'editedMessage'
+]
+
+function unwrapMessage(message) {
+  let m = message
+  // Envelopes nest (a view-once inside an ephemeral, say). The depth cap keeps
+  // a malformed or hostile payload from spinning here.
+  for (let depth = 0; m && depth < 5; depth++) {
+    const key = CONTENT_WRAPPERS.find(k => m[k]?.message)
+    if (!key) break
+    m = m[key].message
+  }
+  return m
 }
 
 function detectMediaType(message) {
@@ -374,6 +441,16 @@ function extractText(message) {
     message.imageMessage?.caption ||
     message.videoMessage?.caption ||
     message.documentMessage?.caption ||
+    // Types we do not render specially. Pulling their text out means they are
+    // still stored and previewed rather than being dropped as "no content".
+    message.pollCreationMessage?.name ||
+    message.pollCreationMessageV2?.name ||
+    message.pollCreationMessageV3?.name ||
+    message.groupInviteMessage?.caption ||
+    message.buttonsMessage?.contentText ||
+    message.listMessage?.description ||
+    message.templateMessage?.hydratedTemplate?.hydratedContentText ||
+    message.interactiveMessage?.body?.text ||
     ''
 }
 
@@ -409,14 +486,23 @@ function storeMessage(sessionState, msg) {
 
   const chatId = msg.key.remoteJid
   const fromMe = msg.key.fromMe || false
-  const media = detectMediaType(msg.message)
-  const text = extractText(msg.message)
+  const content = unwrapMessage(msg.message)
+  if (!content) return
+
+  const media = detectMediaType(content)
+  const text = extractText(content)
+  const contactInfo = extractContactInfo(content)
+  const locationInfo = extractLocationInfo(content)
+
+  // Nothing a user could ever see: sender-key distribution, app-state sync,
+  // protocol acks, reactions, poll votes. WhatsApp exchanges a burst of these
+  // with the linked account's *own* number during QR pairing, which is why that
+  // chat used to jump to the top of the list with a blank preview.
+  if (media.type === 'text' && !text && !contactInfo && !locationInfo) return
+
   const timestamp = msg.messageTimestamp
     ? new Date(Number(msg.messageTimestamp) * 1000).toISOString()
     : new Date().toISOString()
-
-  const contactInfo = extractContactInfo(msg.message)
-  const locationInfo = extractLocationInfo(msg.message)
 
   const entry = {
     id: msg.key.id,
@@ -430,7 +516,9 @@ function storeMessage(sessionState, msg) {
     time: timestamp,
     contactInfo: contactInfo || undefined,
     locationInfo: locationInfo || undefined,
-    rawMessage: (media.type !== 'text') ? msg.message : undefined
+    // The unwrapped content, not msg.message: cacheMedia/getMediaBuffer look up
+    // rawMessage['imageMessage'] etc., which is not present on the envelope.
+    rawMessage: (media.type !== 'text') ? content : undefined
   }
 
   if (!sessionState.messages.has(chatId)) {
@@ -459,14 +547,7 @@ function storeMessage(sessionState, msg) {
     cacheMedia(sessionState, entry)
   }
 
-  let preview = text
-  if (!preview && media.type !== 'text') {
-    const labels = { image: '📷 Photo', video: '🎥 Video', audio: '🎵 Audio', voice: '🎤 Voice message', document: '📄 Document', sticker: '🏷️ Sticker', contact: '👤 Contact', location: '📍 Location' }
-    preview = labels[media.type] || media.type
-  } else if (preview && media.type !== 'text') {
-    const icons = { image: '📷', video: '🎥', audio: '🎵', voice: '🎤', document: '📄', sticker: '🏷️', contact: '👤', location: '📍' }
-    preview = (icons[media.type] || '') + ' ' + preview
-  }
+  const preview = previewFor(entry)
 
   const isGroup = chatId.endsWith('@g.us')
   const existing = sessionState.chats.get(chatId)
@@ -621,6 +702,27 @@ function markSyncComplete(sessionState) {
 
 function attachSocketEvents(sessionState, sock, saveCreds) {
   sock.ev.on('creds.update', saveCreds)
+
+  // markOnlineOnConnect: false is necessary but not sufficient on baileys
+  // 7.0.0-rc14: Socket/socket.js announces the push name with a bare
+  // <presence name="..."/> node on the first creds.update that carries it, and
+  // a presence node with no type means 'available'. That fires during QR
+  // pairing, so the phone goes quiet right after linking — which is exactly
+  // when the user noticed it. Re-assert 'unavailable' to undo it.
+  const assertOffline = async () => {
+    if (!sessions.has(sessionKey(sessionState.tenantId, sessionState.sessionId))) return
+    try {
+      await sock.sendPresenceUpdate('unavailable')
+    } catch (_) {
+      // Best effort: presence must never take the session down.
+    }
+  }
+  sessionState.assertOffline = assertOffline
+
+  sock.ev.on('creds.update', (update) => {
+    // Only the push-name announcement marks us available; ignore key rotations.
+    if (update?.me?.name) trackTimeout(sessionState, assertOffline, 1000)
+  })
 
   const hasExistingData = sessionState.messages.size > 0
   sessionState.syncing = true
@@ -793,6 +895,12 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
         connectedAt: sessionState.connectedAt
       })
 
+      // Re-assert at intervals: the push-name presence node races the initial
+      // sync, so a single call at 'open' can be overridden moments later.
+      assertOffline()
+      trackTimeout(sessionState, assertOffline, 5000)
+      trackTimeout(sessionState, assertOffline, 30000)
+
       trackTimeout(sessionState, async () => {
         if (!sessions.has(sessionKey(sessionState.tenantId, sessionState.sessionId))) return
         try {
@@ -865,6 +973,10 @@ async function reconnectSession(tenantId, sessionId) {
       browser: Browsers.macOS('Safari'),
       logger,
       syncFullHistory: true,
+      // Baileys defaults this to true, which announces the client as
+      // 'available'. WhatsApp then treats this as an active desktop session and
+      // stops pushing notifications to the paired phone. See keepPhoneNotified.
+      markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 30000
     })
@@ -931,6 +1043,8 @@ export async function createNewSession(tenantId, label) {
     browser: Browsers.macOS('Safari'),
     logger,
     syncFullHistory: true,
+    // See the note in reconnectSession: keeps phone push notifications alive.
+    markOnlineOnConnect: false,
     generateHighQualityLinkPreview: false,
     connectTimeoutMs: 30000
   })
@@ -1022,6 +1136,11 @@ async function restoreTenantSessions(tenantId) {
     const restoredChats = await readChats(dir)
     const restoredMessages = await readMessages(dir)
 
+    const repaired = repairChatSummaries(restoredChats, restoredMessages)
+    if (repaired > 0) {
+      console.log(`Session ${sessionId}: re-derived ${repaired} chat summary/ies that pointed at filtered protocol messages`)
+    }
+
     const sessionState = {
       tenantId,
       sessionId,
@@ -1048,12 +1167,20 @@ async function restoreTenantSessions(tenantId) {
       browser: Browsers.macOS('Safari'),
       logger,
       syncFullHistory: true,
+      // Baileys defaults this to true, which announces the client as
+      // 'available'. WhatsApp then treats this as an active desktop session and
+      // stops pushing notifications to the paired phone. See keepPhoneNotified.
+      markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 30000
     })
 
     sessionState.sock = sock
     sessions.set(sessionKey(tenantId, sessionId), sessionState)
+
+    // Persist the repair so the corrected ordering survives even if this
+    // process exits before the chat list changes again.
+    if (repaired > 0) scheduleChatSave(sessionState)
 
     crossReferenceLidNames(sessionState)
     attachSocketEvents(sessionState, sock, saveCreds)
