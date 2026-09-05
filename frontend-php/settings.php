@@ -6,22 +6,8 @@ $userId = (int)$_SESSION['user_id'];
 $success = '';
 $error = '';
 
-function getUserSetting($conn, $userId, $key, $default = '') {
-    $stmt = $conn->prepare("SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ?");
-    $stmt->bind_param("is", $userId, $key);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $row = $result->fetch_assoc();
-    $stmt->close();
-    return $row ? $row['setting_value'] : $default;
-}
-
-function setUserSetting($conn, $userId, $key, $value) {
-    $stmt = $conn->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-    $stmt->bind_param("iss", $userId, $key, $value);
-    $stmt->execute();
-    $stmt->close();
-}
+// getUserSetting()/setUserSetting() now live in includes/settings.php — the
+// profile page needs them too, and two page-local copies would drift.
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrf()) {
@@ -31,44 +17,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $notifyDisconnect = isset($_POST['notify_disconnect']) ? '1' : '0';
         $autoReconnect = isset($_POST['auto_reconnect']) ? '1' : '0';
 
-        $allowedTimezones = array_keys(timezoneOptions());
-        $timezone = trim($_POST['timezone'] ?? 'Asia/Karachi');
-        if (!in_array($timezone, $allowedTimezones, true)) {
-            $timezone = 'Asia/Karachi';
-        }
-
         setUserSetting($conn, $userId, 'notify_connect', $notifyConnect);
         setUserSetting($conn, $userId, 'notify_disconnect', $notifyDisconnect);
         setUserSetting($conn, $userId, 'auto_reconnect', $autoReconnect);
-        setUserSetting($conn, $userId, 'timezone', $timezone);
 
         $success = 'Settings saved successfully.';
     }
 }
 
-function timezoneOptions() {
-    return [
-        'Asia/Karachi' => 'Pakistan (PKT, UTC+5)',
-        'Asia/Dubai' => 'UAE/Gulf (GST, UTC+4)',
-        'Asia/Riyadh' => 'Saudi Arabia (AST, UTC+3)',
-        'Asia/Kolkata' => 'India (IST, UTC+5:30)',
-        'Asia/Dhaka' => 'Bangladesh (BST, UTC+6)',
-        'Asia/Shanghai' => 'China (CST, UTC+8)',
-        'Asia/Tokyo' => 'Japan (JST, UTC+9)',
-        'Europe/London' => 'UK (GMT/BST, UTC+0/+1)',
-        'Europe/Berlin' => 'Central Europe (CET, UTC+1)',
-        'America/New_York' => 'US Eastern (EST, UTC-5)',
-        'America/Chicago' => 'US Central (CST, UTC-6)',
-        'America/Los_Angeles' => 'US Pacific (PST, UTC-8)',
-        'Australia/Sydney' => 'Australia Eastern (AEST, UTC+10)',
-        'UTC' => 'UTC',
-    ];
-}
-
 $notifyConnect = getUserSetting($conn, $userId, 'notify_connect', '1');
 $notifyDisconnect = getUserSetting($conn, $userId, 'notify_disconnect', '1');
 $autoReconnect = getUserSetting($conn, $userId, 'auto_reconnect', '1');
-$timezone = getUserSetting($conn, $userId, 'timezone', 'Asia/Karachi');
+$timezone = getUserSetting($conn, $userId, 'timezone', appTimezone($conn));
 
 $pageTitle = 'Settings';
 require_once __DIR__ . '/includes/header.php';
@@ -90,17 +50,22 @@ require_once __DIR__ . '/includes/header.php';
 <form method="POST">
     <?= csrfField() ?>
 
+    <?php // Timezone lives on the profile with the rest of the locale/identity
+          // fields. It is shown here read-only rather than duplicated as a second
+          // editor: two forms writing one value is a lost-update waiting to
+          // happen, and it is never obvious which one last won. ?>
     <div class="card mb-4">
         <div class="card-header">Display</div>
         <div class="card-body">
-            <div class="mb-3">
-                <label class="form-label">Timezone</label>
-                <select name="timezone" class="form-select">
-                    <?php foreach (timezoneOptions() as $tz => $label): ?>
-                        <option value="<?= sanitize($tz) ?>" <?= $timezone === $tz ? 'selected' : '' ?>><?= sanitize($label) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <div class="form-text">All chat timestamps will be displayed in this timezone</div>
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <div class="fw-500">Timezone</div>
+                    <div class="text-muted small">
+                        Chat timestamps use <?= sanitize($timezone) ?>
+                        (<?= sanitize(timezoneOffsetLabel($timezone)) ?>)
+                    </div>
+                </div>
+                <a href="<?= APP_URL ?>/profile.php" class="btn btn-sm btn-outline-secondary">Change in Profile</a>
             </div>
         </div>
     </div>

@@ -67,12 +67,12 @@ function setAppSetting(mysqli $conn, $key, $value) {
 // (formatPrice($plan) has no connection argument), so fall back to the global
 // one. Resolved here rather than with `global $conn` inside each function, which
 // would shadow the parameter of the same name.
-function settingsConn(mysqli $conn = null) {
+function settingsConn(?mysqli $conn = null) {
     if ($conn !== null) return $conn;
     return $GLOBALS['conn'] ?? null;
 }
 
-function appCurrency(mysqli $conn = null) {
+function appCurrency(?mysqli $conn = null) {
     $db = settingsConn($conn);
     if (!$db) return appSettingDefaults()['currency'];
 
@@ -80,7 +80,7 @@ function appCurrency(mysqli $conn = null) {
     return isValidCurrency($code) ? $code : appSettingDefaults()['currency'];
 }
 
-function appTimezone(mysqli $conn = null) {
+function appTimezone(?mysqli $conn = null) {
     $db = settingsConn($conn);
     if (!$db) return appSettingDefaults()['timezone'];
 
@@ -88,10 +88,71 @@ function appTimezone(mysqli $conn = null) {
     return isValidTimezone($tz) ? $tz : appSettingDefaults()['timezone'];
 }
 
+// --- Per-tenant settings ----------------------------------------------------
+// Moved here from settings.php so profile.php can reach them too. Two pages
+// defining their own copies would drift.
+
+function getUserSetting(mysqli $conn, $userId, $key, $default = '') {
+    $stmt = $conn->prepare("SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ?");
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ? $row['setting_value'] : $default;
+}
+
+function setUserSetting(mysqli $conn, $userId, $key, $value) {
+    $stmt = $conn->prepare(
+        "INSERT INTO user_settings (user_id, setting_key, setting_value) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
+    );
+    $stmt->bind_param('iss', $userId, $key, $value);
+    $stmt->execute();
+    $stmt->close();
+}
+
 // --- Validation -------------------------------------------------------------
 
 function isValidTimezone($tz) {
     return in_array($tz, DateTimeZone::listIdentifiers(), true);
+}
+
+// Every PHP timezone, grouped by region for an <optgroup> select.
+//
+// PHP's own identifier list is the whitelist — a value is only accepted if it
+// appears in it, so no arbitrary string can reach `new DateTimeZone()`. The
+// previous 14-entry hand-picked list was safe but left tenants outside those
+// regions unable to pick their own zone.
+//
+// Built from DateTimeZone, not intl: the frontend image installs only mysqli.
+function timezoneChoices() {
+    static $grouped = null;
+    if ($grouped !== null) return $grouped;
+
+    $grouped = [];
+    foreach (DateTimeZone::listIdentifiers() as $id) {
+        $parts = explode('/', $id, 2);
+        $region = count($parts) === 2 ? $parts[0] : 'Other';
+        // "Asia/Karachi" -> "Karachi"; "America/Argentina/Salta" -> "Argentina — Salta"
+        $label = count($parts) === 2 ? str_replace(['_', '/'], [' ', ' — '], $parts[1]) : $id;
+        $grouped[$region][$id] = $label;
+    }
+    ksort($grouped);
+    return $grouped;
+}
+
+// "UTC+05:00" — the offset a tenant recognises, rather than the abbreviation,
+// which is ambiguous (IST is India, Ireland and Israel).
+function timezoneOffsetLabel($tz) {
+    if (!isValidTimezone($tz)) return '';
+    try {
+        $offset = (new DateTimeZone($tz))->getOffset(new DateTime('now', new DateTimeZone('UTC')));
+    } catch (Exception $e) {
+        return '';
+    }
+    $sign = $offset < 0 ? '-' : '+';
+    $offset = abs($offset);
+    return sprintf('UTC%s%02d:%02d', $sign, intdiv($offset, 3600), intdiv($offset % 3600, 60));
 }
 
 // ISO 4217 is a fixed list, but shipping all 180 codes to validate against is
@@ -127,7 +188,7 @@ function currencyFormat($code) {
 // $minorUnits is the stored integer (paisa, cents). Whole amounts drop the
 // fractional part — "Rs. 1,500" reads as a price, "Rs. 1,500.00" reads as an
 // invoice line.
-function formatMoney($minorUnits, $currency = null, mysqli $conn = null) {
+function formatMoney($minorUnits, $currency = null, ?mysqli $conn = null) {
     $currency = $currency ?: appCurrency($conn);
     $fmt = currencyFormat($currency);
 

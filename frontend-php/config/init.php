@@ -24,3 +24,4 @@ require_once $basePath . '/includes/tenant.php';
 // Loaded before plan.php: price formatting reads the instance-wide currency.
 require_once $basePath . '/includes/settings.php';
 require_once $basePath . '/includes/plan.php';
+require_once $basePath . '/includes/profile.php';

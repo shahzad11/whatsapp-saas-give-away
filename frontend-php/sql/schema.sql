@@ -105,6 +105,36 @@ CREATE TABLE IF NOT EXISTS user_settings (
     UNIQUE KEY unique_user_setting (user_id, setting_key)
 ) ENGINE=InnoDB;
 
+-- Optional tenant identity/contact detail.
+--
+-- A separate table rather than more columns on `users`, because `users` is on
+-- the hot path: getCurrentUser() reads it on every authenticated request via
+-- requireLogin(). These fields are sparse and read on three pages, so widening
+-- that row every request buys nothing, and it keeps authentication columns apart
+-- from user-supplied content.
+--
+-- user_id is the primary key, which makes the 1:1 relationship structural — a
+-- tenant cannot end up with two profiles. Every field is nullable: registration
+-- stays a two-field form, so nothing here may ever be required.
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id INT NOT NULL PRIMARY KEY,
+    company_name VARCHAR(150) DEFAULT NULL,
+    -- E.164 digits, no '+' — matches how wa_accounts.phone_number stores them.
+    whatsapp_number VARCHAR(20) DEFAULT NULL,
+    address_line1 VARCHAR(200) DEFAULT NULL,
+    address_line2 VARCHAR(200) DEFAULT NULL,
+    city VARCHAR(100) DEFAULT NULL,
+    state_region VARCHAR(100) DEFAULT NULL,
+    postal_code VARCHAR(20) DEFAULT NULL,
+    -- ISO 3166-1 alpha-2, validated against includes/countries.php.
+    country CHAR(2) DEFAULT NULL,
+    contact_email TINYINT(1) NOT NULL DEFAULT 1,
+    contact_whatsapp TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- Instance-wide settings: the platform owner's, not a tenant's. Defined after
 -- `users` because updated_by references it.
 --

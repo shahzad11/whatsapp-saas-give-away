@@ -3,8 +3,10 @@ require_once __DIR__ . '/config/init.php';
 requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
+$user = getCurrentUser();
 $plan = getUserPlan($conn, $userId);
 $plans = getActivePlans($conn);
+$profile = getUserProfile($conn, $userId);
 
 $accountsUsed = countWaAccounts($conn, $userId);
 $contactsUsed = countContacts($conn, $userId);
@@ -66,6 +68,22 @@ require_once __DIR__ . '/includes/header.php';
                         <?php endif; ?>
                     </ul>
                 <?php endif; ?>
+
+                <hr>
+                <div class="small">
+                    <div class="text-muted mb-1">Billed to</div>
+                    <div class="fw-500"><?= sanitize(tenantDisplayName($user, $profile)) ?></div>
+                    <?php $lines = addressLines($profile); ?>
+                    <?php if ($lines): ?>
+                        <div class="text-muted"><?= implode('<br>', array_map('sanitize', $lines)) ?></div>
+                    <?php else: ?>
+                        <?php // Nudge rather than block: every profile field is optional. ?>
+                        <div class="text-muted">
+                            No billing address on file.
+                            <a href="<?= APP_URL ?>/profile.php">Add one</a>.
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>

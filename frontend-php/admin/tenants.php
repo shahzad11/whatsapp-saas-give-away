@@ -55,11 +55,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $plans = getActivePlans($conn);
 
 $users = $conn->query(
+    // LEFT JOIN on user_profiles, not INNER: the profile is optional, and a
+    // tenant who never filled one in must still appear in this list.
     "SELECT u.id, u.name, u.email, u.is_active, u.is_admin, u.status, u.created_at, u.last_login_at,
             p.name AS plan_name, p.id AS plan_id,
+            up.company_name,
             (SELECT COUNT(*) FROM wa_accounts wa WHERE wa.user_id = u.id) AS wa_count
      FROM users u
      LEFT JOIN plans p ON u.plan_id = p.id
+     LEFT JOIN user_profiles up ON up.user_id = u.id
      ORDER BY u.created_at DESC"
 )->fetch_all(MYSQLI_ASSOC);
 
@@ -97,7 +101,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <tr>
                     <td>
                         <div class="fw-500">
-                            <?= sanitize($u['name']) ?>
+                            <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$u['id'] ?>" class="text-decoration-none">
+                                <?= sanitize($u['company_name'] ?: $u['name']) ?>
+                            </a>
                             <?php if ($u['is_admin']): ?><span class="badge bg-dark ms-1">admin</span><?php endif; ?>
                         </div>
                         <div class="text-muted small"><?= sanitize($u['email']) ?></div>
