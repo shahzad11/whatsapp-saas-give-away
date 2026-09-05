@@ -7,7 +7,11 @@ require_once dirname(__DIR__) . '/includes/admin-init.php';
 $targetId = (int)($_GET['id'] ?? 0);
 
 $stmt = $conn->prepare(
-    "SELECT u.*, p.name AS plan_name, p.code AS plan_code, p.price_cents, p.billing_period
+    // p.currency is selected because formatPrice() displays a price in the
+    // currency it is denominated in; omitting it would fall back to the instance
+    // currency and mislabel a plan that differs.
+    "SELECT u.*, p.name AS plan_name, p.code AS plan_code, p.price_cents,
+            p.currency, p.billing_period
      FROM users u LEFT JOIN plans p ON u.plan_id = p.id
      WHERE u.id = ?"
 );

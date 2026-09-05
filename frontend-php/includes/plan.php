@@ -120,14 +120,26 @@ function formatLimit($limit) {
     return $limit === null ? 'Unlimited' : number_format($limit);
 }
 
-// No currency is hardcoded here. The symbol comes from the instance-wide
-// `currency` setting (PKR by default), so changing it in the admin area
-// re-renders every price without touching a template.
+// No currency is hardcoded here. A price is displayed in the currency it is
+// *denominated* in (`plans.currency`), falling back to the instance-wide
+// `currency` setting when the row does not say.
+//
+// The row wins deliberately. Reading the global setting unconditionally meant a
+// plan the seed had not converted — an admin-edited price still stored as USD
+// 7900 — rendered as "Rs. 79" once the instance currency was PKR: a $79 plan
+// shown as 79 rupees. Relabelling money is never safe; only converting it is,
+// and that needs a rate we do not have.
+//
+// Because a fresh install and the seed migration both leave every row in the
+// instance currency, changing that setting still re-renders every price, which
+// is the behaviour #10 asked for — it just cannot silently misstate a row that
+// legitimately differs.
 function formatPrice($plan) {
     $minor = (int)($plan['price_cents'] ?? 0);
     if ($minor === 0) return 'Free';
 
-    $amount = formatMoney($minor, appCurrency());
+    $currency = $plan['currency'] ?? null;
+    $amount = formatMoney($minor, $currency ?: appCurrency());
     if (($plan['billing_period'] ?? 'month') === 'none') return $amount;
 
     $period = ($plan['billing_period'] ?? 'month') === 'year' ? '/year' : '/month';
