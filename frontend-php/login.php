@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($email) || empty($password)) {
             $error = 'Please fill in all fields.';
         } elseif (isLoginBlocked($conn, $email)) {
-            $error = 'Too many failed attempts. Please try again in ' . LOGIN_LOCKOUT_MINUTES . ' minutes.';
+            $error = 'Too many failed attempts. Please try again in ' . loginLockoutMinutes($conn) . ' minutes.';
         } else {
             $stmt = $conn->prepare("SELECT id, name, email, password, is_active, status FROM users WHERE email = ?");
             $stmt->bind_param("s", $email);
@@ -82,7 +82,7 @@ require_once __DIR__ . '/includes/auth-header.php';
             <a href="<?= APP_URL ?>/forgot-password.php" class="small text-decoration-none">Forgot password?</a>
         </div>
         <button type="submit" class="btn btn-primary w-100 mb-3">Sign In</button>
-        <?php if (ALLOW_REGISTRATION): ?>
+        <?php if (allowRegistration($conn)): ?>
         <p class="text-center small text-muted mb-0">
             Don't have an account? <a href="<?= APP_URL ?>/register.php" class="text-decoration-none">Create one</a>
         </p>

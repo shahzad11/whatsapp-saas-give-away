@@ -5,7 +5,7 @@ requireGuest();
 // Signup is closed unless explicitly enabled for this environment. An open
 // registration form on a service that links people's WhatsApp accounts is not
 // something to leave on by accident.
-if (!ALLOW_REGISTRATION) {
+if (!allowRegistration($conn)) {
     flash('error', 'Registration is currently closed.');
     redirect(APP_URL . '/login.php');
 }
@@ -46,7 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 // Every new tenant starts on the default plan, so quota checks
                 // always have a plan to read.
-                $defaultPlan = getPlanByCode($conn, DEFAULT_PLAN_CODE);
+                $defaultPlan = getPlanByCode($conn, defaultPlanCode($conn));
                 $planId = $defaultPlan['id'] ?? null;
 
                 $stmt = $conn->prepare("INSERT INTO users (name, email, password, activation_token, is_active, plan_id) VALUES (?, ?, ?, ?, 0, ?)");

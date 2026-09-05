@@ -23,7 +23,7 @@ function getUserPlan(mysqli $conn, $userId) {
     // limits applied, so fall back to the configured default rather than to
     // "unlimited".
     if (!$plan) {
-        $plan = getPlanByCode($conn, DEFAULT_PLAN_CODE);
+        $plan = getPlanByCode($conn, defaultPlanCode($conn));
     }
 
     $cache[$userId] = $plan;
@@ -144,6 +144,55 @@ function formatPrice($plan) {
 
     $period = ($plan['billing_period'] ?? 'month') === 'year' ? '/year' : '/month';
     return $amount . $period;
+}
+
+// --- Feature flags ----------------------------------------------------------
+//
+// Stored as JSON in plans.features rather than as a column per flag: they
+// accrete (chatbot, BYO LLM key, transcription…) and each one should not cost a
+// migration. Absent or unparseable JSON reads as "no features", so a plan row
+// written before this existed is simply a plan with nothing switched on.
+
+function planFeatureDefinitions() {
+    return [
+        'chatbot'       => ['label' => 'AI chatbot',            'help' => 'Tenant may run an LLM chatbot on their WhatsApp accounts.'],
+        'llm_byok'      => ['label' => 'Bring your own LLM key', 'help' => 'Tenant may supply their own provider API key.'],
+        'media_send'    => ['label' => 'Send media',            'help' => 'Attachments, images, video and voice notes in the composer.'],
+        'csv_export'    => ['label' => 'CSV export',            'help' => 'Export contacts to CSV.'],
+    ];
+}
+
+function planFeatures($plan) {
+    $raw = $plan['features'] ?? null;
+    if ($raw === null || $raw === '') return [];
+    if (is_array($raw)) return $raw;
+
+    $decoded = json_decode((string)$raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function planHasFeature($plan, $key) {
+    $features = planFeatures($plan);
+    return !empty($features[$key]);
+}
+
+// Only known flags are persisted, so a crafted POST cannot inject arbitrary
+// keys into the JSON document.
+function encodePlanFeatures(array $submitted) {
+    $out = [];
+    foreach (array_keys(planFeatureDefinitions()) as $key) {
+        $out[$key] = !empty($submitted[$key]);
+    }
+    return json_encode($out);
+}
+
+function countTenantsOnPlan(mysqli $conn, $planId) {
+    $stmt = $conn->prepare("SELECT COUNT(*) AS c FROM users WHERE plan_id = ?");
+    $stmt->bind_param('i', $planId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return (int)($row['c'] ?? 0);
 }
 
 function assignPlan(mysqli $conn, $userId, $planId) {

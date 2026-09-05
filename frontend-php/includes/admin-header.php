@@ -35,8 +35,23 @@ $pageTitle = $pageTitle ?? 'Admin';
                 <a href="<?= APP_URL ?>/admin/index.php" class="nav-link-item <?= $currentPage === 'index' ? 'active' : '' ?>">
                     <i class="bi bi-speedometer2"></i><span>Overview</span>
                 </a>
-                <a href="<?= APP_URL ?>/admin/tenants.php" class="nav-link-item <?= $currentPage === 'tenants' ? 'active' : '' ?>">
+                <a href="<?= APP_URL ?>/admin/tenants.php" class="nav-link-item <?= in_array($currentPage, ['tenants', 'tenant'], true) ? 'active' : '' ?>">
                     <i class="bi bi-people"></i><span>Tenants</span>
+                </a>
+                <a href="<?= APP_URL ?>/admin/plans.php" class="nav-link-item <?= $currentPage === 'plans' ? 'active' : '' ?>">
+                    <i class="bi bi-box-seam"></i><span>Plans</span>
+                </a>
+                <a href="<?= APP_URL ?>/admin/payments.php" class="nav-link-item <?= $currentPage === 'payments' ? 'active' : '' ?>">
+                    <i class="bi bi-cash-coin"></i><span>Payments</span>
+                </a>
+            </div>
+            <div class="nav-section">
+                <span class="nav-section-title">Instance</span>
+                <a href="<?= APP_URL ?>/admin/settings.php" class="nav-link-item <?= $currentPage === 'settings' ? 'active' : '' ?>">
+                    <i class="bi bi-sliders"></i><span>Settings</span>
+                </a>
+                <a href="<?= APP_URL ?>/admin/system.php" class="nav-link-item <?= $currentPage === 'system' ? 'active' : '' ?>">
+                    <i class="bi bi-activity"></i><span>System &amp; Audit</span>
                 </a>
             </div>
             <div class="nav-section">

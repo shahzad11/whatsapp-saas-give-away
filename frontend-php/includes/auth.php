@@ -109,8 +109,9 @@ function recordLoginAttempt(mysqli $conn, $email, $success) {
 
 function isLoginBlocked(mysqli $conn, $email) {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-    $window = LOGIN_LOCKOUT_MINUTES;
-    $max = LOGIN_MAX_ATTEMPTS;
+    // Admin-configurable, falling back to the env constants.
+    $window = loginLockoutMinutes($conn);
+    $max = loginMaxAttempts($conn);
 
     $stmt = $conn->prepare(
         "SELECT

@@ -54,18 +54,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $plans = getActivePlans($conn);
 
-$users = $conn->query(
-    // LEFT JOIN on user_profiles, not INNER: the profile is optional, and a
-    // tenant who never filled one in must still appear in this list.
-    "SELECT u.id, u.name, u.email, u.is_active, u.is_admin, u.status, u.created_at, u.last_login_at,
-            p.name AS plan_name, p.id AS plan_id,
-            up.company_name,
-            (SELECT COUNT(*) FROM wa_accounts wa WHERE wa.user_id = u.id) AS wa_count
-     FROM users u
-     LEFT JOIN plans p ON u.plan_id = p.id
-     LEFT JOIN user_profiles up ON up.user_id = u.id
-     ORDER BY u.created_at DESC"
-)->fetch_all(MYSQLI_ASSOC);
+// --- Search / filter ---
+$q          = trim($_GET['q'] ?? '');
+$fStatus    = $_GET['status'] ?? '';
+$fPlan      = (int)($_GET['plan'] ?? 0);
+$fSince     = trim($_GET['since'] ?? '');
+$sort       = $_GET['sort'] ?? 'created_desc';
+
+// LEFT JOIN on user_profiles, not INNER: the profile is optional, and a tenant
+// who never filled one in must still appear in this list.
+$sql = "SELECT u.id, u.name, u.email, u.is_active, u.is_admin, u.status, u.created_at, u.last_login_at,
+               p.name AS plan_name, p.id AS plan_id,
+               up.company_name,
+               (SELECT COUNT(*) FROM wa_accounts wa WHERE wa.user_id = u.id) AS wa_count
+        FROM users u
+        LEFT JOIN plans p ON u.plan_id = p.id
+        LEFT JOIN user_profiles up ON up.user_id = u.id";
+
+$where = [];
+$types = '';
+$args = [];
+
+if ($q !== '') {
+    $where[] = '(u.name LIKE ? OR u.email LIKE ? OR up.company_name LIKE ?)';
+    $like = '%' . $q . '%';
+    $types .= 'sss';
+    array_push($args, $like, $like, $like);
+}
+// `unactivated` is not a `status` value — it is is_active = 0 — so it cannot be
+// folded into the same comparison.
+if ($fStatus === 'active' || $fStatus === 'suspended') {
+    $where[] = 'u.status = ? AND u.is_active = 1';
+    $types .= 's';
+    $args[] = $fStatus;
+} elseif ($fStatus === 'unactivated') {
+    $where[] = 'u.is_active = 0';
+}
+if ($fPlan > 0) {
+    $where[] = 'u.plan_id = ?';
+    $types .= 'i';
+    $args[] = $fPlan;
+}
+if ($fSince !== '' && DateTime::createFromFormat('Y-m-d', $fSince)) {
+    $where[] = 'u.created_at >= ?';
+    $types .= 's';
+    $args[] = $fSince . ' 00:00:00';
+}
+if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+
+// Whitelisted, never interpolated from the raw parameter.
+$sorts = [
+    'created_desc' => 'u.created_at DESC',
+    'created_asc'  => 'u.created_at ASC',
+    'name'         => 'u.name ASC',
+    'login_desc'   => 'u.last_login_at IS NULL, u.last_login_at DESC',
+    'wa_desc'      => 'wa_count DESC',
+];
+$sql .= ' ORDER BY ' . ($sorts[$sort] ?? $sorts['created_desc']);
+
+$stmt = $conn->prepare($sql);
+if ($types !== '') $stmt->bind_param($types, ...$args);
+$stmt->execute();
+$users = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
+
+$filtered = $q !== '' || $fStatus !== '' || $fPlan > 0 || $fSince !== '';
 
 $pageTitle = 'Tenants';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
@@ -79,10 +132,63 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <?php endif; ?>
 <?php endforeach; ?>
 
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label x-small text-muted mb-1">Search</label>
+                <input type="search" name="q" class="form-control form-control-sm"
+                       placeholder="Name, email or company" value="<?= sanitize($q) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label x-small text-muted mb-1">Status</label>
+                <select name="status" class="form-select form-select-sm">
+                    <option value="">Any</option>
+                    <?php foreach (['active' => 'Active', 'suspended' => 'Suspended', 'unactivated' => 'Unactivated'] as $v => $l): ?>
+                        <option value="<?= $v ?>" <?= $fStatus === $v ? 'selected' : '' ?>><?= $l ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label x-small text-muted mb-1">Plan</label>
+                <select name="plan" class="form-select form-select-sm">
+                    <option value="0">Any</option>
+                    <?php foreach ($plans as $p): ?>
+                        <option value="<?= (int)$p['id'] ?>" <?= $fPlan === (int)$p['id'] ? 'selected' : '' ?>><?= sanitize($p['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label x-small text-muted mb-1">Signed up after</label>
+                <input type="date" name="since" class="form-control form-control-sm" value="<?= sanitize($fSince) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label x-small text-muted mb-1">Sort</label>
+                <select name="sort" class="form-select form-select-sm">
+                    <?php foreach ([
+                        'created_desc' => 'Newest first', 'created_asc' => 'Oldest first',
+                        'name' => 'Name', 'login_desc' => 'Recent login', 'wa_desc' => 'Most accounts',
+                    ] as $v => $l): ?>
+                        <option value="<?= $v ?>" <?= $sort === $v ? 'selected' : '' ?>><?= $l ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-12 d-flex gap-2 mt-2">
+                <button class="btn btn-sm btn-primary">Apply</button>
+                <?php if ($filtered || $sort !== 'created_desc'): ?>
+                    <a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-link">Reset</a>
+                <?php endif; ?>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div class="card table-card">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span>All Tenants</span>
-        <span class="text-muted small"><?= number_format(count($users)) ?> total</span>
+        <span>Tenants</span>
+        <span class="text-muted small">
+            <?= number_format(count($users)) ?> <?= $filtered ? 'matching' : 'total' ?>
+        </span>
     </div>
     <div class="table-responsive">
         <table class="table align-middle">
@@ -97,6 +203,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </tr>
             </thead>
             <tbody>
+            <?php if (!$users): ?>
+                <tr><td colspan="6" class="text-muted small">No tenants match those filters.</td></tr>
+            <?php endif; ?>
             <?php foreach ($users as $u): ?>
                 <tr>
                     <td>

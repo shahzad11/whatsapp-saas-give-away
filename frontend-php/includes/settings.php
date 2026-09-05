@@ -19,6 +19,53 @@ function appSettingDefaults() {
     ];
 }
 
+// Settings that were environment variables first and are now admin-editable.
+//
+// They are NOT listed in appSettingDefaults(), deliberately: an absent row must
+// fall through to the env constant, which stays the deployment-level default.
+// Listing them here would mask the env value with a hardcoded one.
+//
+// These cannot be constants like ALLOW_REGISTRATION is, because config/app.php
+// runs before config/database.php — there is no connection to read at the point
+// the constants are defined. Hence accessor functions.
+
+// Reads one override. Returns null when there is no connection or no row, so
+// each caller can fall through to its env constant.
+function overrideSetting(?mysqli $conn, $key) {
+    $db = settingsConn($conn);
+    if (!$db) return null;
+    $value = appSetting($db, $key, null);
+    return ($value === null || $value === '') ? null : $value;
+}
+
+function allowRegistration(?mysqli $conn = null) {
+    $value = overrideSetting($conn, 'allow_registration');
+    // Fails closed: no connection, no row, or an unreadable table all land on
+    // the env value, which defaults to false. Open signup must never be the
+    // result of a database problem.
+    return $value === null ? ALLOW_REGISTRATION : $value === '1';
+}
+
+function defaultPlanCode(?mysqli $conn = null) {
+    return overrideSetting($conn, 'default_plan_code') ?? DEFAULT_PLAN_CODE;
+}
+
+function loginMaxAttempts(?mysqli $conn = null) {
+    $value = (int)overrideSetting($conn, 'login_max_attempts');
+    // 0 would disable throttling altogether, which is never what a blank field
+    // means — fall back to the configured default rather than to "unlimited".
+    return $value > 0 ? $value : LOGIN_MAX_ATTEMPTS;
+}
+
+function loginLockoutMinutes(?mysqli $conn = null) {
+    $value = (int)overrideSetting($conn, 'login_lockout_minutes');
+    return $value > 0 ? $value : LOGIN_LOCKOUT_MINUTES;
+}
+
+function paymentInstructions(?mysqli $conn = null) {
+    return (string)(overrideSetting($conn, 'payment_instructions') ?? '');
+}
+
 // One query per request, then served from memory. Called from price formatting,
 // which runs once per plan card, so it must not be per-call.
 function appSettings(mysqli $conn, $refresh = false) {
@@ -164,19 +211,63 @@ function isValidCurrency($code) {
 
 // --- Money ------------------------------------------------------------------
 
-// Symbol, minor-unit digits, and whether the symbol leads. Currencies not
-// listed still render correctly, just with the bare ISO code as the symbol.
+// Symbol, minor-unit digits, and whether the symbol leads.
+//
+// `decimals` is the ISO 4217 exponent and is NOT always 2. Getting it wrong
+// misstates a price by orders of magnitude, so the exceptions are explicit:
+//   0 — JPY, KRW, VND, CLP, ISK, UGX, RWF (no minor unit at all)
+//   3 — BHD, IQD, JOD, KWD, LYD, OMR, TND (thousandths: 1 KWD = 1000 fils)
+// A currency not listed still renders, just with the bare ISO code and an
+// assumed exponent of 2 — which is why anything unusual belongs in this table.
 function currencyFormats() {
     return [
-        'PKR' => ['symbol' => 'Rs.', 'decimals' => 2, 'prefix' => true],
-        'USD' => ['symbol' => '$',   'decimals' => 2, 'prefix' => true],
-        'EUR' => ['symbol' => '€',   'decimals' => 2, 'prefix' => true],
-        'GBP' => ['symbol' => '£',   'decimals' => 2, 'prefix' => true],
-        'AED' => ['symbol' => 'AED', 'decimals' => 2, 'prefix' => true],
-        'SAR' => ['symbol' => 'SAR', 'decimals' => 2, 'prefix' => true],
-        'INR' => ['symbol' => '₹',   'decimals' => 2, 'prefix' => true],
-        'JPY' => ['symbol' => '¥',   'decimals' => 0, 'prefix' => true],
+        // Primary markets
+        'PKR' => ['symbol' => 'Rs.', 'name' => 'Pakistani Rupee',      'decimals' => 2, 'prefix' => true],
+        'AED' => ['symbol' => 'AED', 'name' => 'UAE Dirham',           'decimals' => 2, 'prefix' => true],
+        'SAR' => ['symbol' => 'SAR', 'name' => 'Saudi Riyal',          'decimals' => 2, 'prefix' => true],
+        'QAR' => ['symbol' => 'QAR', 'name' => 'Qatari Riyal',         'decimals' => 2, 'prefix' => true],
+        'INR' => ['symbol' => '₹',   'name' => 'Indian Rupee',         'decimals' => 2, 'prefix' => true],
+        'BDT' => ['symbol' => 'Tk',  'name' => 'Bangladeshi Taka',     'decimals' => 2, 'prefix' => true],
+        'LKR' => ['symbol' => 'Rs',  'name' => 'Sri Lankan Rupee',     'decimals' => 2, 'prefix' => true],
+        // Majors
+        'USD' => ['symbol' => '$',   'name' => 'US Dollar',            'decimals' => 2, 'prefix' => true],
+        'EUR' => ['symbol' => '€',   'name' => 'Euro',                 'decimals' => 2, 'prefix' => true],
+        'GBP' => ['symbol' => '£',   'name' => 'Pound Sterling',       'decimals' => 2, 'prefix' => true],
+        'CAD' => ['symbol' => 'CA$', 'name' => 'Canadian Dollar',      'decimals' => 2, 'prefix' => true],
+        'AUD' => ['symbol' => 'A$',  'name' => 'Australian Dollar',    'decimals' => 2, 'prefix' => true],
+        'CHF' => ['symbol' => 'CHF', 'name' => 'Swiss Franc',          'decimals' => 2, 'prefix' => true],
+        'CNY' => ['symbol' => 'CN¥', 'name' => 'Chinese Yuan',         'decimals' => 2, 'prefix' => true],
+        'SGD' => ['symbol' => 'S$',  'name' => 'Singapore Dollar',     'decimals' => 2, 'prefix' => true],
+        'MYR' => ['symbol' => 'RM',  'name' => 'Malaysian Ringgit',    'decimals' => 2, 'prefix' => true],
+        'TRY' => ['symbol' => '₺',   'name' => 'Turkish Lira',         'decimals' => 2, 'prefix' => true],
+        'ZAR' => ['symbol' => 'R',   'name' => 'South African Rand',   'decimals' => 2, 'prefix' => true],
+        'NGN' => ['symbol' => '₦',   'name' => 'Nigerian Naira',       'decimals' => 2, 'prefix' => true],
+        'EGP' => ['symbol' => 'EGP', 'name' => 'Egyptian Pound',       'decimals' => 2, 'prefix' => true],
+        'IDR' => ['symbol' => 'Rp',  'name' => 'Indonesian Rupiah',    'decimals' => 2, 'prefix' => true],
+        'PHP' => ['symbol' => '₱',   'name' => 'Philippine Peso',      'decimals' => 2, 'prefix' => true],
+        'THB' => ['symbol' => '฿',   'name' => 'Thai Baht',            'decimals' => 2, 'prefix' => true],
+        'BRL' => ['symbol' => 'R$',  'name' => 'Brazilian Real',       'decimals' => 2, 'prefix' => true],
+        // Zero-decimal
+        'JPY' => ['symbol' => '¥',   'name' => 'Japanese Yen',         'decimals' => 0, 'prefix' => true],
+        'KRW' => ['symbol' => '₩',   'name' => 'South Korean Won',     'decimals' => 0, 'prefix' => true],
+        'VND' => ['symbol' => '₫',   'name' => 'Vietnamese Dong',      'decimals' => 0, 'prefix' => true],
+        // Three-decimal
+        'KWD' => ['symbol' => 'KWD', 'name' => 'Kuwaiti Dinar',        'decimals' => 3, 'prefix' => true],
+        'BHD' => ['symbol' => 'BHD', 'name' => 'Bahraini Dinar',       'decimals' => 3, 'prefix' => true],
+        'OMR' => ['symbol' => 'OMR', 'name' => 'Omani Rial',           'decimals' => 3, 'prefix' => true],
+        'JOD' => ['symbol' => 'JOD', 'name' => 'Jordanian Dinar',      'decimals' => 3, 'prefix' => true],
+        'TND' => ['symbol' => 'TND', 'name' => 'Tunisian Dinar',       'decimals' => 3, 'prefix' => true],
     ];
+}
+
+// Sorted "PKR — Pakistani Rupee" labels for the admin currency select.
+function currencyChoices() {
+    $out = [];
+    foreach (currencyFormats() as $code => $fmt) {
+        $out[$code] = $code . ' — ' . $fmt['name'];
+    }
+    asort($out, SORT_STRING);
+    return $out;
 }
 
 function currencyFormat($code) {

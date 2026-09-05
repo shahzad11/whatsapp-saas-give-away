@@ -52,6 +52,23 @@ UPDATE plans SET price_cents = 0,      currency = 'PKR' WHERE code = 'free'    A
 UPDATE plans SET price_cents = 150000, currency = 'PKR' WHERE code = 'starter' AND currency = 'USD' AND price_cents = 1900;
 UPDATE plans SET price_cents = 450000, currency = 'PKR' WHERE code = 'pro'     AND currency = 'USD' AND price_cents = 4900;
 
+-- Per-plan feature flags, e.g. {"chatbot": true, "llm_byok": false}.
+--
+-- MySQL has no `ADD COLUMN IF NOT EXISTS`, and this file re-runs on every
+-- container start, so a bare ALTER would fail the whole schema on the second
+-- boot. Guarded on information_schema and executed dynamically: on an existing
+-- database the statement becomes `DO 0`, a no-op.
+SET @add_features := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE plans ADD COLUMN features JSON DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'features'
+);
+PREPARE stmt_add_features FROM @add_features;
+EXECUTE stmt_add_features;
+DEALLOCATE PREPARE stmt_add_features;
+
 -- ---------------------------------------------------------------------------
 -- Tenants (one user == one tenant)
 -- ---------------------------------------------------------------------------
@@ -92,6 +109,36 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (plan_id) REFERENCES plans(id),
     INDEX idx_user_status (user_id, status)
+) ENGINE=InnoDB;
+
+-- Manually recorded payments. There is deliberately NO payment gateway: tenants
+-- pay out of band and an admin records it here.
+--
+-- `amount_minor` is minor units, like plans.price_cents (which is misnamed —
+-- it holds paisa for PKR, not cents). The currency is stored per payment
+-- because it records what was actually received; a later change to the instance
+-- currency must not rewrite history.
+CREATE TABLE IF NOT EXISTS payments (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    -- Which plan the payment was for. SET NULL rather than CASCADE: deleting a
+    -- plan must never erase the record of money received.
+    plan_id INT DEFAULT NULL,
+    amount_minor BIGINT NOT NULL,
+    currency CHAR(3) NOT NULL DEFAULT 'PKR',
+    period_start DATE DEFAULT NULL,
+    period_end DATE DEFAULT NULL,
+    method VARCHAR(40) DEFAULT NULL,
+    reference VARCHAR(120) DEFAULT NULL,
+    note VARCHAR(500) DEFAULT NULL,
+    created_by INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_user_time (user_id, created_at),
+    INDEX idx_period (period_end),
+    INDEX idx_created (created_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS user_settings (

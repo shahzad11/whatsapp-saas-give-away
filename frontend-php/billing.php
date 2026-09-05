@@ -25,6 +25,17 @@ $stmt->execute();
 $subscription = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
+$payments = getPayments($conn, $userId, 24);
+$instructions = paymentInstructions($conn);
+
+// The furthest date any logged payment covers.
+$paidUntil = null;
+foreach ($payments as $p) {
+    if ($p['period_end'] && ($paidUntil === null || $p['period_end'] > $paidUntil)) {
+        $paidUntil = $p['period_end'];
+    }
+}
+
 // A null limit is unlimited, which has no meaningful percentage.
 function usagePercent($used, $limit) {
     if ($limit === null || $limit <= 0) return 0;
@@ -84,6 +95,14 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                     <?php endif; ?>
                 </div>
+
+                <?php if ($paidUntil): ?>
+                    <hr>
+                    <div class="small">
+                        <div class="text-muted mb-1">Paid through</div>
+                        <div class="fw-500"><?= sanitize(date('M j, Y', strtotime($paidUntil))) ?></div>
+                    </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -116,6 +135,50 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
+<?php if ($instructions !== '' || $payments): ?>
+<div class="row g-4 mt-1">
+    <?php if ($instructions !== ''): ?>
+    <div class="col-lg-5" id="howToPay">
+        <div class="card h-100">
+            <div class="card-header">How to Pay</div>
+            <div class="card-body">
+                <?php // Admin-authored plain text. nl2br over an escaped string, never
+                      // raw HTML — an admin is trusted, but a stored-XSS foothold in a
+                      // field every tenant renders is not a risk worth taking. ?>
+                <div class="small text-muted"><?= nl2br(sanitize($instructions)) ?></div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($payments): ?>
+    <div class="col-lg-<?= $instructions !== '' ? '7' : '12' ?>">
+        <div class="card table-card h-100">
+            <div class="card-header">Payment History</div>
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead><tr><th>Date</th><th>Amount</th><th>Plan</th><th>Period</th><th>Method</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($payments as $p): ?>
+                        <tr>
+                            <td class="small text-muted"><?= sanitize(date('M j, Y', strtotime($p['created_at']))) ?></td>
+                            <td class="small fw-500"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
+                            <td class="small"><?= sanitize($p['plan_name'] ?? '—') ?></td>
+                            <td class="small text-muted">
+                                <?= $p['period_start'] ? sanitize(date('M j', strtotime($p['period_start']))) . ' – ' . sanitize(date('M j, Y', strtotime($p['period_end']))) : '—' ?>
+                            </td>
+                            <td class="small"><?= sanitize(paymentMethodLabel($p['method'])) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
+
 <h5 class="mt-5 mb-3">Available Plans</h5>
 <div class="row g-4">
     <?php foreach ($plans as $p): ?>
@@ -138,9 +201,12 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="mt-auto">
                     <?php if ($plan && $p['id'] == $plan['id']): ?>
                         <button class="btn btn-outline-secondary w-100" disabled>Current Plan</button>
+                    <?php elseif ($instructions !== ''): ?>
+                        <?php // Billing is manual by design — no gateway, so no checkout
+                              // button. Point at the admin's own instructions when they
+                              // exist, and fall back to email when they do not. ?>
+                        <a href="#howToPay" class="btn btn-primary w-100">See how to pay</a>
                     <?php else: ?>
-                        <!-- No payment provider is wired up yet, so this is a
-                             contact prompt rather than a fake checkout button. -->
                         <a href="mailto:<?= sanitize(MAIL_FROM) ?>?subject=<?= rawurlencode('Plan change request: ' . $p['name']) ?>"
                            class="btn btn-primary w-100">Contact us to switch</a>
                     <?php endif; ?>
