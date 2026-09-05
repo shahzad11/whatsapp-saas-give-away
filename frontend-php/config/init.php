@@ -23,6 +23,10 @@ require_once $basePath . '/includes/auth.php';
 require_once $basePath . '/includes/tenant.php';
 // Loaded before plan.php: price formatting reads the instance-wide currency.
 require_once $basePath . '/includes/settings.php';
+// crypto before mailer: the mailer decrypts the stored SMTP password.
+require_once $basePath . '/includes/crypto.php';
+require_once $basePath . '/includes/mailer.php';
+require_once $basePath . '/includes/mail-templates.php';
 require_once $basePath . '/includes/plan.php';
 require_once $basePath . '/includes/billing.php';
 require_once $basePath . '/includes/profile.php';

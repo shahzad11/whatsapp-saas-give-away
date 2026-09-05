@@ -59,15 +59,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     logAudit($conn, 'register', 'user', $newUserId, ['email' => $email]);
                     $activationLink = APP_URL . '/activate.php?token=' . $activationToken;
-                    $emailBody = "
-                        <h2>Welcome to " . APP_NAME . "!</h2>
-                        <p>Hi {$name},</p>
-                        <p>Click the link below to activate your account:</p>
-                        <p><a href='{$activationLink}'>{$activationLink}</a></p>
-                    ";
-                    sendEmail($email, 'Activate your account', $emailBody);
+                    [$html, $text] = mailActivation($name, $activationLink);
+                    $sent = sendEmail($email, 'Activate your account', $html, $text);
 
-                    flash('success', 'Account created! Please check your email to activate your account.');
+                    // The account exists either way — a mail failure must not
+                    // lose a signup. But do not tell someone to check an inbox
+                    // that will never receive anything.
+                    if ($sent) {
+                        flash('success', 'Account created! Please check your email to activate your account.');
+                    } else {
+                        error_log("Activation email could not be sent to {$email}");
+                        flash('error', 'Your account was created, but the activation email could not be sent. Please contact support.');
+                    }
                     redirect(APP_URL . '/login.php');
                 } else {
                     $error = 'Registration failed. Please try again.';

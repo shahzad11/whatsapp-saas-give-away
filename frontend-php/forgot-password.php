@@ -31,16 +31,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
 
                 $resetLink = APP_URL . '/reset-password.php?token=' . $resetToken;
-                $emailBody = "
-                    <h2>Password Reset</h2>
-                    <p>Hi {$user['name']},</p>
-                    <p>Click the link below to reset your password. This link expires in 1 hour.</p>
-                    <p><a href='{$resetLink}'>{$resetLink}</a></p>
-                    <p>If you didn't request this, ignore this email.</p>
-                ";
-                sendEmail($email, 'Reset your password', $emailBody);
+                [$html, $text] = mailPasswordReset($user['name'], $resetLink, 1);
+                if (!sendEmail($email, 'Reset your password', $html, $text)) {
+                    error_log("Password reset email could not be sent to {$email}");
+                }
             }
 
+            // Deliberately identical whether or not the address exists, and
+            // whether or not the send succeeded — anything else turns this form
+            // into an account-enumeration oracle.
             $success = 'If that email exists, we sent a reset link. Check your inbox.';
         }
     }

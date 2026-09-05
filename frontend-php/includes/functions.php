@@ -108,21 +108,17 @@ function sanitize($input) {
     return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
 }
 
-function sendEmail($to, $subject, $body) {
-    if (DEV_MODE) {
-        $logDir = dirname(__DIR__) . '/logs';
-        if (!is_dir($logDir)) {
-            mkdir($logDir, 0755, true);
-        }
-        $logFile = $logDir . '/emails.log';
-        $entry = "[" . date('Y-m-d H:i:s') . "] To: $to | Subject: $subject\n$body\n---\n";
-        file_put_contents($logFile, $entry, FILE_APPEND);
-        return true;
-    }
-
-    $headers = "From: " . MAIL_FROM_NAME . " <" . MAIL_FROM . ">\r\n";
-    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-    return mail($to, $subject, $body, $headers);
+// Delivers through the admin-configured SMTP server.
+//
+// This used to call mail(), which could never have worked: the frontend
+// container has no MTA, /usr/sbin/sendmail does not exist, and mail() returns
+// false. Every activation and password-reset email was silently dropped.
+//
+// Returns bool for the existing callers; use sendMailNow() directly when the
+// failure reason is needed (the admin test-send button does).
+function sendEmail($to, $subject, $body, $textBody = '') {
+    [$ok] = sendMailNow($to, $subject, $body, $textBody);
+    return $ok;
 }
 
 function timeAgo($datetime) {

@@ -50,6 +50,9 @@ $pageTitle = $pageTitle ?? 'Admin';
                 <a href="<?= APP_URL ?>/admin/settings.php" class="nav-link-item <?= $currentPage === 'settings' ? 'active' : '' ?>">
                     <i class="bi bi-sliders"></i><span>Settings</span>
                 </a>
+                <a href="<?= APP_URL ?>/admin/email.php" class="nav-link-item <?= $currentPage === 'email' ? 'active' : '' ?>">
+                    <i class="bi bi-envelope-at"></i><span>Email / SMTP</span>
+                </a>
                 <a href="<?= APP_URL ?>/admin/system.php" class="nav-link-item <?= $currentPage === 'system' ? 'active' : '' ?>">
                     <i class="bi bi-activity"></i><span>System &amp; Audit</span>
                 </a>

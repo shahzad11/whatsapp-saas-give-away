@@ -14,6 +14,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect(APP_URL . '/admin/payments.php');
     }
 
+    // Renewal reminders are a separate action on this page: the admin is
+    // already looking at who is lapsing, so this is where it belongs.
+    if (($_POST['action'] ?? '') === 'remind') {
+        $targetId = (int)($_POST['user_id'] ?? 0);
+        $sent = 0;
+        $failed = 0;
+        $instructions = paymentInstructions($conn);
+
+        foreach (lapsingSubscriptions($conn, 7) as $l) {
+            // A single-tenant reminder still goes through the same list, so a
+            // reminder can only ever be sent to someone who is actually lapsing.
+            if ($targetId > 0 && (int)$l['user_id'] !== $targetId) continue;
+
+            [$html, $text] = mailPlanExpiring(
+                $l['name'], $l['plan_name'], $l['current_period_end'],
+                $instructions, APP_URL . '/billing.php'
+            );
+            if (sendEmail($l['email'], 'Your ' . APP_NAME . ' plan is expiring', $html, $text)) {
+                $sent++;
+                logAudit($conn, 'admin.payment.reminder_sent', 'user', $l['user_id'], [
+                    'period_end' => $l['current_period_end'],
+                ]);
+            } else {
+                $failed++;
+            }
+        }
+
+        if ($sent === 0 && $failed === 0) {
+            flash('error', 'Nobody to remind — no paid period is lapsing.');
+        } elseif ($failed > 0) {
+            flash('error', "Sent {$sent}, failed {$failed}. Check Email / SMTP settings.");
+        } else {
+            flash('success', "Sent {$sent} renewal reminder(s).");
+        }
+        redirect(APP_URL . '/admin/payments.php');
+    }
+
     $userId = (int)($_POST['user_id'] ?? 0);
     $planId = (int)($_POST['plan_id'] ?? 0) ?: null;
     $currency = strtoupper(trim($_POST['currency'] ?? appCurrency($conn)));
@@ -145,7 +182,19 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
     <div class="col-lg-6">
         <div class="card h-100">
-            <div class="card-header">Needs Attention</div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Needs Attention</span>
+                <?php if ($lapsing): ?>
+                    <form method="POST" onsubmit="return confirm('Email a renewal reminder to all <?= count($lapsing) ?> tenant(s)?')">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="action" value="remind">
+                        <input type="hidden" name="user_id" value="0">
+                        <button class="btn btn-sm btn-outline-primary" <?= smtpConfigured($conn) ? '' : 'disabled title="Configure SMTP first"' ?>>
+                            <i class="bi bi-envelope me-1"></i>Remind all
+                        </button>
+                    </form>
+                <?php endif; ?>
+            </div>
             <div class="card-body">
                 <?php if (!$lapsing): ?>
                     <p class="text-muted small mb-0">No paid periods lapsing in the next 7 days.</p>
