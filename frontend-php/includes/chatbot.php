@@ -52,6 +52,26 @@ function chatbotDefaultConfig($userId) {
     ];
 }
 
+// The tenant's saved switches, with anything their plan does not include forced
+// off — one place rather than five.
+//
+// The prompt, the appointment context, the transcription step and the action
+// handler all read these switches. Gating them one by one meant every future
+// reader silently defaulted to "allowed", and worse, the prompt is built from
+// the same config: with only the *write* gated, the bot would still be told it
+// could offer a human, promise one to the customer, and then have the action
+// refused — which is a worse outcome than never offering.
+//
+// Normalising at the top of the reply path makes plan and behaviour agree
+// everywhere downstream. The individual checks further down are kept as defence
+// in depth, for callers that did not come through here.
+function chatbotEffectiveConfig(array $config, $plan) {
+    if (!planHasFeature($plan, 'appointments'))        $config['appointments_enabled'] = 0;
+    if (!planHasFeature($plan, 'handoff'))             $config['handoff_enabled'] = 0;
+    if (!planHasFeature($plan, 'voice_transcription')) $config['transcribe_audio'] = 0;
+    return $config;
+}
+
 function chatbotToneChoices() {
     return [
         'professional' => 'Professional',
@@ -568,7 +588,14 @@ function chatbotFetchMedia($sessionId, $messageId, $tenantId) {
 // Turns a voice note into text, if the admin enabled it, the tenant enabled it,
 // and a transcription model is configured. Any "no" is silent and simply means
 // the message has no text to answer.
-function chatbotTranscribeInbound(mysqli $conn, array $config, $sessionId, $messageId, $tenantId) {
+function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $sessionId, $messageId, $tenantId) {
+    // Three independent switches, all of which must be on: the plan's lever, the
+    // instance-wide admin toggle, and the tenant's own preference. The plan is
+    // checked first because it is the one that costs the platform money — a
+    // transcription is a second paid vendor call on top of the reply.
+    if (!planHasFeature(getUserPlan($conn, $userId), 'voice_transcription')) {
+        return [null, 'voice notes are not part of this plan'];
+    }
     if (empty($config['transcribe_audio']) || !llmAudioEnabled($conn)) return [null, 'audio disabled'];
 
     $modelId = llmTranscribeModelId($conn);
@@ -610,7 +637,11 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     $userId = (int)$account['user_id'];
     $tenantId = 't' . $userId;
-    $config = chatbotConfig($conn, $userId);
+    // The plan is read here and applied to the config rather than trusted from
+    // what the tenant last saved: a downgrade must bite on the very next
+    // message, not the next time they happen to open the settings page.
+    $plan = getUserPlan($conn, $userId);
+    $config = chatbotEffectiveConfig(chatbotConfig($conn, $userId), $plan);
 
     $log = function ($outcome, $extra = []) use ($conn, $userId, $account, $chatId) {
         chatbotLogEvent($conn, $userId, $outcome, $extra + [
@@ -638,7 +669,7 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     $mediaType = (string)($msg['mediaType'] ?? 'text');
 
     if ($text === '' && ($mediaType === 'voice' || $mediaType === 'audio')) {
-        [$transcript, $why] = chatbotTranscribeInbound($conn, $config, $sessionId, $messageId, $tenantId);
+        [$transcript, $why] = chatbotTranscribeInbound($conn, $userId, $config, $sessionId, $messageId, $tenantId);
         if ($transcript !== null && trim($transcript) !== '') {
             $text = trim($transcript);
         } else {
@@ -662,6 +693,12 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // 2. Did they just ask for one? Matched in PHP, not by the model: it costs
     //    nothing and it still works when the model is down — which is exactly
     //    when people ask for a human.
+    //
+    //    Plan-gated, via the effective config above — unlike check 1. That
+    //    asymmetry is deliberate: an *already open* handoff must keep silencing
+    //    the bot even if the plan has since lost the feature, or the bot would
+    //    start talking over a live agent mid-conversation. Losing the feature
+    //    stops new handoffs; it does not abandon a customer already waiting.
     $phrase = handoffPhraseMatch($config, $text);
     if ($phrase !== null) {
         return chatbotStartHandoff($conn, $userId, $tenantId, $config, [
@@ -678,6 +715,15 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // be paid for either.
     [$quotaOk, , $limit] = checkMessageQuota($conn, $userId);
     if (!$quotaOk) return $log('quota', ['detail' => 'limit ' . $limit]);
+
+    // The AI-reply allowance, checked separately and also before the vendor
+    // call, because this is the limit that protects a real per-token bill. An AI
+    // reply spends both allowances and the stricter one wins. Silent by design,
+    // like every other refusal here: the tenant sees the reason in their
+    // activity log, and the customer sees nothing rather than an apology for a
+    // limit they cannot do anything about.
+    [$replyQuotaOk, , $replyLimit] = checkChatbotReplyQuota($conn, $userId, $config);
+    if (!$replyQuotaOk) return $log('quota_replies', ['detail' => 'AI reply limit ' . $replyLimit]);
 
     $history = chatbotFetchHistory($sessionId, $chatId, $tenantId, (int)($config['history_messages'] ?? 10));
     $profile = getUserProfile($conn, $userId);
@@ -761,6 +807,11 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 // model has no clock, so a customer saying "tomorrow at 3" is otherwise
 // unanswerable.
 function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezone, $chatId = null) {
+    // The plan's lever comes before the tenant's switch. Returning null here is
+    // what keeps the bot honest: with no appointment context the prompt never
+    // mentions booking, so the model cannot offer a slot the platform would then
+    // have to refuse. Gating only the write would have let it promise and fail.
+    if (!planHasFeature(getUserPlan($conn, $userId), 'appointments')) return null;
     if (empty($config['appointments_enabled'])) return null;
 
     $services = apptServices($conn, $userId, true);
@@ -802,6 +853,17 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
     $timezone = $ctx['timezone'];
     $tz = new DateTimeZone($timezone);
     $services = apptServices($conn, $userId, true);
+    $plan = getUserPlan($conn, $userId);
+
+    // The last line of defence for both levers. The model should never have been
+    // able to emit these actions — no appointment context means no booking in the
+    // prompt, and the handoff action is only described when handover is on — but
+    // "the model should not" is not a control. A crafted or hallucinated action
+    // marker reaches exactly this switch, so the plan is checked where the write
+    // actually happens, not only where the prompt is built.
+    $isBooking = in_array($action['action'] ?? '', ['book', 'reschedule', 'cancel'], true);
+    if ($isBooking && !planHasFeature($plan, 'appointments')) return '';
+    if (($action['action'] ?? '') === 'handoff' && !planHasFeature($plan, 'handoff')) return '';
 
     $fmt = function ($utcString) use ($tz) {
         return (new DateTime($utcString, new DateTimeZone('UTC')))->setTimezone($tz)->format('D j M Y, H:i');
@@ -945,7 +1007,8 @@ function chatbotOutcomeLabel($outcome) {
         'handoff'              => 'Passed to a person',
         'skipped_hours'        => 'Outside active hours',
         'skipped_empty'        => 'Skipped — nothing to answer',
-        'quota'                => 'Blocked — monthly limit reached',
+        'quota'                => 'Blocked — monthly message limit reached',
+        'quota_replies'        => 'Blocked — monthly AI reply limit reached',
         'config_error'         => 'Not configured',
         'llm_error'            => 'Model error',
         'send_error'           => 'Could not send the reply',

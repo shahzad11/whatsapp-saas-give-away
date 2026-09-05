@@ -42,6 +42,19 @@ function apptSaveService(mysqli $conn, $userId, $name, $minutes, $description, $
         $stmt = $conn->prepare("UPDATE appointment_services SET name = ?, duration_minutes = ?, description = ? WHERE id = ? AND user_id = ?");
         $stmt->bind_param('sisii', $name, $minutes, $description, $id, $userId);
     } else {
+        // The plan's service cap applies to *creating* one, never to editing an
+        // existing one. A tenant who drops to a smaller plan is already over the
+        // limit through no action of their own; blocking edits too would leave
+        // them unable to correct their own data, which is a punishment rather
+        // than a limit. Existing services keep working — only growth stops.
+        [$serviceOk, $serviceUsed, $serviceLimit] = checkServiceQuota($conn, $userId);
+        if (!$serviceOk) {
+            return [false, $serviceLimit === 0
+                ? 'Your plan does not include bookable services.'
+                : 'Your plan allows ' . $serviceLimit . ' service'
+                  . ($serviceLimit === 1 ? '' : 's') . ' and you have ' . $serviceUsed . '.'];
+        }
+
         $stmt = $conn->prepare("INSERT INTO appointment_services (user_id, name, duration_minutes, description) VALUES (?, ?, ?, ?)");
         $stmt->bind_param('isis', $userId, $name, $minutes, $description);
     }

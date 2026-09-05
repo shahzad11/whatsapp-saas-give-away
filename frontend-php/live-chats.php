@@ -9,6 +9,8 @@ require_once __DIR__ . '/config/init.php';
 requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
+$plan = getUserPlan($conn, $userId);
+$hasHandoff = planHasFeature($plan, 'chatbot') && planHasFeature($plan, 'handoff');
 $config = chatbotConfig($conn, $userId);
 $tz = getUserTimezone($conn, $userId);
 
@@ -105,7 +107,19 @@ require_once __DIR__ . '/includes/header.php';
 <?php if ($msg = flash('success')): ?><div class="alert alert-success"><?= sanitize($msg) ?></div><?php endif; ?>
 <?php if ($msg = flash('error')): ?><div class="alert alert-danger"><?= sanitize($msg) ?></div><?php endif; ?>
 
-<?php if (empty($config['handoff_enabled'])): ?>
+<?php // The queue and its actions stay available even without the feature. A
+      // conversation already waiting for a person is a customer already waiting,
+      // and locking the page would strand them with no way to be answered or
+      // resolved. Losing the lever stops *new* handoffs arriving — the reply path
+      // is where that is enforced. ?>
+<?php if (!$hasHandoff): ?>
+    <div class="alert alert-warning">
+        <i class="bi bi-lock me-1"></i>
+        Human handover is not part of your plan, so no new conversations will arrive here.
+        Anything already waiting is still listed below and can be handled and resolved.
+        <a href="<?= APP_URL ?>/billing.php">See plans</a>.
+    </div>
+<?php elseif (empty($config['handoff_enabled'])): ?>
     <div class="alert alert-info">
         <i class="bi bi-info-circle me-1"></i>
         Handover to a person is switched off, so nothing new will appear here.

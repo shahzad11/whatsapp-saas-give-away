@@ -11,7 +11,12 @@ $userId = (int)$_SESSION['user_id'];
 $plan = getUserPlan($conn, $userId);
 $hasChatbot = planHasFeature($plan, 'chatbot');
 $canByo = llmAllowByoKeys($conn) && planHasFeature($plan, 'llm_byok');
-$audioAvailable = llmAudioEnabled($conn) && llmTranscribeModelId($conn);
+// Each sub-feature is its own plan lever now. Voice notes need all three to line
+// up: the plan, the instance-wide admin toggle, and a configured model.
+$canAppointments = planHasFeature($plan, 'appointments');
+$canHandoff = planHasFeature($plan, 'handoff');
+$audioAvailable = planHasFeature($plan, 'voice_transcription')
+    && llmAudioEnabled($conn) && llmTranscribeModelId($conn);
 
 $config = chatbotConfig($conn, $userId);
 $availableModels = llmModelsForPlan($conn, (int)$plan['id']);
@@ -82,6 +87,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     if (!$audioAvailable) {
         $input['transcribe_audio'] = 0;
     }
+    // Same treatment for the two new levers: a crafted POST cannot switch on a
+    // capability the plan withholds. Silently dropped rather than rejected, so a
+    // tenant saving the rest of the form is not blocked by a field they cannot
+    // even see.
+    if (!$canAppointments) {
+        $input['appointments_enabled'] = 0;
+    }
+    if (!$canHandoff) {
+        $input['handoff_enabled'] = 0;
+    }
 
     // Turning the bot on without something to answer with would produce a
     // silent bot and a confused tenant.
@@ -121,6 +136,12 @@ $hoursByDay = [];
 foreach ($availability as $w) $hoursByDay[(int)$w['weekday']][] = $w;
 $events = $hasChatbot ? chatbotRecentEvents($conn, $userId, 15) : [];
 $repliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
+// Reported through the same helper the reply path uses, so the number a tenant
+// reads here cannot disagree with the one that actually stops the bot — passing
+// $config is what makes it account for a tenant on their own key.
+[$replyQuotaOk, , $replyLimit] = checkChatbotReplyQuota($conn, $userId, $config);
+$replyQuotaExhausted = !$replyQuotaOk;
+$usingOwnKey = !empty($config['byo_provider_code']) && !empty($config['byo_api_key_encrypted']) && $canByo;
 $tz = getUserTimezone($conn, $userId);
 
 $pageTitle = 'Chatbot';
@@ -323,9 +344,18 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <div class="tab-pane fade p-3" id="tab-appointments">
+                    <?php if (!$canAppointments): ?>
+                        <div class="alert alert-warning small">
+                            <i class="bi bi-lock me-1"></i>
+                            Appointment booking is not part of your plan. The settings below are
+                            disabled, and the bot will not offer to book anything.
+                            <a href="<?= APP_URL ?>/billing.php">See plans</a>.
+                        </div>
+                    <?php endif; ?>
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" name="appointments_enabled" value="1"
-                               id="appointments_enabled" <?= !empty($config['appointments_enabled']) ? 'checked' : '' ?>>
+                               id="appointments_enabled" <?= !empty($config['appointments_enabled']) ? 'checked' : '' ?>
+                               <?= $canAppointments ? '' : 'disabled' ?>>
                         <label class="form-check-label fw-500" for="appointments_enabled">
                             Let customers book appointments in the chat
                         </label>
@@ -372,9 +402,19 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
 
                 <div class="tab-pane fade p-3" id="tab-handoff">
+                    <?php if (!$canHandoff): ?>
+                        <div class="alert alert-warning small">
+                            <i class="bi bi-lock me-1"></i>
+                            Human handover is not part of your plan. The settings below are disabled
+                            and no new conversations will reach
+                            <a href="<?= APP_URL ?>/live-chats.php">Live chats</a>.
+                            <a href="<?= APP_URL ?>/billing.php">See plans</a>.
+                        </div>
+                    <?php endif; ?>
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" name="handoff_enabled" value="1"
-                               id="handoff_enabled" <?= !empty($config['handoff_enabled']) ? 'checked' : '' ?>>
+                               id="handoff_enabled" <?= !empty($config['handoff_enabled']) ? 'checked' : '' ?>
+                               <?= $canHandoff ? '' : 'disabled' ?>>
                         <label class="form-check-label fw-500" for="handoff_enabled">
                             Let customers reach a person
                         </label>
@@ -553,10 +593,33 @@ require_once __DIR__ . '/includes/header.php';
             <div class="card-body">
                 <div class="d-flex justify-content-between">
                     <span class="text-muted small">AI replies sent</span>
-                    <span class="fw-600"><?= number_format($repliesThisMonth) ?></span>
+                    <span class="fw-600">
+                        <?= number_format($repliesThisMonth) ?><?php if ($replyLimit !== null): ?>
+                            <span class="text-muted fw-normal">/ <?= number_format($replyLimit) ?></span>
+                        <?php endif; ?>
+                    </span>
                 </div>
+                <?php if ($replyLimit !== null): ?>
+                    <?php $pct = $replyLimit > 0 ? min(100, (int)round($repliesThisMonth / $replyLimit * 100)) : 100; ?>
+                    <div class="progress mt-2" style="height:6px;">
+                        <div class="progress-bar bg-<?= $pct >= 100 ? 'danger' : ($pct >= 80 ? 'warning' : 'primary') ?>"
+                             style="width: <?= $pct ?>%"></div>
+                    </div>
+                    <?php if ($replyQuotaExhausted): ?>
+                        <div class="form-text text-danger">
+                            You have used your AI replies for this month. The bot has stopped answering
+                            and will resume next month — or <a href="<?= APP_URL ?>/billing.php">upgrade</a>.
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
                 <div class="form-text">
-                    Each AI reply is a message and counts towards your monthly message limit.
+                    <?php // Two allowances, and both apply. Saying so here is the only place a
+                          // tenant can see why the bot stopped while messages remain. ?>
+                    Each AI reply also counts as a message, so it uses your monthly message
+                    allowance as well<?= $replyLimit === null ? '' : ' — whichever runs out first stops the bot' ?>.
+                    <?php if ($usingOwnKey): ?>
+                        Replies on your own API key are not counted against a plan limit.
+                    <?php endif; ?>
                 </div>
             </div>
         </div>

@@ -131,6 +131,54 @@ function checkMessageQuota(mysqli $conn, $userId) {
     return [$used < $limit, $used, $limit];
 }
 
+// AI replies, metered separately from messages.
+//
+// An AI reply is also a message, so it consumes both this and the message quota,
+// and the stricter of the two wins. They are separate because they cost
+// different things: a message costs nothing but WhatsApp goodwill, while a reply
+// costs real money per token at a vendor. Without this, "how much AI is included"
+// could not be priced apart from "how many messages are included".
+//
+// A tenant on their own key (`llm_byok`) is billed by the vendor directly, so
+// this limit is skipped for them — capping usage the platform is not paying for
+// would be arbitrary. The BYO branch is authoritative in chatbotResolveModel(),
+// so the condition here matches the one that actually decides whose key is used.
+function checkChatbotReplyQuota(mysqli $conn, $userId, array $config = null) {
+    $plan = getUserPlan($conn, $userId);
+    $used = usageCount($conn, $userId, 'chatbot_replies');
+
+    if ($config !== null
+        && !empty($config['byo_provider_code'])
+        && !empty($config['byo_api_key_encrypted'])
+        && planHasFeature($plan, 'llm_byok')) {
+        return [true, $used, null];
+    }
+
+    $limit = planLimit($plan, 'max_chatbot_replies');
+    if ($limit === null) return [true, $used, null];
+    return [$used < $limit, $used, $limit];
+}
+
+// Bookable services. Counted live rather than metered per month: this is a
+// "how many can exist" limit, not a "how many per period" one.
+function checkServiceQuota(mysqli $conn, $userId) {
+    $plan = getUserPlan($conn, $userId);
+    $limit = planLimit($plan, 'max_services');
+    $used = countServices($conn, $userId);
+
+    if ($limit === null) return [true, $used, null];
+    return [$used < $limit, $used, $limit];
+}
+
+function countServices(mysqli $conn, $userId) {
+    $stmt = $conn->prepare("SELECT COUNT(*) AS c FROM appointment_services WHERE user_id = ?");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return (int)($row['c'] ?? 0);
+}
+
 function formatLimit($limit) {
     return $limit === null ? 'Unlimited' : number_format($limit);
 }
@@ -168,12 +216,19 @@ function formatPrice($plan) {
 // migration. Absent or unparseable JSON reads as "no features", so a plan row
 // written before this existed is simply a plan with nothing switched on.
 
+// The three chatbot sub-features are listed after `chatbot` because they depend
+// on it: with `chatbot` off, none of them is reachable regardless of its own
+// value. That dependency is enforced in code, not just implied by the order —
+// see planHasFeature()'s callers in the reply path.
 function planFeatureDefinitions() {
     return [
-        'chatbot'       => ['label' => 'AI chatbot',            'help' => 'Tenant may run an LLM chatbot on their WhatsApp accounts.'],
-        'llm_byok'      => ['label' => 'Bring your own LLM key', 'help' => 'Tenant may supply their own provider API key.'],
-        'media_send'    => ['label' => 'Send media',            'help' => 'Attachments, images, video and voice notes in the composer.'],
-        'csv_export'    => ['label' => 'CSV export',            'help' => 'Export contacts to CSV.'],
+        'chatbot'             => ['label' => 'AI chatbot',              'help' => 'Tenant may run an LLM chatbot on their WhatsApp accounts.'],
+        'llm_byok'            => ['label' => 'Bring your own LLM key',  'help' => 'Tenant may supply their own provider API key.'],
+        'appointments'        => ['label' => 'Appointment booking',     'help' => 'Customers may book, reschedule and cancel in the chat. Needs the AI chatbot.'],
+        'handoff'             => ['label' => 'Human handover',          'help' => 'Customers may reach a person, and Live chats is available. Needs the AI chatbot.'],
+        'voice_transcription' => ['label' => 'Voice note understanding', 'help' => 'Incoming voice notes are transcribed, then answered. Needs the AI chatbot and a transcription model.'],
+        'media_send'          => ['label' => 'Send media',              'help' => 'Attachments, images, video and voice notes in the composer.'],
+        'csv_export'          => ['label' => 'CSV export',              'help' => 'Export contacts to CSV.'],
     ];
 }
 

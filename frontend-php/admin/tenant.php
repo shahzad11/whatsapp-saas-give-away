@@ -42,6 +42,11 @@ $usage = [
     'WhatsApp Accounts' => [countWaAccounts($conn, $targetId), planLimit($plan, 'max_wa_accounts')],
     'Contacts'          => [countContacts($conn, $targetId), planLimit($plan, 'max_contacts')],
     'Messages Sent'     => [usageCount($conn, $targetId, 'messages_sent'), planLimit($plan, 'max_messages_per_month')],
+    // Shown unconditionally here, unlike on the tenant's own billing page: an
+    // admin looking at a support ticket needs to see a zero-of-zero allowance,
+    // because "their plan has no AI replies" is frequently the answer.
+    'AI Replies'        => [usageCount($conn, $targetId, 'chatbot_replies'), planLimit($plan, 'max_chatbot_replies')],
+    'Bookable Services' => [countServices($conn, $targetId), planLimit($plan, 'max_services')],
 ];
 
 // Recent activity for this tenant. Actions only — never content.

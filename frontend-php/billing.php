@@ -17,6 +17,15 @@ $accountsLimit = planLimit($plan, 'max_wa_accounts');
 $contactsLimit = planLimit($plan, 'max_contacts');
 $messagesLimit = planLimit($plan, 'max_messages_per_month');
 
+// The two new metered levers. AI replies are the one worth watching: they are the
+// only usage that costs per token, and they are bounded separately from messages.
+$hasChatbot = planHasFeature($plan, 'chatbot');
+$hasAppointments = $hasChatbot && planHasFeature($plan, 'appointments');
+$repliesUsed = usageCount($conn, $userId, 'chatbot_replies');
+$repliesLimit = planLimit($plan, 'max_chatbot_replies');
+$servicesUsed = countServices($conn, $userId);
+$servicesLimit = planLimit($plan, 'max_services');
+
 $stmt = $conn->prepare(
     "SELECT status, current_period_end FROM subscriptions
      WHERE user_id = ? ORDER BY id DESC LIMIT 1"
@@ -122,6 +131,15 @@ require_once __DIR__ . '/includes/header.php';
                     ['Contacts',          $contactsUsed, $contactsLimit],
                     ['Messages Sent',     $messagesUsed, $messagesLimit],
                 ];
+                // Only shown to tenants whose plan includes the chatbot. On a plan
+                // without it the meter would always read 0 of 0, which invites the
+                // question "why is this here" rather than answering one.
+                if ($hasChatbot) {
+                    $meters[] = ['AI Replies', $repliesUsed, $repliesLimit];
+                }
+                if ($hasAppointments) {
+                    $meters[] = ['Bookable Services', $servicesUsed, $servicesLimit];
+                }
                 foreach ($meters as [$label, $used, $limit]):
                     $pct = usagePercent($used, $limit);
                 ?>
@@ -204,6 +222,23 @@ require_once __DIR__ . '/includes/header.php';
                     <li><i class="bi bi-check2 text-success me-2"></i><?= sanitize(formatLimit(planLimit($p, 'max_wa_accounts'))) ?> WhatsApp account(s)</li>
                     <li><i class="bi bi-check2 text-success me-2"></i><?= sanitize(formatLimit(planLimit($p, 'max_contacts'))) ?> contacts</li>
                     <li><i class="bi bi-check2 text-success me-2"></i><?= sanitize(formatLimit(planLimit($p, 'max_messages_per_month'))) ?> messages / month</li>
+                    <?php // Only the AI-reply allowance is listed as a limit, and only when
+                          // the plan can actually use it: an allowance on a plan with no
+                          // chatbot is noise. Services are left out — a per-plan service
+                          // count is not what anyone chooses a plan on. ?>
+                    <?php if (planHasFeature($p, 'chatbot')): ?>
+                        <li><i class="bi bi-check2 text-success me-2"></i><?= sanitize(formatLimit(planLimit($p, 'max_chatbot_replies'))) ?> AI replies / month</li>
+                    <?php endif; ?>
+                    <?php // Features, drawn from the same definition map the admin edits, so a
+                          // new lever appears here without touching this template. Withheld
+                          // ones are shown greyed rather than omitted: "what am I missing" is
+                          // the question this card exists to answer. ?>
+                    <?php foreach (planFeatureDefinitions() as $fKey => $fDef):
+                        $on = planHasFeature($p, $fKey); ?>
+                        <li class="<?= $on ? '' : 'text-muted' ?>">
+                            <i class="bi <?= $on ? 'bi-check2 text-success' : 'bi-dash text-muted' ?> me-2"></i><?= sanitize($fDef['label']) ?>
+                        </li>
+                    <?php endforeach; ?>
                 </ul>
                 <div class="mt-auto">
                     <?php if ($plan && $p['id'] == $plan['id']): ?>

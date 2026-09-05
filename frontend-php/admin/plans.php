@@ -99,35 +99,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $maxAccounts = parseLimit($_POST['max_wa_accounts'] ?? '', 'max_wa_accounts', $errors);
         $maxContacts = parseLimit($_POST['max_contacts'] ?? '', 'max_contacts', $errors);
         $maxMessages = parseLimit($_POST['max_messages_per_month'] ?? '', 'max_messages_per_month', $errors);
+        $maxReplies  = parseLimit($_POST['max_chatbot_replies'] ?? '', 'max_chatbot_replies', $errors);
+        $maxServices = parseLimit($_POST['max_services'] ?? '', 'max_services', $errors);
 
         $features = encodePlanFeatures($_POST['features'] ?? []);
 
         if (!$errors) {
+            // Types derived from the values rather than hand-written. This
+            // statement now binds 14 (or 15) parameters, which is exactly the
+            // length at which a positional string stops being reviewable — the
+            // chatbot config upsert shipped a 27-character string for 26
+            // variables and 500'd on every save. A NULL limit binds as 's',
+            // which is correct: MySQL stores NULL regardless of declared type,
+            // and NULL is how "unlimited" is represented.
+            $params = [
+                $code, $name, $description, $priceMinor, $currency, $period,
+                $maxAccounts, $maxContacts, $maxMessages, $maxReplies, $maxServices,
+                $features, $isActive, $sortOrder,
+            ];
+
             if ($isNew) {
                 $stmt = $conn->prepare(
                     "INSERT INTO plans (code, name, description, price_cents, currency, billing_period,
                                         max_wa_accounts, max_contacts, max_messages_per_month,
+                                        max_chatbot_replies, max_services,
                                         features, is_active, sort_order)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-                $stmt->bind_param(
-                    'sssissiiisii',
-                    $code, $name, $description, $priceMinor, $currency, $period,
-                    $maxAccounts, $maxContacts, $maxMessages, $features, $isActive, $sortOrder
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 );
             } else {
                 $stmt = $conn->prepare(
                     "UPDATE plans SET code = ?, name = ?, description = ?, price_cents = ?, currency = ?,
                                       billing_period = ?, max_wa_accounts = ?, max_contacts = ?,
-                                      max_messages_per_month = ?, features = ?, is_active = ?, sort_order = ?
+                                      max_messages_per_month = ?, max_chatbot_replies = ?,
+                                      max_services = ?, features = ?, is_active = ?, sort_order = ?
                      WHERE id = ?"
                 );
-                $stmt->bind_param(
-                    'sssissiiisiii',
-                    $code, $name, $description, $priceMinor, $currency, $period,
-                    $maxAccounts, $maxContacts, $maxMessages, $features, $isActive, $sortOrder, $planId
-                );
+                $params[] = $planId;
             }
+
+            $types = '';
+            foreach ($params as $p) $types .= is_int($p) ? 'i' : 's';
+            $stmt->bind_param($types, ...$params);
             $stmt->execute();
             $savedId = $isNew ? $conn->insert_id : $planId;
             $stmt->close();
@@ -144,7 +156,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'id' => $planId, 'code' => $code, 'name' => $name, 'description' => $description,
             'price_cents' => $priceMinor, 'currency' => $currency, 'billing_period' => $period,
             'max_wa_accounts' => $maxAccounts, 'max_contacts' => $maxContacts,
-            'max_messages_per_month' => $maxMessages,
+            'max_messages_per_month' => $maxMessages, 'max_chatbot_replies' => $maxReplies,
+            'max_services' => $maxServices,
             'features' => $features, 'is_active' => $isActive, 'sort_order' => $sortOrder,
         ];
         flash('error', 'Please correct the highlighted fields.');
@@ -205,6 +218,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <thead>
                 <tr>
                     <th>Plan</th><th>Price</th><th>WA</th><th>Contacts</th><th>Messages</th>
+                    <th title="AI replies per month">Replies</th><th title="Bookable services">Services</th>
                     <th>Features</th><th>Tenants</th><th>Status</th><th></th>
                 </tr>
             </thead>
@@ -224,6 +238,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <td class="small"><?= sanitize(formatLimit(planLimit($p, 'max_wa_accounts'))) ?></td>
                     <td class="small"><?= sanitize(formatLimit(planLimit($p, 'max_contacts'))) ?></td>
                     <td class="small"><?= sanitize(formatLimit(planLimit($p, 'max_messages_per_month'))) ?></td>
+                    <td class="small"><?= sanitize(formatLimit(planLimit($p, 'max_chatbot_replies'))) ?></td>
+                    <td class="small"><?= sanitize(formatLimit(planLimit($p, 'max_services'))) ?></td>
                     <td>
                         <?php $on = array_keys(array_filter(planFeatures($p))); ?>
                         <?php if (!$on): ?><span class="text-muted x-small">—</span><?php endif; ?>
@@ -337,6 +353,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     'max_wa_accounts' => 'WhatsApp accounts',
                     'max_contacts' => 'Contacts',
                     'max_messages_per_month' => 'Messages / month',
+                    'max_chatbot_replies' => 'AI replies / month',
+                    'max_services' => 'Bookable services',
                 ];
                 foreach ($limits as $field => $label):
                     $val = $editing[$field] ?? null;

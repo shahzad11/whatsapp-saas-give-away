@@ -10,6 +10,9 @@ requireLogin();
 $userId = (int)$_SESSION['user_id'];
 $plan = getUserPlan($conn, $userId);
 $hasChatbot = planHasFeature($plan, 'chatbot');
+// Booking over WhatsApp needs both: the chatbot is what talks to the customer,
+// and `appointments` is the lever for the booking capability itself.
+$hasAppointments = $hasChatbot && planHasFeature($plan, 'appointments');
 $tz = getUserTimezone($conn, $userId);
 $config = chatbotConfig($conn, $userId);
 
@@ -142,14 +145,21 @@ require_once __DIR__ . '/includes/header.php';
     <?php endforeach; ?>
 </div>
 
-<?php if (!$hasChatbot || empty($config['appointments_enabled'])): ?>
+<?php // The page itself is never withheld. Appointments already booked are real
+      // commitments to real customers, so a tenant must always be able to see and
+      // manage them — and add one by hand — even on a plan that can no longer take
+      // new bookings over WhatsApp. Only the automatic intake is gated. ?>
+<?php if (!$hasAppointments || empty($config['appointments_enabled'])): ?>
     <div class="alert alert-info">
         <i class="bi bi-info-circle me-1"></i>
         WhatsApp booking is switched off, so nothing new will arrive here automatically.
-        <?php if ($hasChatbot): ?>
-            Turn it on under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Appointments</a>.
-        <?php else: ?>
+        <?php if (!$hasChatbot): ?>
             It needs a plan that includes the AI chatbot.
+        <?php elseif (!planHasFeature($plan, 'appointments')): ?>
+            Appointment booking is not part of your plan —
+            <a href="<?= APP_URL ?>/billing.php">see plans</a>.
+        <?php else: ?>
+            Turn it on under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Appointments</a>.
         <?php endif; ?>
         You can still add appointments by hand below.
     </div>

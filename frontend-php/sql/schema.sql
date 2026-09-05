@@ -69,6 +69,36 @@ PREPARE stmt_add_features FROM @add_features;
 EXECUTE stmt_add_features;
 DEALLOCATE PREPARE stmt_add_features;
 
+-- Two more metered limits, guarded the same way. Both default NULL = unlimited,
+-- which is what makes adding them a no-op for an existing deployment: a tenant
+-- cannot lose capacity they already had just because the column now exists. The
+-- admin sets real numbers in the plan editor.
+--
+-- max_chatbot_replies is the important one. An AI reply costs money per token,
+-- and until now it was bounded only by the shared max_messages_per_month, so
+-- there was no way to sell "the chatbot" separately from "messages".
+SET @add_reply_limit := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE plans ADD COLUMN max_chatbot_replies INT DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_chatbot_replies'
+);
+PREPARE stmt_add_reply_limit FROM @add_reply_limit;
+EXECUTE stmt_add_reply_limit;
+DEALLOCATE PREPARE stmt_add_reply_limit;
+
+SET @add_service_limit := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE plans ADD COLUMN max_services INT DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_services'
+);
+PREPARE stmt_add_service_limit FROM @add_service_limit;
+EXECUTE stmt_add_service_limit;
+DEALLOCATE PREPARE stmt_add_service_limit;
+
 -- ---------------------------------------------------------------------------
 -- Tenants (one user == one tenant)
 -- ---------------------------------------------------------------------------
@@ -215,11 +245,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 -- A row that has never had a document gets the full intended ladder. Restricted
 -- to NULL so an admin's existing choices are never overwritten.
-UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": false, "csv_export": false}'
+UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": false, "csv_export": false,
+                              "appointments": false, "handoff": false, "voice_transcription": false}'
  WHERE code = 'free'    AND features IS NULL;
-UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": true,  "csv_export": true}'
+UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": true,  "csv_export": true,
+                              "appointments": false, "handoff": false, "voice_transcription": false}'
  WHERE code = 'starter' AND features IS NULL;
-UPDATE plans SET features = '{"chatbot": true,  "llm_byok": true,  "media_send": true,  "csv_export": true}'
+UPDATE plans SET features = '{"chatbot": true,  "llm_byok": true,  "media_send": true,  "csv_export": true,
+                              "appointments": true,  "handoff": true,  "voice_transcription": true}'
  WHERE code = 'pro'     AND features IS NULL;
 
 -- Deployments that already have a document keep every deliberate choice; only
@@ -233,6 +266,27 @@ UPDATE plans
    AND NOT EXISTS (SELECT 1 FROM app_settings WHERE setting_key = 'migrated_plan_flags_v1');
 
 INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('migrated_plan_flags_v1', '1');
+
+-- appointments / handoff / voice_transcription become plan levers of their own.
+--
+-- Each is seeded from the plan's existing `chatbot` value, which is exactly
+-- behaviour-preserving: all three are chatbot sub-features and, before this,
+-- every one of them was reachable precisely when `chatbot` was on. Booking was
+-- gated by appointments.php's `chatbot` check; handoff and transcription are only
+-- reachable from the reply path, which the same flag guards. Defaulting them to
+-- false instead would have taken working features away from the top tier — which
+-- is the mistake media_send/csv_export nearly caused above.
+--
+-- Marker-guarded and JSON_SET-if-absent, so a plan an admin has since edited
+-- keeps that choice on the next boot.
+UPDATE plans
+   SET features = JSON_SET(COALESCE(features, JSON_OBJECT()),
+                           '$.appointments',        COALESCE(JSON_EXTRACT(features, '$.chatbot'), CAST('false' AS JSON)),
+                           '$.handoff',             COALESCE(JSON_EXTRACT(features, '$.chatbot'), CAST('false' AS JSON)),
+                           '$.voice_transcription', COALESCE(JSON_EXTRACT(features, '$.chatbot'), CAST('false' AS JSON)))
+ WHERE NOT EXISTS (SELECT 1 FROM app_settings WHERE setting_key = 'migrated_plan_flags_v2');
+
+INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('migrated_plan_flags_v2', '1');
 
 -- Metered usage, bucketed per calendar month so quotas can reset.
 CREATE TABLE IF NOT EXISTS usage_counters (

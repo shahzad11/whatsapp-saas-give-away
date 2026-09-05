@@ -41,6 +41,16 @@ foreach ($due as $row) {
 
     $userId = (int)$row['user_id'];
 
+    // Deliberately *not* gated on the `appointments` plan feature.
+    //
+    // A queued reminder belongs to an appointment that was already accepted — a
+    // real commitment to a real customer who is expecting to be reminded.
+    // Dropping it because the tenant's plan changed in the meantime would punish
+    // the customer for a billing decision they know nothing about. Losing the
+    // lever stops *new* bookings being taken; it does not silently abandon the
+    // ones already on the calendar. The same reasoning keeps an already-open
+    // handoff silencing the bot in chatbotHandleInbound().
+    //
     // A reminder is a message and is metered like one. When the tenant is out of
     // allowance the reminder is dropped rather than queued forever.
     [$quotaOk] = checkMessageQuota($conn, $userId);
