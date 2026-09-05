@@ -43,6 +43,12 @@ function chatbotDefaultConfig($userId) {
         'appointment_horizon_days' => 30,
         'reminder_minutes' => '1440,60',
         'booking_confirmation' => '',
+        'handoff_enabled' => 0,
+        'handoff_phrases' => 'agent,human,representative,talk to someone,speak to a person',
+        'handoff_ack_message' => '',
+        'handoff_resume_message' => '',
+        'handoff_notify_number' => null,
+        'handoff_notify_email' => null,
     ];
 }
 
@@ -83,6 +89,17 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $reminders = implode(',', apptReminderMinutes(['reminder_minutes' => $in['reminder_minutes'] ?? '1440,60']));
     $confirm   = mb_substr((string)($in['booking_confirmation'] ?? ''), 0, 500);
 
+    // Handoff (#16).
+    $handoffOn  = !empty($in['handoff_enabled']) ? 1 : 0;
+    $phrases    = mb_substr(trim((string)($in['handoff_phrases'] ?? '')), 0, 500);
+    $ackMsg     = mb_substr((string)($in['handoff_ack_message'] ?? ''), 0, 500);
+    $resumeMsg  = mb_substr((string)($in['handoff_resume_message'] ?? ''), 0, 500);
+    $notifyNum  = preg_replace('/\D+/', '', (string)($in['handoff_notify_number'] ?? ''));
+    $notifyNum  = $notifyNum !== '' ? mb_substr($notifyNum, 0, 32) : null;
+    $notifyMail = trim((string)($in['handoff_notify_email'] ?? ''));
+    if ($notifyMail !== '' && !filter_var($notifyMail, FILTER_VALIDATE_EMAIL)) $notifyMail = null;
+    $notifyMail = $notifyMail ?: null;
+
     if ($byoCode !== null && !llmIsKnownProvider($byoCode)) $byoCode = null;
 
     $stmt = $conn->prepare(
@@ -91,8 +108,10 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             fallback_message, tone, max_tokens, history_messages, active_hours_start, active_hours_end,
             outside_hours_message, transcribe_audio,
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
-            reminder_minutes, booking_confirmation)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            reminder_minutes, booking_confirmation,
+            handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
+            handoff_notify_number, handoff_notify_email)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -105,13 +124,19 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             appointment_lead_minutes = VALUES(appointment_lead_minutes),
             appointment_horizon_days = VALUES(appointment_horizon_days),
             reminder_minutes = VALUES(reminder_minutes),
-            booking_confirmation = VALUES(booking_confirmation)"
+            booking_confirmation = VALUES(booking_confirmation),
+            handoff_enabled = VALUES(handoff_enabled), handoff_phrases = VALUES(handoff_phrases),
+            handoff_ack_message = VALUES(handoff_ack_message),
+            handoff_resume_message = VALUES(handoff_resume_message),
+            handoff_notify_number = VALUES(handoff_notify_number),
+            handoff_notify_email = VALUES(handoff_notify_email)"
     );
     $stmt->bind_param(
-        'iiissssssiisssiiiiss',
+        'iiissssssiisssiiiississssss',
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb, $greeting,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
-        $apptOn, $lead, $horizon, $reminders, $confirm
+        $apptOn, $lead, $horizon, $reminders, $confirm,
+        $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail
     );
     $stmt->execute();
     $stmt->close();
@@ -294,6 +319,18 @@ function chatbotSystemPrompt(array $config, array $context = []) {
 
     if (!empty($context['appointments'])) {
         $parts[] = chatbotBookingInstructions($context['appointments']);
+    }
+
+    if (!empty($config['handoff_enabled'])) {
+        // The phrase list catches the obvious asks before the model is even
+        // called; this catches the rest — frustration, a complaint, something
+        // the knowledge base plainly does not cover.
+        $parts[] = "--- Handing over to a person ---\n"
+            . "If the customer asks for a human, is clearly frustrated, or wants something you "
+            . "cannot answer from the business information, offer to pass them to a colleague. "
+            . "If they accept, end your message with exactly:\n"
+            . '   ' . APPT_ACTION_OPEN . ' {"action":"handoff"} ' . APPT_ACTION_CLOSE . "\n"
+            . "Never mention that line. Do not promise a specific response time.";
     }
 
     return implode("\n\n", $parts);
@@ -588,6 +625,32 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     if ($text === '') return $log('skipped_empty', ['detail' => $mediaType]);
 
+    // #16. Two checks, in this order and both before the model is called.
+    //
+    // 1. A conversation already with a person stays with that person. The bot
+    //    interrupting an agent mid-conversation is the failure mode that makes
+    //    customers give up, so this is the first thing the reply path asks.
+    $openHandoff = handoffOpenForChat($conn, $userId, $chatId);
+    if ($openHandoff) {
+        handoffTouch($conn, (int)$openHandoff['id']);
+        return $log('skipped_handoff', ['detail' => $openHandoff['status']]);
+    }
+
+    // 2. Did they just ask for one? Matched in PHP, not by the model: it costs
+    //    nothing and it still works when the model is down — which is exactly
+    //    when people ask for a human.
+    $phrase = handoffPhraseMatch($config, $text);
+    if ($phrase !== null) {
+        return chatbotStartHandoff($conn, $userId, $tenantId, $config, [
+            'account_id' => (int)$account['id'],
+            'chat_id' => $chatId,
+            'session_id' => $sessionId,
+            'customer_phone' => chatbotPhoneFromJid($chatId),
+            'reason' => 'asked for a person ("' . $phrase . '")',
+            'topic' => $text,
+        ], $log);
+    }
+
     // Metered before the model is called: a reply that cannot be sent must not
     // be paid for either.
     [$quotaOk, , $limit] = checkMessageQuota($conn, $userId);
@@ -634,11 +697,16 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // then carried out (or refused) against the real calendar.
     [$replyText, $action] = chatbotExtractAction($reply['text']);
     $actionOutcome = null;
-    if ($action !== null && $appointments !== null) {
+    // A handoff action needs no appointment context; a booking one does.
+    if ($action !== null && ($appointments !== null || ($action['action'] ?? '') === 'handoff')) {
         $result = chatbotApplyAction($conn, $userId, $config, $action, [
-            'timezone' => $appointments['timezone'],
+            'timezone' => $appointments['timezone'] ?? $timezone,
             'account_id' => (int)$account['id'],
             'chat_id' => $chatId,
+            'session_id' => $sessionId,
+            'tenant_id' => $tenantId,
+            'topic' => $text,
+            'handoff_enabled' => !empty($config['handoff_enabled']),
             'customer_phone' => chatbotPhoneFromJid($chatId),
         ]);
         if ($result !== '') {
@@ -717,6 +785,25 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
     };
 
     switch ($action['action']) {
+        case 'handoff':
+            // The model has already told the customer in its own words, so no
+            // extra line is appended — but the queue entry and the nudge to the
+            // tenant still have to happen.
+            if (empty($ctx['handoff_enabled'])) return '';
+            [$id, $isNew] = handoffOpen($conn, $userId, [
+                'account_id' => $ctx['account_id'] ?? null,
+                'chat_id' => $ctx['chat_id'] ?? null,
+                'customer_phone' => $ctx['customer_phone'] ?? null,
+                'reason' => 'the assistant offered',
+                'topic' => $ctx['topic'] ?? null,
+            ]);
+            if ($isNew) {
+                $handoff = handoffById($conn, $userId, $id);
+                if ($handoff) handoffNotify($conn, $userId, $config, $handoff, $ctx['session_id'] ?? null, $ctx['tenant_id'] ?? null);
+                logAudit($conn, 'handoff.requested', 'chat_handoff', (string)$id, ['reason' => 'model'], $userId);
+            }
+            return '';
+
         case 'book':
             $service = apptMatchService($services, $action['service'] ?? '');
             if (!$service) return "I could not match that to one of our services — could you say which one you would like?";
@@ -782,6 +869,27 @@ function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId,
     return true;
 }
 
+// Hands the conversation to a person: records it, tells the customer, and nudges
+// the tenant. Used both by the phrase match and by the model's own handoff
+// action, so the two routes cannot diverge.
+function chatbotStartHandoff(mysqli $conn, $userId, $tenantId, array $config, array $data, callable $log) {
+    [$id, $isNew] = handoffOpen($conn, $userId, $data);
+
+    if ($isNew) {
+        $ack = trim((string)($config['handoff_ack_message'] ?? ''));
+        if ($ack === '') $ack = "Thanks — I'm passing you to a member of our team. They'll reply here shortly.";
+        chatbotSendReply($conn, $userId, $tenantId, $data['session_id'], $data['chat_id'], $ack);
+
+        $handoff = handoffById($conn, $userId, $id);
+        if ($handoff) {
+            handoffNotify($conn, $userId, $config, $handoff, $data['session_id'], $tenantId);
+        }
+        logAudit($conn, 'handoff.requested', 'chat_handoff', (string)$id, ['reason' => $data['reason']], $userId);
+    }
+
+    return $log('handoff', ['detail' => $isNew ? 'opened' : 'already waiting']);
+}
+
 // A phone number only when the JID actually carries one. An @lid is an opaque
 // identifier that merely looks like a number, and storing it as a customer's
 // phone would put a fabricated number on an appointment.
@@ -810,6 +918,8 @@ function chatbotOutcomeLabel($outcome) {
         'skipped_broadcast'    => 'Skipped — status broadcast',
         'skipped_newsletter'   => 'Skipped — channel',
         'skipped_disabled'     => 'Skipped — chatbot off',
+        'skipped_handoff'      => 'Silent — with a person',
+        'handoff'              => 'Passed to a person',
         'skipped_hours'        => 'Outside active hours',
         'skipped_empty'        => 'Skipped — nothing to answer',
         'quota'                => 'Blocked — monthly limit reached',

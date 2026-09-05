@@ -175,6 +175,7 @@ require_once __DIR__ . '/includes/header.php';
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-model" type="button">Model</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-behaviour" type="button">Behaviour</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-appointments" type="button">Appointments</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-handoff" type="button">Handover</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-test" type="button">Test</button></li>
             </ul>
 
@@ -363,6 +364,60 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                     <div class="alert alert-light border small">
                         Services and opening hours are saved separately — the two forms below act on their own.
+                    </div>
+                </div>
+
+                <div class="tab-pane fade p-3" id="tab-handoff">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" name="handoff_enabled" value="1"
+                               id="handoff_enabled" <?= !empty($config['handoff_enabled']) ? 'checked' : '' ?>>
+                        <label class="form-check-label fw-500" for="handoff_enabled">
+                            Let customers reach a person
+                        </label>
+                        <div class="form-text">
+                            While a conversation is waiting or with an agent the bot stays <strong>silent</strong> in it.
+                            It only starts answering again when you resolve the conversation in
+                            <a href="<?= APP_URL ?>/live-chats.php">Live chats</a>.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small">Trigger phrases</label>
+                        <input type="text" name="handoff_phrases" class="form-control form-control-sm"
+                               value="<?= sanitize($config['handoff_phrases'] ?? '') ?>">
+                        <div class="form-text">
+                            Comma separated, matched before the model is even called — so this still works when the
+                            model is down, which is exactly when people ask for a human. Single words match whole
+                            words only, so "agent" does not fire on "management".
+                        </div>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label small">What the customer is told</label>
+                            <input type="text" name="handoff_ack_message" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['handoff_ack_message'] ?? '') ?>"
+                                   placeholder="Thanks — I'm passing you to a member of our team. They'll reply here shortly.">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">What they are told when you resolve it</label>
+                            <input type="text" name="handoff_resume_message" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['handoff_resume_message'] ?? '') ?>"
+                                   placeholder="Leave blank to say nothing">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Notify this WhatsApp number</label>
+                            <input type="text" name="handoff_notify_number" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['handoff_notify_number'] ?? '') ?>"
+                                   placeholder="923001234567">
+                            <div class="form-text">Counts as a message.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Notify this email</label>
+                            <input type="email" name="handoff_notify_email" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['handoff_notify_email'] ?? '') ?>">
+                            <div class="form-text">Needs SMTP configured by the administrator.</div>
+                        </div>
                     </div>
                 </div>
 

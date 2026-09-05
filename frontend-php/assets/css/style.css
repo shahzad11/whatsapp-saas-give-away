@@ -1346,3 +1346,15 @@ body {
         height: calc(100vh - var(--topbar-height) - 32px);
     }
 }
+
+/* ===== Live chats: the agent's view of a handed-over conversation ===== */
+.handoff-thread {
+    max-height: 340px;
+    overflow-y: auto;
+    padding: 12px;
+    background: #efeae2;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.handoff-thread .chat-bubble { max-width: 85%; }

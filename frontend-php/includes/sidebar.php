@@ -32,6 +32,9 @@
             <a href="<?= APP_URL ?>/chatbot.php" class="nav-link-item <?= $currentPage === 'chatbot' ? 'active' : '' ?>">
                 <i class="bi bi-robot"></i><span>Chatbot</span>
             </a>
+            <a href="<?= APP_URL ?>/live-chats.php" class="nav-link-item <?= $currentPage === 'live-chats' ? 'active' : '' ?>">
+                <i class="bi bi-headset"></i><span>Live chats</span>
+            </a>
             <a href="<?= APP_URL ?>/appointments.php" class="nav-link-item <?= $currentPage === 'appointments' ? 'active' : '' ?>">
                 <i class="bi bi-calendar-check"></i><span>Appointments</span>
             </a>

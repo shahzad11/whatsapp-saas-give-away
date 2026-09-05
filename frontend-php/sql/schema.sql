@@ -527,3 +527,56 @@ SET @add_appt := (
 PREPARE stmt_add_appt FROM @add_appt;
 EXECUTE stmt_add_appt;
 DEALLOCATE PREPARE stmt_add_appt;
+
+-- ---------------------------------------------------------------------------
+-- Human handoff (issue #16)
+-- ---------------------------------------------------------------------------
+
+-- One row per conversation that has left the bot. The chat id is stored in the
+-- clear here, unlike chatbot_events: this is the tenant's own working queue, not
+-- something the admin console reads.
+CREATE TABLE IF NOT EXISTS chat_handoffs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    account_id INT DEFAULT NULL,
+    chat_id VARCHAR(100) NOT NULL,
+    customer_name VARCHAR(200) DEFAULT NULL,
+    customer_phone VARCHAR(32) DEFAULT NULL,
+    status ENUM('waiting','claimed','resolved','abandoned') NOT NULL DEFAULT 'waiting',
+    reason VARCHAR(120) DEFAULT NULL,          -- what triggered it
+    topic VARCHAR(255) DEFAULT NULL,           -- the message that asked for a human
+    requested_at DATETIME NOT NULL,
+    claimed_at DATETIME DEFAULT NULL,
+    claimed_by INT DEFAULT NULL,
+    resolved_at DATETIME DEFAULT NULL,
+    last_customer_at DATETIME DEFAULT NULL,
+    notes TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES wa_accounts(id) ON DELETE SET NULL,
+    FOREIGN KEY (claimed_by) REFERENCES users(id) ON DELETE SET NULL,
+    -- One live handoff per chat. The partial-index trick MySQL lacks is done in
+    -- code instead: handoffOpenForChat() is the single writer.
+    INDEX idx_user_status (user_id, status, requested_at),
+    INDEX idx_chat (user_id, chat_id, status)
+) ENGINE=InnoDB;
+
+-- Handoff settings ride on chatbot_configs, like appointments: it is the same
+-- conversation, just no longer with the bot.
+SET @add_handoff := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs
+            ADD COLUMN handoff_enabled TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN handoff_phrases VARCHAR(500) DEFAULT ''agent,human,representative,talk to someone,speak to a person'',
+            ADD COLUMN handoff_ack_message TEXT DEFAULT NULL,
+            ADD COLUMN handoff_resume_message TEXT DEFAULT NULL,
+            ADD COLUMN handoff_notify_number VARCHAR(32) DEFAULT NULL,
+            ADD COLUMN handoff_notify_email VARCHAR(255) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'handoff_enabled'
+);
+PREPARE stmt_add_handoff FROM @add_handoff;
+EXECUTE stmt_add_handoff;
+DEALLOCATE PREPARE stmt_add_handoff;
