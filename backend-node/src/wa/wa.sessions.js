@@ -1470,7 +1470,14 @@ export function getSessionMessages(tenantId, sessionId, chatId) {
   })
 }
 
-export async function getMediaBuffer(tenantId, sessionId, messageId) {
+// Resolves a message's media to a **file on disk** wherever possible, so the
+// response can be streamed instead of held in memory. A 166 MB video in the
+// cache was enough to kill a 256 MB PHP worker on every request for it; holding
+// the same bytes in Node is no better, just quieter.
+//
+// Returns { path } for anything cached (the normal case) and only falls back to
+// { buffer } when a live download could not be written to disk.
+export async function getMedia(tenantId, sessionId, messageId) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
   if (!s) return { ok: false, error: 'Session not found' }
 
@@ -1489,11 +1496,16 @@ export async function getMediaBuffer(tenantId, sessionId, messageId) {
   if (!found) return { ok: false, error: 'Message not found' }
 
   const mime = found.mediaMime || 'application/octet-stream'
+  const filePath = getMediaPath(sessionPathFor(tenantId, sessionId), messageId, mime)
 
-  // 1. Try disk cache first (persists across restarts)
-  const cached = await getMediaFromCache(tenantId, sessionId, messageId, mime)
-  if (cached) {
-    return { ok: true, buffer: cached, mime, filename: found.mediaFilename }
+  // 1. Disk cache (persists across restarts). Hand back the path, not the bytes.
+  if (existsSync(filePath)) {
+    try {
+      const st = await fs.stat(filePath)
+      if (st.size > 0) return { ok: true, path: filePath, size: st.size, mime, filename: found.mediaFilename }
+    } catch (_) {
+      // fall through to a live download
+    }
   }
 
   // 2. Try live download if rawMessage is available
@@ -1512,14 +1524,15 @@ export async function getMediaBuffer(tenantId, sessionId, messageId) {
       { logger, reuploadRequest: s.sock?.updateMediaMessage }
     )
 
-    // Cache to disk for future requests
-    const dir = sessionPath(s)
-    const filePath = getMediaPath(dir, messageId, mime)
-    fs.mkdir(path.join(dir, MEDIA_DIR), { recursive: true })
-      .then(() => fs.writeFile(filePath, buffer))
-      .catch(() => {})
-
-    return { ok: true, buffer, mime, filename: found.mediaFilename }
+    // Cache to disk, then serve from there — awaited rather than fire-and-forget
+    // so this request streams too. Only a failed write falls back to the buffer.
+    try {
+      await fs.mkdir(path.join(sessionPath(s), MEDIA_DIR), { recursive: true })
+      await fs.writeFile(filePath, buffer)
+      return { ok: true, path: filePath, size: buffer.length, mime, filename: found.mediaFilename }
+    } catch (_) {
+      return { ok: true, buffer, mime, filename: found.mediaFilename }
+    }
   } catch (err) {
     console.error(`Media download failed for ${messageId}:`, err.message)
     return { ok: false, error: 'Failed to download media: ' + err.message }

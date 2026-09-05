@@ -23,39 +23,94 @@ if (empty($sessionId) || empty($messageId)) {
 // and prevents a user-supplied URL from turning this proxy into an SSRF hole.
 $url = BACKEND_URL . '/api/v1/wa/sessions/' . urlencode($sessionId) . '/messages/' . urlencode($messageId) . '/media';
 
+// This proxy **streams**. It used to buffer the whole response with
+// CURLOPT_RETURNTRANSFER and then substr() it into two more copies — so a
+// 166 MB video in the chat history exhausted the 256 MB memory limit and every
+// request for it was a fatal error. Nothing is accumulated here now: headers are
+// forwarded as they arrive and each body chunk is echoed straight out.
+$headersSent = false;
+$upstreamStatus = 0;
+// Which upstream headers are safe and useful to pass through. Content-Range and
+// Accept-Ranges are what let a browser seek inside a long video.
+$forward = ['content-type', 'content-disposition', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag'];
+
 $ch = curl_init($url);
+
+$requestHeaders = backendHeaders($tenantId);
+// A <video> element asks for byte ranges. Forwarding the header (and the 206 it
+// produces) is the difference between seeking and re-downloading.
+if (!empty($_SERVER['HTTP_RANGE'])) {
+    $requestHeaders[] = 'Range: ' . $_SERVER['HTTP_RANGE'];
+}
+
 curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT => 30,
+    CURLOPT_RETURNTRANSFER => false,
+    CURLOPT_TIMEOUT => 300,
     CURLOPT_FOLLOWLOCATION => false,
-    CURLOPT_HEADER => true,
-    // Same auth as callBackendApi(); this handle is hand-rolled because it
-    // streams binary rather than JSON.
-    CURLOPT_HTTPHEADER => backendHeaders($tenantId),
+    CURLOPT_HTTPHEADER => $requestHeaders,
+    CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$headersSent, &$upstreamStatus, $forward) {
+        $len = strlen($header);
+        $trimmed = trim($header);
+
+        if (stripos($trimmed, 'HTTP/') === 0) {
+            $parts = explode(' ', $trimmed);
+            $upstreamStatus = (int)($parts[1] ?? 0);
+            return $len;
+        }
+        if ($trimmed === '') {
+            // End of the header block: the status is known, so commit it.
+            if ($upstreamStatus > 0) {
+                http_response_code($upstreamStatus);
+            }
+            $headersSent = true;
+            return $len;
+        }
+
+        $colon = strpos($trimmed, ':');
+        if ($colon === false) {
+            return $len;
+        }
+        $name = strtolower(substr($trimmed, 0, $colon));
+        if (in_array($name, $forward, true)) {
+            header($trimmed);
+        }
+        return $len;
+    },
+    CURLOPT_WRITEFUNCTION => function ($ch, $chunk) use (&$upstreamStatus) {
+        // An error body is JSON, not media. Swallow it and let the status speak.
+        if ($upstreamStatus >= 400) {
+            return strlen($chunk);
+        }
+        echo $chunk;
+        // Long files: do not let the chunks pile up in PHP's output buffer.
+        if (ob_get_level() > 0) {
+            ob_flush();
+        }
+        flush();
+        return strlen($chunk);
+    },
 ]);
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+// Private, not public: this URL is only meaningful for the authenticated tenant.
+header('Cache-Control: private, max-age=3600');
+
+$okCurl = curl_exec($ch);
+$error = curl_error($ch);
 curl_close($ch);
 
-if ($httpCode !== 200 || $response === false) {
-    http_response_code($httpCode ?: 502);
-    echo 'Media not available';
+if ($okCurl === false || $upstreamStatus === 0) {
+    // Only safe to say so if nothing has been written yet.
+    if (!headers_sent()) {
+        http_response_code(502);
+        echo 'Media not available';
+    }
+    if ($error) {
+        error_log('Media proxy failed: ' . $error);
+    }
     exit;
 }
 
-$headers = substr($response, 0, $headerSize);
-$body = substr($response, $headerSize);
-
-// Forward content-type and content-disposition headers
-if (preg_match('/Content-Type:\s*(.+)/i', $headers, $m)) {
-    header('Content-Type: ' . trim($m[1]));
+if ($upstreamStatus >= 400 && !headers_sent()) {
+    http_response_code($upstreamStatus);
+    echo 'Media not available';
 }
-if (preg_match('/Content-Disposition:\s*(.+)/i', $headers, $m)) {
-    header('Content-Disposition: ' . trim($m[1]));
-}
-
-header('Cache-Control: private, max-age=3600');
-header('Content-Length: ' . strlen($body));
-echo $body;

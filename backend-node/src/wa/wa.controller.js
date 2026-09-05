@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMediaBuffer, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
+import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -106,20 +106,38 @@ export async function getMessages(req, res, next) {
 export async function downloadMedia(req, res, next) {
   try {
     const { sessionId, messageId } = req.params
-    const result = await getMediaBuffer(req.tenantId, sessionId, messageId)
+    const result = await getMedia(req.tenantId, sessionId, messageId)
     if (!result.ok) {
       const status = result.error.includes('not found') ? 404 : 400
       return res.status(status).json({ ok: false, error: result.error })
     }
 
-    res.set('Content-Type', result.mime)
+    const headers = { 'Content-Type': result.mime }
     if (result.filename) {
-      res.set('Content-Disposition', `inline; filename="${result.filename}"`)
+      // Quotes and CR/LF would let a remote-supplied filename inject a header.
+      headers['Content-Disposition'] = `inline; filename="${sanitizeFilename(result.filename)}"`
     }
+
+    // Streamed from disk in the normal case: res.sendFile handles Range (so a
+    // long video can be seeked instead of downloaded whole), Content-Length and
+    // conditional requests. A buffer only happens when the cache write failed.
+    if (result.path) {
+      res.set(headers)
+      return res.sendFile(result.path, { headers, acceptRanges: true }, err => {
+        if (err && !res.headersSent) next(err)
+      })
+    }
+
+    res.set(headers)
     res.send(result.buffer)
   } catch (e) {
     next(e)
   }
+}
+
+// A document's filename comes from the sender, i.e. from outside.
+function sanitizeFilename(name) {
+  return String(name).replace(/[\r\n"\\]/g, '_').slice(0, 200)
 }
 
 export async function sendMessage(req, res, next) {
