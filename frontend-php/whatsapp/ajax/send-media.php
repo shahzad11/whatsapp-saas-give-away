@@ -45,6 +45,28 @@ if (!in_array($kind, $allowedKinds, true)) {
     mediaFail('Unsupported attachment type');
 }
 
+// Ownership and entitlement come *before* the file is examined. These used to
+// run after size, MIME and finfo sniffing, which meant a caller could make the
+// server sniff an upload for a session it does not own, and — once media_send
+// existed — a tenant without the feature got "that file is not an image" for a
+// file it was never going to be allowed to send. Answer the question the caller
+// is actually going to be refused on.
+[$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
+
+// The plan's `media_send` lever. Checked server-side because hiding the attach
+// button is presentation, not enforcement: this endpoint is the actual gate.
+if (!planHasFeature(getUserPlan($conn, $userId), 'media_send')) {
+    mediaFail('Sending attachments is not part of your plan.', ['featureLocked' => true]);
+}
+
+// Metered exactly like a text send: an attachment is a message. Checked before
+// the upload is processed so a send that cannot be counted never happens.
+[$quotaOk, $used, $limit] = checkMessageQuota($conn, $userId);
+if (!$quotaOk) {
+    mediaFail('Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
+        ['quotaExceeded' => true]);
+}
+
 if (!isset($_FILES['file'])) {
     mediaFail('No file received');
 }
@@ -100,23 +122,6 @@ if (isset($prefixes[$kind]) && !str_starts_with($mime, $prefixes[$kind])) {
         mediaFail('That file is not ' . $labels[$kind] . '.');
     }
     $mime = 'audio/webm';
-}
-
-[$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
-
-// The plan's `media_send` lever. Checked server-side because hiding the attach
-// button is presentation, not enforcement: this endpoint is the actual gate.
-if (!planHasFeature(getUserPlan($conn, $userId), 'media_send')) {
-    mediaFail('Sending attachments is not part of your plan.', ['featureLocked' => true]);
-}
-
-// Metered exactly like a text send: an attachment is a message. Checked before
-// the upload leaves for the backend so a send that cannot be counted never
-// happens.
-[$quotaOk, $used, $limit] = checkMessageQuota($conn, $userId);
-if (!$quotaOk) {
-    mediaFail('Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
-        ['quotaExceeded' => true]);
 }
 
 $data = file_get_contents($file['tmp_name']);
