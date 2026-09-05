@@ -24,7 +24,7 @@ if ($contentLength > 0 && empty($_POST) && empty($_FILES)) {
 
 // Unlike the JSON endpoints, this one is a multipart POST — which a cross-site
 // form can produce without any preflight. The token is what makes that fail.
-if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
+if (!csrfTokenValid($_POST['csrf_token'] ?? '')) {
     mediaFail('Invalid request. Reload the page and try again.');
 }
 
@@ -103,6 +103,12 @@ if (isset($prefixes[$kind]) && !str_starts_with($mime, $prefixes[$kind])) {
 }
 
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
+
+// The plan's `media_send` lever. Checked server-side because hiding the attach
+// button is presentation, not enforcement: this endpoint is the actual gate.
+if (!planHasFeature(getUserPlan($conn, $userId), 'media_send')) {
+    mediaFail('Sending attachments is not part of your plan.', ['featureLocked' => true]);
+}
 
 // Metered exactly like a text send: an attachment is a message. Checked before
 // the upload leaves for the backend so a send that cannot be counted never

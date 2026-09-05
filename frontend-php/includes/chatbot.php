@@ -71,7 +71,6 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $byoCode   = ($in['byo_provider_code'] ?? '') === '' ? null : (string)$in['byo_provider_code'];
     $byoModel  = trim((string)($in['byo_model_code'] ?? '')) ?: null;
     $kb        = (string)($in['knowledge_base'] ?? '');
-    $greeting  = (string)($in['greeting'] ?? '');
     $fallback  = (string)($in['fallback_message'] ?? '');
     $tone      = array_key_exists($in['tone'] ?? '', chatbotToneChoices()) ? $in['tone'] : 'professional';
     $maxTokens = max(64, min(2000, (int)($in['max_tokens'] ?? 400)));
@@ -102,20 +101,25 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
 
     if ($byoCode !== null && !llmIsKnownProvider($byoCode)) $byoCode = null;
 
+    // `greeting` is deliberately not written. The column exists but there is no
+    // control for it and chatbotSystemPrompt() never reads it, so including it
+    // meant every save blanked a column nothing could set — a write with no
+    // reader on either side. It is left out rather than removed so a future
+    // greeting feature needs no migration, like reply_to_groups.
     $stmt = $conn->prepare(
         "INSERT INTO chatbot_configs
-           (user_id, is_enabled, model_id, byo_provider_code, byo_model_code, knowledge_base, greeting,
+           (user_id, is_enabled, model_id, byo_provider_code, byo_model_code, knowledge_base,
             fallback_message, tone, max_tokens, history_messages, active_hours_start, active_hours_end,
             outside_hours_message, transcribe_audio,
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
             reminder_minutes, booking_confirmation,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
             handoff_notify_number, handoff_notify_email)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
-            knowledge_base = VALUES(knowledge_base), greeting = VALUES(greeting),
+            knowledge_base = VALUES(knowledge_base),
             fallback_message = VALUES(fallback_message), tone = VALUES(tone),
             max_tokens = VALUES(max_tokens), history_messages = VALUES(history_messages),
             active_hours_start = VALUES(active_hours_start), active_hours_end = VALUES(active_hours_end),
@@ -136,7 +140,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     // character, so `bind_param` threw `ArgumentCountError` and *every* save of
     // this form 500'd. Deriving it cannot drift when a column is added.
     $params = [
-        $userId, $enabled, $modelId, $byoCode, $byoModel, $kb, $greeting,
+        $userId, $enabled, $modelId, $byoCode, $byoModel, $kb,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
         $apptOn, $lead, $horizon, $reminders, $confirm,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
@@ -171,8 +175,20 @@ function chatbotSaveByoKey(mysqli $conn, $userId, $apiKey) {
     return [true, null];
 }
 
+// Clearing the key also clears the provider and model that went with it.
+//
+// Removing only the key left `byo_provider_code` set, and chatbotResolveModel()
+// takes the BYO branch on that column alone — it then fails with "Your API key is
+// missing" and never falls through to the platform model, so "Remove my key"
+// silently stopped the bot replying at all. Dropping all three returns the tenant
+// to whatever platform model they had selected, which is the only coherent
+// meaning of "I am no longer using my own key".
 function chatbotClearByoKey(mysqli $conn, $userId) {
-    $stmt = $conn->prepare("UPDATE chatbot_configs SET byo_api_key_encrypted = NULL WHERE user_id = ?");
+    $stmt = $conn->prepare(
+        "UPDATE chatbot_configs
+            SET byo_api_key_encrypted = NULL, byo_provider_code = NULL, byo_model_code = NULL
+          WHERE user_id = ?"
+    );
     $stmt->bind_param('i', $userId);
     $stmt->execute();
     $stmt->close();

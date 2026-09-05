@@ -240,8 +240,12 @@ require_once __DIR__ . '/includes/header.php';
                                        placeholder="<?= $hasByoKey ? 'Stored — leave blank to keep' : 'sk-…' ?>">
                             </div>
                         </div>
+                        <?php // Submits clearKeyForm, which lives outside this form —
+                              // see the note there. It must not be a submit button
+                              // belonging to chatbotForm. ?>
                         <?php if ($hasByoKey): ?>
-                            <button class="btn btn-outline-danger btn-sm mt-2" type="submit" name="action" value="clear_key">
+                            <button class="btn btn-outline-danger btn-sm mt-2" type="submit" form="clearKeyForm"
+                                    onclick="return confirm('Remove your stored API key? The bot will go back to using the model selected above.')">
                                 Remove my key
                             </button>
                         <?php endif; ?>
@@ -438,6 +442,20 @@ require_once __DIR__ . '/includes/header.php';
             <div class="mt-3">
                 <button class="btn btn-primary" type="submit">Save settings</button>
             </div>
+        </form>
+
+        <?php // "Remove my key" posts through this form, not through chatbotForm.
+              //
+              // It used to be a `type="submit" name="action" value="clear_key"`
+              // button inside chatbotForm, and being the *first* submit button in
+              // that form made it the default one: pressing Enter in any field —
+              // the API key box, the knowledge base — cleared the key and
+              // redirected, discarding every unsaved edit on the page. A button
+              // outside the form it submits (via the form= attribute) cannot
+              // become chatbotForm's default. ?>
+        <form method="post" id="clearKeyForm" class="d-none">
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="clear_key">
         </form>
 
         <?php // Separate forms, not nested ones: nesting is invalid HTML and the

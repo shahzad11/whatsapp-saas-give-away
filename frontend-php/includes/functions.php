@@ -100,9 +100,23 @@ function csrfField() {
     return '<input type="hidden" name="csrf_token" value="' . csrfToken() . '">';
 }
 
+// The single comparison every CSRF check goes through, including the JSON and
+// multipart endpoints that cannot use verifyCsrf() because their token does not
+// arrive in $_POST.
+//
+// The empty check is the point. `hash_equals($_SESSION['csrf_token'] ?? '', '')`
+// is **true** when the session has not minted a token yet, so the obvious
+// one-liner accepts a request that sends no token at all. That is reachable: a
+// session exists from the first request, but `csrf_token` is only set once
+// something calls csrfToken(). Requiring both sides to be non-empty closes it.
+function csrfTokenValid($token) {
+    $expected = $_SESSION['csrf_token'] ?? '';
+    $token = is_string($token) ? $token : '';
+    return $expected !== '' && $token !== '' && hash_equals($expected, $token);
+}
+
 function verifyCsrf() {
-    $token = $_POST['csrf_token'] ?? '';
-    if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+    if (!csrfTokenValid($_POST['csrf_token'] ?? '')) {
         flash('error', 'Invalid request. Please try again.');
         return false;
     }
@@ -209,6 +223,19 @@ function getUserTimezone($conn, $userId) {
         return $row['setting_value'];
     }
     return appTimezone($conn);
+}
+
+// Renders a UTC *instant* in the tenant's timezone with a date() format string.
+//
+// Only for instants — TIMESTAMP and DATETIME columns. A DATE column (payments'
+// period_start / period_end) is a calendar date, not a moment: shifting it by an
+// offset would move a billing period onto the wrong day, so those are formatted
+// without conversion on purpose.
+function formatUserDate($utcDatetime, $timezone, $format = 'M j, Y') {
+    if (empty($utcDatetime)) return '';
+    $local = convertToUserTz($utcDatetime, $timezone);
+    $ts = strtotime((string)$local);
+    return $ts === false ? '' : date($format, $ts);
 }
 
 function convertToUserTz($utcDatetime, $timezone) {

@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // needs to correct.
                 foreach (profileFields() as $field) {
                     if (in_array($field, ['contact_email', 'contact_whatsapp'], true)) {
-                        $profile[$field] = isset($_POST[$field]) ? 1 : 0;
+                        continue; // no longer rendered, so nothing to redisplay
                     } elseif ($field === 'whatsapp_number') {
                         continue; // rendered from $whatsappInput, see above
                     } elseif (array_key_exists($field, $_POST)) {
@@ -153,7 +153,7 @@ require_once __DIR__ . '/includes/header.php';
                     <p class="text-muted small mb-1"><?= sanitize($user['name']) ?></p>
                 <?php endif; ?>
                 <p class="text-muted small mb-2"><?= sanitize($user['email']) ?></p>
-                <span class="badge bg-light text-dark">Member since <?= date('M Y', strtotime($user['created_at'])) ?></span>
+                <span class="badge bg-light text-dark">Member since <?= sanitize(formatUserDate($user['created_at'], $timezone, 'M Y')) ?></span>
             </div>
         </div>
 
@@ -291,19 +291,13 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                     </div>
 
-                    <hr class="my-4">
-                    <h6 class="fw-600 mb-3">Contact Preferences</h6>
-                    <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" name="contact_email" id="contactEmail"
-                               <?= (int)$profile['contact_email'] === 1 ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="contactEmail">Contact me by email</label>
-                    </div>
-                    <div class="form-check form-switch mb-3">
-                        <input class="form-check-input" type="checkbox" name="contact_whatsapp" id="contactWhatsapp"
-                               <?= (int)$profile['contact_whatsapp'] === 1 ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="contactWhatsapp">Contact me on WhatsApp</label>
-                    </div>
-
+                    <?php // No "Contact Preferences" switches here any more. They
+                          // were stored on user_profiles and read by nothing:
+                          // activation, password reset and handoff notifications
+                          // all go to the account email regardless. Honouring
+                          // them needs preference-aware routing in the mailer,
+                          // which does not exist yet, so the controls are gone
+                          // rather than silently ignored. The columns remain. ?>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </form>
             </div>

@@ -4,6 +4,7 @@ requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
 $user = getCurrentUser();
+$tz = getUserTimezone($conn, $userId);
 $plan = getUserPlan($conn, $userId);
 $plans = getActivePlans($conn);
 $profile = getUserProfile($conn, $userId);
@@ -75,7 +76,7 @@ require_once __DIR__ . '/includes/header.php';
                     <ul class="list-unstyled small text-muted mb-0">
                         <li><strong>Status:</strong> <?= sanitize(ucfirst($subscription['status'])) ?></li>
                         <?php if ($subscription['current_period_end']): ?>
-                            <li><strong>Renews:</strong> <?= sanitize(date('M j, Y', strtotime($subscription['current_period_end']))) ?></li>
+                            <li><strong>Renews:</strong> <?= sanitize(formatUserDate($subscription['current_period_end'], $tz)) ?></li>
                         <?php endif; ?>
                     </ul>
                 <?php endif; ?>
@@ -100,6 +101,10 @@ require_once __DIR__ . '/includes/header.php';
                     <hr>
                     <div class="small">
                         <div class="text-muted mb-1">Paid through</div>
+                        <?php // payments.period_end is a DATE — a calendar date, not
+                              // an instant — so it is rendered as stored. Converting
+                              // it to the tenant's zone would move a billing period
+                              // onto the wrong day. ?>
                         <div class="fw-500"><?= sanitize(date('M j, Y', strtotime($paidUntil))) ?></div>
                     </div>
                 <?php endif; ?>
@@ -161,9 +166,11 @@ require_once __DIR__ . '/includes/header.php';
                     <tbody>
                     <?php foreach ($payments as $p): ?>
                         <tr>
-                            <td class="small text-muted"><?= sanitize(date('M j, Y', strtotime($p['created_at']))) ?></td>
+                            <td class="small text-muted"><?= sanitize(formatUserDate($p['created_at'], $tz)) ?></td>
                             <td class="small fw-500"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
                             <td class="small"><?= sanitize($p['plan_name'] ?? '—') ?></td>
+                            <?php // Both are DATE columns, so no timezone conversion —
+                                  // see "Paid through" above. ?>
                             <td class="small text-muted">
                                 <?= $p['period_start'] ? sanitize(date('M j', strtotime($p['period_start']))) . ' – ' . sanitize(date('M j, Y', strtotime($p['period_end']))) : '—' ?>
                             </td>

@@ -57,9 +57,13 @@ function saveUserProfile(mysqli $conn, $userId, array $data) {
             city = VALUES(city),
             state_region = VALUES(state_region),
             postal_code = VALUES(postal_code),
-            country = VALUES(country),
-            contact_email = VALUES(contact_email),
-            contact_whatsapp = VALUES(contact_whatsapp)"
+            country = VALUES(country)"
+        // contact_email / contact_whatsapp are deliberately absent from the
+        // UPDATE list. The profile form no longer renders them (they were
+        // honoured by nothing), so an unchecked-by-absence checkbox would
+        // otherwise zero a stored value on every unrelated save. They still
+        // appear in the INSERT so a first-time row gets its defaults, and
+        // admin/tenant.php keeps reading them.
     );
     $stmt->bind_param(
         'issssssssii',
@@ -219,8 +223,10 @@ function validateProfileInput(array $post) {
         $errors['city'] = 'Add at least a city or a country for the address.';
     }
 
-    $clean['contact_email']    = isset($post['contact_email']) ? 1 : 0;
-    $clean['contact_whatsapp'] = isset($post['contact_whatsapp']) ? 1 : 0;
+    // Not taken from the form: there is no longer a control for either, and
+    // saveUserProfile() only uses these when inserting a tenant's first row.
+    $clean['contact_email']    = 1;
+    $clean['contact_whatsapp'] = 0;
 
     return [$clean, $errors];
 }

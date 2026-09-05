@@ -32,12 +32,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'change_plan') {
         $planId = (int)($_POST['plan_id'] ?? 0);
-        $stmt = $conn->prepare("UPDATE users SET plan_id = ? WHERE id = ?");
-        $stmt->bind_param('ii', $planId, $targetId);
-        $stmt->execute();
-        $stmt->close();
-        logAudit($conn, 'admin.user.change_plan', 'user', $targetId, ['plan_id' => $planId]);
-        flash('success', 'Plan updated.');
+        // assignPlan() rather than a bare UPDATE on users.plan_id. The bare
+        // update changed the tenant's limits and features immediately but left
+        // the subscriptions row pointing at the old plan, so Billing kept showing
+        // the previous plan's renewal date and the lapsing report kept naming the
+        // old plan. The tenant saw one plan's limits with another plan's billing.
+        if ($planId > 0 && getPlanById($conn, $planId)) {
+            assignPlan($conn, $targetId, $planId);
+            logAudit($conn, 'admin.user.change_plan', 'user', $targetId, ['plan_id' => $planId]);
+            flash('success', 'Plan updated.');
+        } else {
+            flash('error', 'That plan does not exist.');
+        }
     }
 
     if ($action === 'toggle_admin') {
@@ -249,7 +255,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <td>
                         <?php if ((int)$u['id'] !== $adminId): ?>
                         <div class="d-flex gap-1">
-                            <form method="POST">
+                            <?php
+                            // Suspending locks the tenant out on their next request,
+                            // so it is confirmed like the admin toggle beside it.
+                            // Reactivating is not destructive and needs no prompt.
+                            //
+                            // json_encode produces the JS string literal (quotes and
+                            // escaping included) and htmlspecialchars makes it safe
+                            // inside the attribute. sanitize() alone would not do:
+                            // it turns an apostrophe into &#039;, which the HTML
+                            // parser hands back to JS as a quote and breaks the call.
+                            $suspendConfirm = '';
+                            if ($u['status'] !== 'suspended') {
+                                $msg = json_encode('Suspend ' . $u['email']
+                                    . '? They will be signed out and unable to log in until reactivated.');
+                                $suspendConfirm = ' onsubmit="return confirm('
+                                    . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . ')"';
+                            }
+                            ?>
+                            <form method="POST"<?= $suspendConfirm ?>>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
                                 <input type="hidden" name="action" value="<?= $u['status'] === 'suspended' ? 'activate' : 'suspend' ?>">

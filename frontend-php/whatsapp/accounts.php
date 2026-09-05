@@ -37,6 +37,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $accounts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
 
+        // Counted, not assumed. The flash used to say "synced" unconditionally,
+        // so with the backend down every status stayed exactly as it was while
+        // the page reported success — the one case where the button matters most.
+        $synced = 0;
+        $failed = 0;
+
         foreach ($accounts as $acc) {
             $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/status');
             if ($resp && ($resp['ok'] ?? false)) {
@@ -56,9 +62,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt2->bind_param("ssssii", $status, $phone, $pushName, $connAt, $acc['id'], $userId);
                 $stmt2->execute();
                 $stmt2->close();
+                $synced++;
+            } else {
+                $failed++;
             }
         }
-        flash('success', 'Account statuses synced.');
+
+        if ($failed === 0) {
+            flash('success', $synced === 0
+                ? 'No accounts to sync.'
+                : 'Account statuses synced (' . $synced . ').');
+        } elseif ($synced === 0) {
+            flash('error', 'None of your accounts could be synced — the WhatsApp service is not reachable.');
+        } else {
+            flash('error', $synced . ' synced, ' . $failed . ' could not be reached. Try again shortly.');
+        }
         redirect(APP_URL . '/whatsapp/accounts.php');
     }
 }

@@ -19,7 +19,26 @@ $userTz = getUserTimezone($conn, $userId);
 
 $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats');
 
+// The plan's contact cap. A contact appears here as a side effect of sync, so
+// the cap can only stop *growth*: chats already stored keep syncing normally,
+// and new ones stop being recorded once the tenant is at the limit. Existing
+// rows are never deleted to make room.
+[, $contactsUsed, $contactLimit] = checkContactQuota($conn, $userId);
+$contactsCapped = false;
+
 if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
+    // Which chats are already stored, so a capped tenant can still receive
+    // updates for them. One query beats a per-chat existence check.
+    $known = [];
+    if ($contactLimit !== null) {
+        $stmtKnown = $conn->prepare("SELECT chat_id FROM wa_contacts WHERE account_id = ?");
+        $stmtKnown->bind_param("i", $accountId);
+        $stmtKnown->execute();
+        $res = $stmtKnown->get_result();
+        while ($k = $res->fetch_assoc()) $known[$k['chat_id']] = true;
+        $stmtKnown->close();
+    }
+
     $stmtUpsert = $conn->prepare("INSERT INTO wa_contacts (account_id, session_id, chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
@@ -68,6 +87,18 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
         if (!$phone && str_ends_with($chatId, '@s.whatsapp.net')) {
             $phone = explode('@', $chatId)[0];
         }
+        // A chat we have never stored is new, and a new one counts against the
+        // plan. Skip it rather than upserting, or the INSERT would create the
+        // row the cap exists to prevent.
+        if ($contactLimit !== null && !isset($known[$chatId])) {
+            if ($contactsUsed >= $contactLimit) {
+                $contactsCapped = true;
+                continue;
+            }
+            $contactsUsed++;
+            $known[$chatId] = true;
+        }
+
         $stmtUpsert->bind_param("issssssii", $accountId, $sessionId, $chatId, $name, $phone, $lastMsg, $lastTime, $isGroup, $isArchived);
         $stmtUpsert->execute();
     }
@@ -108,4 +139,7 @@ echo json_encode([
     'ok' => true,
     'chats' => $chats,
     'archivedCount' => $archivedCount,
+    // Silently dropping chats would read as "sync is broken". Say so instead.
+    'contactsCapped' => $contactsCapped,
+    'contactLimit' => $contactLimit,
 ]);

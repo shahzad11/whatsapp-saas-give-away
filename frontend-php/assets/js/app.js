@@ -20,6 +20,17 @@ function startQrPolling(sessionId) {
 
     if (!qrImg || !sessionId) return;
 
+    // The header badge used to be left at its initial "Waiting..." for the whole
+    // flow, so it still said Waiting while the status line underneath it said
+    // Connected. Two contradicting indicators is worse than one.
+    function setBadge(text, cls) {
+        const badge = document.getElementById('connectionBadge');
+        if (badge) {
+            badge.textContent = text;
+            badge.className = 'badge ' + cls;
+        }
+    }
+
     function poll() {
         fetch(`ajax/get-qr.php?session_id=${sessionId}`)
             .then(r => r.json())
@@ -30,6 +41,7 @@ function startQrPolling(sessionId) {
                     qrStatus.innerHTML = '<i class="bi bi-exclamation-triangle-fill text-warning fs-2"></i><br>' +
                         'Session expired. <a href="link.php" class="btn btn-sm btn-primary mt-2">Try Again</a>';
                     qrStatus.className = 'qr-status text-warning';
+                    setBadge('Expired', 'bg-warning text-dark');
                     return;
                 }
                 if (data.status === 'connected') {
@@ -37,6 +49,7 @@ function startQrPolling(sessionId) {
                     qrImg.style.display = 'none';
                     qrStatus.innerHTML = '<i class="bi bi-check-circle-fill text-success fs-1"></i><br>Connected!';
                     qrStatus.className = 'qr-status text-success';
+                    setBadge('Connected', 'bg-success');
                     setTimeout(() => {
                         window.location.href = 'accounts.php';
                     }, 1500);
@@ -45,13 +58,16 @@ function startQrPolling(sessionId) {
                     qrImg.style.display = 'block';
                     qrStatus.textContent = 'Scan this QR code with your WhatsApp app';
                     qrStatus.className = 'qr-status text-muted';
+                    setBadge('Scan to link', 'bg-info text-dark');
                 } else {
                     qrStatus.textContent = 'Waiting for QR code...';
+                    setBadge('Waiting...', 'bg-warning text-dark');
                 }
             })
             .catch(() => {
                 qrStatus.textContent = 'Error connecting to backend';
                 qrStatus.className = 'qr-status text-danger';
+                setBadge('Error', 'bg-danger');
             });
     }
 
@@ -415,7 +431,40 @@ function loadChats(sessionId) {
             }
             allChatsData = data.chats;
             renderChatList(sessionId, data.chats);
+            showContactCapNotice(data);
+        })
+        .catch(() => {
+            // Without this the spinner span spins forever and the page looks
+            // like it is still working.
+            const chatList = document.getElementById('chatList');
+            if (chatList && !chatList.querySelector('.chat-list-item')) {
+                chatList.innerHTML =
+                    '<div class="p-3 text-center text-muted small">Chats could not be loaded. Retrying…</div>';
+            }
         });
+}
+
+// The plan's contact cap stops new chats being stored. Without this the list
+// simply stops growing, which reads as "sync is broken" rather than "you are at
+// your plan's limit".
+function showContactCapNotice(data) {
+    const existing = document.getElementById('contactCapNotice');
+    if (!data.contactsCapped) {
+        if (existing) existing.remove();
+        return;
+    }
+    if (existing) return;
+
+    const chatList = document.getElementById('chatList');
+    if (!chatList || !chatList.parentNode) return;
+
+    const notice = document.createElement('div');
+    notice.id = 'contactCapNotice';
+    notice.className = 'alert alert-warning small mb-0 rounded-0 py-2';
+    notice.innerHTML = 'Contact limit reached'
+        + (data.contactLimit ? ' (' + escapeHtml(String(data.contactLimit)) + ')' : '')
+        + '. New chats are no longer being saved — existing ones still update.';
+    chatList.parentNode.insertBefore(notice, chatList);
 }
 
 function toggleArchivedView(sessionId) {
@@ -459,6 +508,7 @@ function renderChatList(sessionId, chats) {
         return;
     }
 
+
     html += visible.map(chat => {
         // The server guarantees a human-readable name ("Group chat", "+92…",
         // "Unknown contact"), so there is no JID fallback to do here.
@@ -487,6 +537,18 @@ function renderChatList(sessionId, chats) {
     }).join('');
 
     chatList.innerHTML = html;
+    reapplyChatFilter();
+}
+
+// filterChats() works by hiding DOM nodes, so every re-render undoes it — and
+// this list re-renders itself every 10 seconds. Typing a search and pausing used
+// to show the full list again a few seconds later. Re-applying after each render
+// is what makes the search survive the poll.
+function reapplyChatFilter() {
+    const search = document.getElementById('chatSearch');
+    if (search && search.value && typeof filterChats === 'function') {
+        filterChats(search.value);
+    }
 }
 
 function openChat(sessionId, chatId, el) {
@@ -544,6 +606,7 @@ function openChat(sessionId, chatId, el) {
                 <button class="btn btn-link btn-sm rec-cancel" onclick="cancelVoiceRecording()">Cancel</button>
             </div>
             <div class="chat-input-area">
+                ${canSendMedia() ? `
                 <div class="dropup composer-attach">
                     <button class="btn btn-attach" data-bs-toggle="dropdown" title="Attach">
                         <i class="bi bi-paperclip"></i>
@@ -556,12 +619,13 @@ function openChat(sessionId, chatId, el) {
                         <li><a class="dropdown-item" href="#" onclick="pickAttachment('document');return false;"><i class="bi bi-file-earmark me-2"></i>Document</a></li>
                     </ul>
                     <input type="file" id="attachInput" class="d-none" onchange="attachmentChosen(this)">
-                </div>
+                </div>` : ''}
                 <input type="text" class="form-control" id="messageInput" placeholder="Type a message..."
                        onkeypress="if(event.key==='Enter')composerSend('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
+                ${canSendMedia() ? `
                 <button class="btn btn-mic" id="micButton" onclick="toggleVoiceRecording('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')" title="Record a voice note">
                     <i class="bi bi-mic-fill"></i>
-                </button>
+                </button>` : ''}
                 <button class="btn btn-send" id="sendButton" onclick="composerSend('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
                     <i class="bi bi-send-fill"></i>
                 </button>
@@ -585,6 +649,12 @@ function loadMessages(sessionId, chatId) {
     fetch(`ajax/get-messages.php?session_id=${sessionId}&chat_id=${encodeURIComponent(chatId)}`)
         .then(r => r.json())
         .then(data => {
+            // Drop a response for a chat the user has already navigated away
+            // from. Clicking A then B before A's response lands used to paint
+            // A's messages into B's pane — a convincing wrong thread, because
+            // nothing about it looks like an error.
+            if (chatId !== currentChatId) return;
+
             const container = document.getElementById('chatMessages');
             if (!container || !data.ok) return;
 
@@ -646,7 +716,12 @@ function sendMessage(sessionId, chatId) {
     fetch('ajax/send-message.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, chat_id: chatId, text: text })
+        body: JSON.stringify({
+            csrf_token: window.waCsrfToken || '',
+            session_id: sessionId,
+            chat_id: chatId,
+            text: text
+        })
     })
         .then(r => r.json())
         .then(data => {
@@ -681,6 +756,14 @@ let recordingStartedAt = 0;
 // authoritative checks are in send-media.php and the backend, which a caller
 // bypassing this page still has to pass.
 const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+
+// The plan's `media_send` lever, published by the page. Presentation only: it
+// decides whether to draw the attach and mic controls, while send-media.php is
+// what actually refuses. Defaults to false so a page that forgets to publish it
+// hides the controls rather than offering a button that always errors.
+function canSendMedia() {
+    return window.waCanSendMedia === true;
+}
 
 // Server-side accept lists reject on sniffed content, so these hints only steer
 // the picker; 'camera' is a photo whose input asks a phone for the camera app.
@@ -790,6 +873,10 @@ function clearAttachment() {
 // One send button for both cases: with something staged it sends the
 // attachment, otherwise the typed text.
 function composerSend(sessionId, chatId) {
+    // Guards the Enter key during an upload. Without it a second press re-sends
+    // the staged file, because the input stays focused and pendingAttachment is
+    // only cleared once the first upload succeeds.
+    if (composerBusy) return;
     if (pendingAttachment) return sendAttachment(sessionId, chatId);
     return sendMessage(sessionId, chatId);
 }
@@ -845,11 +932,32 @@ function sendAttachment(sessionId, chatId) {
     xhr.send(form);
 }
 
+// Tracks an in-flight upload. Disabling the buttons is not sufficient on its
+// own: the text input keeps its Enter handler, so pressing Enter during an
+// upload called composerSend() again and sent the same file twice.
+let composerBusy = false;
+
 function setComposerBusy(busy) {
-    for (const id of ['sendButton', 'micButton']) {
+    composerBusy = busy;
+
+    // The attach control has to go too — picking a second file mid-upload
+    // replaced pendingAttachment underneath the transfer in flight.
+    for (const id of ['sendButton', 'micButton', 'attachInput']) {
         const el = document.getElementById(id);
         if (el) el.disabled = busy;
     }
+    const attach = document.querySelector('.composer-attach .btn-attach');
+    if (attach) attach.disabled = busy;
+
+    const input = document.getElementById('messageInput');
+    if (input) {
+        // Releasing restores the caption rule rather than blanket-enabling:
+        // audio and voice notes take no caption, and a failed upload leaves the
+        // file staged, so the box must stay disabled for those kinds.
+        const kind = pendingAttachment && pendingAttachment.kind;
+        input.disabled = busy || kind === 'audio' || kind === 'voice';
+    }
+
     const send = document.getElementById('sendButton');
     if (send) {
         send.innerHTML = busy

@@ -294,6 +294,18 @@ function apptReschedule(mysqli $conn, $userId, $id, DateTime $utc) {
     return $changed;
 }
 
+// 'YYYY-MM-DD' in $timezone + a wall-clock time -> 'Y-m-d H:i:s' in UTC.
+// A malformed date falls back to the raw value so a bad query string filters
+// oddly rather than throwing on a page load.
+function apptLocalDateBoundaryToUtc($date, $timezone, $time) {
+    try {
+        $dt = new DateTime($date . ' ' . $time, new DateTimeZone($timezone ?: 'UTC'));
+    } catch (Exception $e) {
+        return $date . ' ' . $time;
+    }
+    return $dt->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+}
+
 function apptList(mysqli $conn, $userId, array $filters = []) {
     $sql = "SELECT * FROM appointments WHERE user_id = ?";
     $types = 'i';
@@ -302,8 +314,20 @@ function apptList(mysqli $conn, $userId, array $filters = []) {
     if (!empty($filters['status']) && $filters['status'] !== 'all') {
         $sql .= " AND status = ?"; $types .= 's'; $params[] = $filters['status'];
     }
-    if (!empty($filters['from'])) { $sql .= " AND scheduled_at >= ?"; $types .= 's'; $params[] = $filters['from'] . ' 00:00:00'; }
-    if (!empty($filters['to']))   { $sql .= " AND scheduled_at <= ?"; $types .= 's'; $params[] = $filters['to'] . ' 23:59:59'; }
+    // The From/To inputs are dates in the tenant's timezone, but scheduled_at is
+    // UTC. Comparing them directly put the boundary in the wrong place by the
+    // tenant's offset — in Asia/Karachi (UTC+5) a "From today" filter silently
+    // included five hours of yesterday evening and cut off today's last five
+    // hours. The boundary is converted, not the column, so the index still works.
+    $tz = $filters['tz'] ?? 'UTC';
+    if (!empty($filters['from'])) {
+        $sql .= " AND scheduled_at >= ?"; $types .= 's';
+        $params[] = apptLocalDateBoundaryToUtc($filters['from'], $tz, '00:00:00');
+    }
+    if (!empty($filters['to'])) {
+        $sql .= " AND scheduled_at <= ?"; $types .= 's';
+        $params[] = apptLocalDateBoundaryToUtc($filters['to'], $tz, '23:59:59');
+    }
     if (!empty($filters['q'])) {
         $sql .= " AND (customer_name LIKE ? OR customer_phone LIKE ? OR service_name LIKE ?)";
         $types .= 'sss';

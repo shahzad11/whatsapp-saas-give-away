@@ -4,6 +4,7 @@ requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
 $userTz = getUserTimezone($conn, $userId);
+$canExport = planHasFeature(getUserPlan($conn, $userId), 'csv_export');
 
 // --- Fetch user's accounts for filter dropdown ---
 $stmt = $conn->prepare("SELECT id, label, phone_number, push_name FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC");
@@ -27,11 +28,27 @@ $params = [$userId];
 $types  = "i";
 
 if ($search !== '') {
-    $where .= " AND (c.contact_name LIKE ? OR c.chat_id LIKE ?)";
+    // phone_number is searched as well as chat_id, and the needle is stripped of
+    // everything that is not a digit for that column. The table renders the
+    // phone as "+923001234567", so searching for what is on screen — with the +,
+    // or with spaces pasted from a contact card — matched nothing before: the
+    // stored value has no punctuation, and a group's chat_id has no phone in it
+    // at all.
+    $digits = preg_replace('/\D+/', '', $search);
     $like = '%' . $search . '%';
-    $params[] = $like;
-    $params[] = $like;
-    $types .= "ss";
+
+    if ($digits !== '') {
+        $where .= " AND (c.contact_name LIKE ? OR c.chat_id LIKE ? OR c.phone_number LIKE ?)";
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = '%' . $digits . '%';
+        $types .= "sss";
+    } else {
+        $where .= " AND (c.contact_name LIKE ? OR c.chat_id LIKE ?)";
+        $params[] = $like;
+        $params[] = $like;
+        $types .= "ss";
+    }
 }
 
 if ($accountFilter > 0) {
@@ -59,9 +76,14 @@ if ($page > $totalPages) $page = $totalPages;
 $offset = ($page - 1) * $perPage;
 
 // --- Sort ---
+// The "Phone Number" column renders phone_number, falling back to the digits in
+// chat_id, so that is what it must sort on. Sorting the raw chat_id put every
+// group JID in among the numbers and ordered lexicographically, so "12…" sorted
+// before "2…" — visibly not the column the user clicked.
+$phoneExpr = "COALESCE(NULLIF(c.phone_number, ''), SUBSTRING_INDEX(c.chat_id, '@', 1))";
 $sortMap = [
     'name'        => 'c.contact_name',
-    'chat_id'     => 'c.chat_id',
+    'chat_id'     => $phoneExpr . ' + 0',   // numeric: '9' must not sort before '12'
     'last_active' => 'c.last_message_time',
     'account'     => 'wa.label',
     'type'        => 'c.is_group',
@@ -185,10 +207,16 @@ require_once dirname(__DIR__) . '/includes/header.php';
         </div>
         <div class="contacts-toolbar-right">
             <span class="text-muted small me-2"><?= number_format($totalRows) ?> contact(s)</span>
-            <?php if ($totalRows > 0): ?>
+            <?php // Gated on the plan's csv_export lever. export-contacts.php
+                  // enforces it too — this only avoids offering a dead button. ?>
+            <?php if ($totalRows > 0 && $canExport): ?>
                 <a href="ajax/export-contacts.php<?= contactsQs() ?>" class="btn btn-outline-primary btn-sm">
                     <i class="bi bi-download me-1"></i>Export CSV
                 </a>
+            <?php elseif ($totalRows > 0): ?>
+                <span class="text-muted small" title="CSV export is not part of your plan">
+                    <i class="bi bi-lock me-1"></i>Export CSV
+                </span>
             <?php endif; ?>
         </div>
     </form>
@@ -228,7 +256,16 @@ require_once dirname(__DIR__) . '/includes/header.php';
                             <?php else: ?>
                                 <i class="bi bi-person-fill text-primary me-1 small"></i>
                             <?php endif; ?>
-                            <?= sanitize($c['contact_name'] ?: explode('@', $c['chat_id'])[0]) ?>
+                            <?php // chatDisplayName() never returns a JID: an unnamed
+                                  // group reads as "Group chat" rather than the
+                                  // numeric JID prefix the old fallback printed,
+                                  // and an unmappable @lid as "Unknown contact". ?>
+                            <?= sanitize(chatDisplayName(
+                                    $c['contact_name'],
+                                    $c['phone_number'] ?? null,
+                                    $c['chat_id'],
+                                    (bool)$c['is_group']
+                                )) ?>
                         </td>
                         <td class="small">
                             <?php $phone = extractPhone($c['chat_id'], $c['phone_number'] ?? null); ?>

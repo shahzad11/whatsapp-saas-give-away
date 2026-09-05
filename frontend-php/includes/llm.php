@@ -491,11 +491,19 @@ function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
 
 // Sends the cheapest possible real request. A key that parses but is revoked
 // only reveals itself by being used, so this genuinely calls the vendor.
-function llmTestProvider(mysqli $conn, $providerCode) {
+//
+// $candidateKey / $candidateBaseUrl let the admin test what is *typed in the
+// form* rather than what is stored. Without them "Test connection" always tested
+// the stored row, so pasting a replacement key and clicking Test reported on the
+// old key — a green tick for a key that was about to be overwritten, or a red
+// cross for a good key that had not been saved yet. Nothing is written here: a
+// test must not have the side effect of saving an untested credential.
+function llmTestProvider(mysqli $conn, $providerCode, $candidateKey = null, $candidateBaseUrl = null) {
     $provider = llmProviderByCode($conn, $providerCode);
     if (!$provider) return [false, 'Provider not configured'];
 
-    $key = llmProviderKey($provider);
+    $candidateKey = trim((string)$candidateKey);
+    $key = $candidateKey !== '' ? $candidateKey : llmProviderKey($provider);
     if ($key === null) {
         return [false, llmProviderHasKey($provider)
             ? 'Stored key cannot be decrypted — re-enter it (the instance secret may have changed).'
@@ -509,13 +517,18 @@ function llmTestProvider(mysqli $conn, $providerCode) {
     }
     if ($model === null) return [false, 'Add at least one chat model for this provider first.'];
 
+    $candidateBaseUrl = trim((string)$candidateBaseUrl);
     $result = llmChat([
         'provider' => $providerCode,
         'key' => $key,
-        'base_url' => llmProviderBaseUrl($provider),
+        'base_url' => $candidateBaseUrl !== '' ? $candidateBaseUrl : llmProviderBaseUrl($provider),
         'model' => $model,
     ], [['role' => 'user', 'content' => 'Reply with the single word: ok']], ['max_tokens' => 16]);
 
     llmRecordTest($conn, $providerCode, $result['ok'], $result['error'] ?? null);
-    return [$result['ok'], $result['ok'] ? 'Replied in ' . $result['latency_ms'] . ' ms' : $result['error']];
+
+    $tested = $candidateKey !== '' ? ' (unsaved key — Save to keep it)' : '';
+    return [$result['ok'], $result['ok']
+        ? 'Replied in ' . $result['latency_ms'] . ' ms' . $tested
+        : $result['error'] . $tested];
 }

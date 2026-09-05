@@ -107,6 +107,21 @@ function checkWaAccountQuota(mysqli $conn, $userId) {
     return [$used < $limit, $used, $limit];
 }
 
+// Contacts are not created by an explicit user action — they appear as a side
+// effect of WhatsApp sync — so this quota cannot be enforced by refusing a
+// request. The caller uses the headroom to stop storing *new* contacts while
+// still updating the ones it already has: freezing updates would make the chat
+// list rot, and deleting to fit would destroy data the tenant did not choose to
+// lose. Reaching the cap therefore stops growth, nothing else.
+function checkContactQuota(mysqli $conn, $userId) {
+    $plan = getUserPlan($conn, $userId);
+    $limit = planLimit($plan, 'max_contacts');
+    $used = countContacts($conn, $userId);
+
+    if ($limit === null) return [true, $used, null];
+    return [$used < $limit, $used, $limit];
+}
+
 function checkMessageQuota(mysqli $conn, $userId) {
     $plan = getUserPlan($conn, $userId);
     $limit = planLimit($plan, 'max_messages_per_month');
@@ -195,9 +210,33 @@ function countTenantsOnPlan(mysqli $conn, $planId) {
     return (int)($row['c'] ?? 0);
 }
 
+function getPlanById(mysqli $conn, $planId) {
+    $stmt = $conn->prepare("SELECT * FROM plans WHERE id = ?");
+    $stmt->bind_param('i', $planId);
+    $stmt->execute();
+    $plan = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $plan ?: null;
+}
+
+// Moves a tenant onto a plan and opens a subscription period for it.
+//
+// The previous live period is closed first. Without that, a tenant who changed
+// plan ended up with two rows in a live status, and lapsingSubscriptions() joins
+// on status rather than on "the newest row" — so the admin's lapsing report
+// listed the tenant twice, once under a plan they had already left. Moving plan
+// ends the old subscription; that is what 'canceled' means here.
 function assignPlan(mysqli $conn, $userId, $planId) {
     $stmt = $conn->prepare("UPDATE users SET plan_id = ? WHERE id = ?");
     $stmt->bind_param('ii', $planId, $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $conn->prepare(
+        "UPDATE subscriptions SET status = 'canceled'
+          WHERE user_id = ? AND status IN ('active','trialing','past_due')"
+    );
+    $stmt->bind_param('i', $userId);
     $stmt->execute();
     $stmt->close();
 

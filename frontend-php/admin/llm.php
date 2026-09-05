@@ -67,7 +67,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'test_provider') {
         $code = (string)($_POST['code'] ?? '');
         if (llmIsKnownProvider($code)) {
-            [$ok, $message] = llmTestProvider($conn, $code);
+            // Pass the form's own values so the test reports on what the admin is
+            // looking at, not on the stored row.
+            [$ok, $message] = llmTestProvider($conn, $code, $_POST['api_key'] ?? null, $_POST['base_url'] ?? null);
             logAudit($conn, 'llm.provider_tested', 'llm_provider', $code, ['ok' => $ok]);
             flash($ok ? 'success' : 'error', $catalogue[$code]['label'] . ': ' . $message);
         }
@@ -91,7 +93,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'toggle_model') {
-        llmSetModelEnabled($conn, (int)($_POST['model_id'] ?? 0), !empty($_POST['enable']));
+        $modelId = (int)($_POST['model_id'] ?? 0);
+        $enable = !empty($_POST['enable']);
+        llmSetModelEnabled($conn, $modelId, $enable);
+        // Every other action on this page logs. Disabling a model changes what
+        // tenants can select and what the reply path will accept, so it belongs
+        // in the audit trail just as much as adding or deleting one.
+        logAudit($conn, 'llm.model_toggled', 'llm_model', (string)$modelId, ['enabled' => $enable]);
         redirect(APP_URL . '/admin/llm.php');
     }
 

@@ -106,6 +106,9 @@ $filters = [
     'to' => $_GET['to'] ?? '',
     'q' => trim((string)($_GET['q'] ?? '')),
     'order' => ($_GET['status'] ?? 'booked') === 'booked' ? 'asc' : 'desc',
+    // From/To are dates the tenant typed in their own timezone; apptList()
+    // needs the zone to turn them into UTC boundaries.
+    'tz' => $tz,
 ];
 $appointments = apptList($conn, $userId, $filters);
 $counts = apptCounts($conn, $userId);
@@ -258,6 +261,18 @@ require_once __DIR__ . '/includes/header.php';
                 Define at least one service first, under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Appointments</a>.
             </p>
         <?php else: ?>
+        <?php // Deliberately not held to the bot's rules. The bot must refuse a
+              // slot outside opening hours, inside the minimum notice or beyond
+              // the booking horizon, because a customer is asking for it. You are
+              // the owner: squeezing someone in after closing is a normal thing
+              // to want, so only double-booking is refused here. Saying so means
+              // the looser behaviour reads as intent rather than as a missing
+              // check — the rules are stated in Chatbot → Appointments. ?>
+        <div class="alert alert-light border small py-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Booked by hand, so your opening hours, minimum notice and booking horizon
+            do not apply — only a clash with an existing appointment is refused.
+        </div>
         <form method="post" class="row g-2 align-items-end">
             <?= csrfField() ?>
             <input type="hidden" name="action" value="create">

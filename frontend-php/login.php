@@ -74,11 +74,11 @@ require_once __DIR__ . '/includes/auth-header.php';
             <label class="form-label">Password</label>
             <input type="password" name="password" class="form-control" placeholder="Enter password" required>
         </div>
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div class="form-check">
-                <input class="form-check-input" type="checkbox" id="remember">
-                <label class="form-check-label small" for="remember">Remember me</label>
-            </div>
+        <?php // No "Remember me": the checkbox that used to sit here had no name
+              // attribute and no handler, so it could not even be submitted. A
+              // persistent login needs a signed long-lived cookie and a way to
+              // revoke it; until that exists, offering the control is a lie. ?>
+        <div class="d-flex justify-content-end align-items-center mb-4">
             <a href="<?= APP_URL ?>/forgot-password.php" class="small text-decoration-none">Forgot password?</a>
         </div>
         <button type="submit" class="btn btn-primary w-100 mb-3">Sign In</button>

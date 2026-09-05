@@ -4,6 +4,7 @@ requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
 $accountId = (int)($_GET['account'] ?? 0);
+$canSendMedia = planHasFeature(getUserPlan($conn, $userId), 'media_send');
 
 $stmt = $conn->prepare("SELECT id, session_id, label, status, phone_number, push_name FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC");
 $stmt->bind_param("i", $userId);
@@ -90,10 +91,9 @@ require_once dirname(__DIR__) . '/includes/header.php';
 <script>
     const selectedSessionId = '<?= sanitize($selectedAccount['session_id'] ?? '') ?>';
 
-    // The attachment endpoint is a multipart POST, which is forgeable from
-    // another origin without a preflight — unlike the JSON endpoints. The token
-    // travels with every upload; send-media.php rejects the request without it.
-    window.waCsrfToken = '<?= csrfToken() ?>';
+    // The plan's media_send lever. app.js draws the attach and mic controls only
+    // when this is true; send-media.php is what actually enforces it.
+    window.waCanSendMedia = <?= $canSendMedia ? 'true' : 'false' ?>;
 
     function switchAccount(accountId) {
         window.location.href = 'chats.php?account=' + accountId;

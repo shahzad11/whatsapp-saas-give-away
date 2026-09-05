@@ -197,6 +197,43 @@ CREATE TABLE IF NOT EXISTS app_settings (
     FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- Feature flags for the seeded plans.
+--
+-- Two problems are fixed here. First, `features` was never seeded at all, so a
+-- fresh install had NULL on every plan and `planHasFeature()` reads NULL as "no
+-- features" — meaning nothing, not even Pro, could use the chatbot until an
+-- admin found the checkboxes. Second, `media_send` and `csv_export` were
+-- editable in the plan editor but enforced nowhere, so their stored values
+-- cannot have been deliberate: Pro shipped with csv_export=false while every Pro
+-- tenant could still export. Enforcing them without correcting the data would
+-- have removed working features from paying tenants.
+--
+-- Both must apply exactly once. This file re-runs on every container start, so a
+-- bare UPDATE would re-enable a flag an admin had since deliberately turned off
+-- — the same trap the plan seed above documents. The marker row is the guard and
+-- is written last, so an interrupted run retries rather than half-applies.
+
+-- A row that has never had a document gets the full intended ladder. Restricted
+-- to NULL so an admin's existing choices are never overwritten.
+UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": false, "csv_export": false}'
+ WHERE code = 'free'    AND features IS NULL;
+UPDATE plans SET features = '{"chatbot": false, "llm_byok": false, "media_send": true,  "csv_export": true}'
+ WHERE code = 'starter' AND features IS NULL;
+UPDATE plans SET features = '{"chatbot": true,  "llm_byok": true,  "media_send": true,  "csv_export": true}'
+ WHERE code = 'pro'     AND features IS NULL;
+
+-- Deployments that already have a document keep every deliberate choice; only
+-- the two flags that could not have been deliberate are corrected. JSON_SET
+-- creates the key when absent and overwrites it when present.
+UPDATE plans
+   SET features = JSON_SET(COALESCE(features, JSON_OBJECT()),
+                           '$.media_send', TRUE,
+                           '$.csv_export', TRUE)
+ WHERE code IN ('starter', 'pro')
+   AND NOT EXISTS (SELECT 1 FROM app_settings WHERE setting_key = 'migrated_plan_flags_v1');
+
+INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('migrated_plan_flags_v1', '1');
+
 -- Metered usage, bucketed per calendar month so quotas can reset.
 CREATE TABLE IF NOT EXISTS usage_counters (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,

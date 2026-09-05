@@ -8,6 +8,16 @@ if (!isLoggedIn()) {
 }
 
 $userId = (int)$_SESSION['user_id'];
+
+// The plan's `csv_export` lever. This endpoint is the gate; hiding the button on
+// contacts.php is only presentation, and a bookmarked URL would bypass it.
+if (!planHasFeature(getUserPlan($conn, $userId), 'csv_export')) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'CSV export is not part of your plan.';
+    exit;
+}
+
 $userTz = getUserTimezone($conn, $userId);
 
 // --- Query params (same as contacts.php) ---

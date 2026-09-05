@@ -17,7 +17,7 @@ if (!isLoggedIn()) {
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 
-if (!hash_equals($_SESSION['csrf_token'] ?? '', (string)($input['csrf_token'] ?? ''))) {
+if (!csrfTokenValid($input['csrf_token'] ?? '')) {
     echo json_encode(['ok' => false, 'error' => 'Invalid request. Reload the page.']);
     exit;
 }
