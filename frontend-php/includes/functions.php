@@ -121,6 +121,53 @@ function sendEmail($to, $subject, $body, $textBody = '') {
     return $ok;
 }
 
+// The one function that decides what a chat or sender is called in the UI.
+//
+// It must never return a JID or an unexplained identifier. WhatsApp uses two
+// JID formats and they are not equally useful:
+//   <digits>@s.whatsapp.net — the digits are a real phone number
+//   <opaque>@lid            — an internal id that resembles a phone number and
+//                             is not one; showing it actively misleads
+//
+// So the order is: known name → phone number in international form → an honest
+// placeholder. Returning the raw identifier is never an option.
+function chatDisplayName($name, $phone, $jid, $isGroup = false) {
+    $name = trim((string)$name);
+
+    // A stored name that is itself an identifier is not a name — older rows
+    // were written before this rule existed.
+    //
+    // The separator class matters: a legacy group JID is
+    // `<creator-phone>-<timestamp>@g.us`, so its prefix is digits *and a
+    // hyphen* and a digits-only test lets it straight through. The 10-character
+    // floor keeps genuinely short numeric names (shortcodes, "786") usable.
+    $identifierLike = str_contains($name, '@') || preg_match('/^[\d\s.\-]{10,}$/', $name);
+
+    if ($name !== '' && !$identifierLike) {
+        return $name;
+    }
+
+    if ($isGroup) {
+        // A group's identity is its subject. Without it there is nothing
+        // meaningful to show — the JID prefix is a timestamp and a serial.
+        return 'Group chat';
+    }
+
+    // A phone number is only ever taken from the phone column or from an
+    // @s.whatsapp.net JID, never parsed out of the name. An @lid identifier is
+    // 14-15 digits, which is a valid E.164 length — deriving a number from one
+    // would fabricate a plausible-looking phone number that does not exist.
+    $phone = preg_replace('/\D+/', '', (string)$phone);
+    if ($phone === '' && str_ends_with((string)$jid, '@s.whatsapp.net')) {
+        $phone = preg_replace('/\D+/', '', explode('@', $jid)[0]);
+    }
+    if ($phone !== '') {
+        return '+' . $phone;
+    }
+
+    return 'Unknown contact';
+}
+
 function timeAgo($datetime) {
     $now = new DateTime();
     $ago = new DateTime($datetime);

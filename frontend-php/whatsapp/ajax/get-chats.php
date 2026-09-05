@@ -20,8 +20,8 @@ $userTz = getUserTimezone($conn, $userId);
 $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats');
 
 if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
-    $stmtUpsert = $conn->prepare("INSERT INTO wa_contacts (account_id, session_id, chat_id, contact_name, phone_number, last_message, last_message_time, is_group)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    $stmtUpsert = $conn->prepare("INSERT INTO wa_contacts (account_id, session_id, chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
         contact_name = CASE
             WHEN VALUES(contact_name) REGEXP '^[0-9]+$' THEN COALESCE(contact_name, VALUES(contact_name))
@@ -41,23 +41,34 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
             WHEN last_message_time IS NULL OR VALUES(last_message_time) >= last_message_time THEN VALUES(last_message_time)
             ELSE last_message_time
         END,
-        is_group = VALUES(is_group)");
+        is_group = VALUES(is_group),
+        -- Archive state is owned by WhatsApp, so the backend's value always
+        -- wins. Unlike the name and timestamp there is no 'better' value to
+        -- preserve: the phone is the source of truth and it can toggle either way.
+        is_archived = VALUES(is_archived)");
 
     foreach ($resp['chats'] as $chat) {
         $chatId = $chat['id'] ?? '';
-        $name = $chat['name'] ?? '';
+        // displayName is the backend's resolved identity and is null when
+        // genuinely unknown. Never fall back to the JID: for an @lid chat that
+        // is an opaque internal id which looks like a phone number and is not.
+        $name = $chat['displayName'] ?? ($chat['name'] ?? '');
+        if ($name !== '' && (str_contains($name, '@') || preg_match('/^\d{10,}$/', $name))) {
+            $name = '';
+        }
         $lastMsg = $chat['lastMessage'] ?? '';
         $lastTime = null;
         if (!empty($chat['lastTime'])) {
             $lastTime = gmdate('Y-m-d H:i:s', strtotime($chat['lastTime']));
         }
         $isGroup = (int)(str_ends_with($chatId, '@g.us'));
+        $isArchived = (int)!empty($chat['archived']);
         // Phone from backend (mapped from LID), or extract from @s.whatsapp.net
         $phone = $chat['phone'] ?? null;
         if (!$phone && str_ends_with($chatId, '@s.whatsapp.net')) {
             $phone = explode('@', $chatId)[0];
         }
-        $stmtUpsert->bind_param("issssssi", $accountId, $sessionId, $chatId, $name, $phone, $lastMsg, $lastTime, $isGroup);
+        $stmtUpsert->bind_param("issssssii", $accountId, $sessionId, $chatId, $name, $phone, $lastMsg, $lastTime, $isGroup, $isArchived);
         $stmtUpsert->execute();
     }
     $stmtUpsert->close();
@@ -66,21 +77,35 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
 // Scoped by account_id, not session_id. Ownership was already proven above,
 // but keeping the tenant predicate inside the query means this stays correct
 // even if the guard above is ever refactored away.
-$stmtFetch = $conn->prepare("SELECT chat_id, contact_name, last_message, last_message_time, is_group
+$stmtFetch = $conn->prepare("SELECT chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived
     FROM wa_contacts WHERE account_id = ? ORDER BY last_message_time DESC");
 $stmtFetch->bind_param("i", $accountId);
 $stmtFetch->execute();
 $result = $stmtFetch->get_result();
+
 $chats = [];
+$archivedCount = 0;
 while ($r = $result->fetch_assoc()) {
+    $archived = (bool)$r['is_archived'];
+    if ($archived) $archivedCount++;
+
     $chats[] = [
         'id' => $r['chat_id'],
-        'name' => $r['contact_name'] ?: explode('@', $r['chat_id'])[0],
+        // chatDisplayName never returns a JID or a bare identifier — see
+        // includes/functions.php. A group with no known subject reads as
+        // "Group chat", a contact with no known name as their phone number,
+        // and an unmappable @lid as "Unknown contact".
+        'name' => chatDisplayName($r['contact_name'], $r['phone_number'], $r['chat_id'], (bool)$r['is_group']),
         'lastMessage' => $r['last_message'] ?: '',
         'lastTime' => convertToUserTz($r['last_message_time'], $userTz),
-        'isGroup' => (bool)$r['is_group']
+        'isGroup' => (bool)$r['is_group'],
+        'archived' => $archived,
     ];
 }
 $stmtFetch->close();
 
-echo json_encode(['ok' => true, 'chats' => $chats]);
+echo json_encode([
+    'ok' => true,
+    'chats' => $chats,
+    'archivedCount' => $archivedCount,
+]);

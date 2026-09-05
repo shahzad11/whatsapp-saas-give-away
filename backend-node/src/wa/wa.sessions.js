@@ -504,6 +504,23 @@ function storeMessage(sessionState, msg) {
     ? new Date(Number(msg.messageTimestamp) * 1000).toISOString()
     : new Date().toISOString()
 
+  const isGroupChat = chatId.endsWith('@g.us')
+
+  // In a group, key.remoteJid is the group, and key.participant is who actually
+  // spoke. Without it every incoming group message is attributed to the group
+  // itself, which is why group threads could not show per-sender names.
+  const senderJid = fromMe
+    ? null
+    : (msg.key?.participant || msg.participant || (isGroupChat ? null : chatId))
+
+  // pushName is the sender's self-chosen display name and is the best signal for
+  // a group participant we have no contact entry for. A saved contact name still
+  // wins, matching WhatsApp.
+  const identity = senderJid ? resolveIdentity(sessionState, senderJid) : { name: null, phone: null }
+  const senderName = identity.name
+    || msg.pushName
+    || (identity.phone ? '+' + identity.phone : null)
+
   const entry = {
     id: msg.key.id,
     chatId,
@@ -512,7 +529,10 @@ function storeMessage(sessionState, msg) {
     mediaType: media.type,
     mediaMime: media.mime,
     mediaFilename: media.filename,
-    senderName: msg.pushName || null,
+    senderName,
+    // Kept so the name can be re-resolved later: contact sync often arrives
+    // after the messages it would have named.
+    senderJid: senderJid || undefined,
     time: timestamp,
     contactInfo: contactInfo || undefined,
     locationInfo: locationInfo || undefined,
@@ -549,7 +569,7 @@ function storeMessage(sessionState, msg) {
 
   const preview = previewFor(entry)
 
-  const isGroup = chatId.endsWith('@g.us')
+  const isGroup = isGroupChat
   const existing = sessionState.chats.get(chatId)
 
   // A history dump replays old messages. Whichever one happened to be processed
@@ -571,7 +591,10 @@ function storeMessage(sessionState, msg) {
     lastMessage: isNewest ? preview : (existing.lastMessage || ''),
     lastTime: isNewest ? timestamp : existing.lastTime,
     isGroup,
-    phone: existingPhone
+    phone: existingPhone,
+    // Carried forward, never reset here. A new message does not un-archive a
+    // chat in WhatsApp, and this function must not decide archive state.
+    archived: existing?.archived || false
   })
 
   scheduleChatSave(sessionState)
@@ -582,9 +605,12 @@ function getContactName(contact) {
   return contact.name || contact.notify || contact.verifiedName || null
 }
 
-function isNumericName(name) {
+// A "numeric name" is an identifier masquerading as a name: a JID, or the
+// digits of one. Legacy group JIDs are `<phone>-<timestamp>`, so the hyphen has
+// to be in the class or every such group passes as a real subject.
+export function isNumericName(name) {
   if (!name) return true
-  return /^[\d@.]+$/.test(name) || name.includes('@')
+  return /^[\d@.\-]+$/.test(name) || name.includes('@')
 }
 
 function processContact(sessionState, contact) {
@@ -679,6 +705,45 @@ function resolveNumericNames(sessionState) {
   if (resolved > 0) {
     console.log(`Resolved ${resolved} numeric chat names from contact data`)
   }
+}
+
+// The single place that decides what a JID is *called*.
+//
+// A raw JID must never reach the UI. Two kinds are unusable to a human:
+// `<digits>@s.whatsapp.net` is at least a phone number, but `<opaque>@lid` is an
+// internal identifier that means nothing at all — showing its digits is worse
+// than showing nothing, because it looks like a phone number and is not one.
+//
+// Order: known contact name → the chat's own resolved name → the phone number
+// in international form → null. Callers render null as "Unknown", never as the
+// JID.
+// Exported for unit testing: pure, and the single point where "what is this
+// JID called" is decided, so it is worth pinning down directly.
+export function resolveIdentity(sessionState, jid) {
+  if (!jid) return { name: null, phone: null }
+
+  const phone = sessionState.phoneNumbers.get(jid)
+    || (jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0] : null)
+
+  let name = sessionState.contactNames.get(jid) || null
+  if (isNumericName(name)) name = null
+
+  if (!name) {
+    const chat = sessionState.chats.get(jid)
+    if (chat && !isNumericName(chat.name)) name = chat.name
+  }
+
+  return { name: name || null, phone: phone || null }
+}
+
+// Baileys has used both `archived` and `archive` across versions, and the value
+// arrives as a boolean, a number, or absent. Absent must mean "unknown", not
+// "not archived", or an app-state patch that omits the field would silently
+// un-archive the chat.
+export function readArchiveFlag(chat) {
+  const raw = chat?.archived ?? chat?.archive
+  if (raw === undefined || raw === null) return undefined
+  return raw === true || raw === 1 || raw === '1' || raw === 'true'
 }
 
 // Registers a timeout against the session so it can be cancelled on logout.
@@ -779,20 +844,30 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
           : null
         const existing = sessionState.chats.get(chat.id)
 
+        const archived = readArchiveFlag(chat)
+
         if (existing) {
           if (convTime && (!existing.lastTime || convTime > existing.lastTime)) {
             existing.lastTime = convTime
           }
           if (chat.name && isNumericName(existing.name)) existing.name = chat.name
+          // undefined means the payload did not say, which must not be read as
+          // "not archived".
+          if (archived !== undefined) existing.archived = archived
         } else {
           const mappedName = sessionState.contactNames.get(chat.id)
           sessionState.chats.set(chat.id, {
             id: chat.id,
-            name: mappedName || chat.name || chat.id.split('@')[0],
+            // Groups carry their subject in chat.name; prefer it over a contact
+            // map entry, which for a group would only ever be the raw JID.
+            name: chat.id.endsWith('@g.us')
+              ? (chat.name || chat.subject || chat.id)
+              : (mappedName || chat.name || chat.id.split('@')[0]),
             lastMessage: '',
             lastTime: convTime,
             isGroup: chat.id.endsWith('@g.us'),
-            phone: sessionState.phoneNumbers.get(chat.id) || null
+            phone: sessionState.phoneNumbers.get(chat.id) || null,
+            archived: archived === true
           })
         }
       }
@@ -822,6 +897,46 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
     }
 
     scheduleChatSave(sessionState)
+  })
+
+  // Archiving is app-state data: it arrives as a patch after the initial sync,
+  // and toggling it on the phone emits nothing else. Without this handler the
+  // archive flag would only ever be as fresh as the last full history sync.
+  sock.ev.on('chats.update', (updates) => {
+    let touched = 0
+    for (const update of updates || []) {
+      if (!update?.id) continue
+      const chat = sessionState.chats.get(update.id)
+      if (!chat) continue
+
+      const archived = readArchiveFlag(update)
+      if (archived !== undefined && chat.archived !== archived) {
+        chat.archived = archived
+        touched++
+      }
+      // A renamed group announces itself here too.
+      const newName = update.name || update.subject
+      if (newName && !isNumericName(newName) && newName !== chat.name) {
+        chat.name = newName
+        touched++
+      }
+    }
+    if (touched > 0) scheduleChatSave(sessionState)
+  })
+
+  // Group renames and membership changes.
+  sock.ev.on('groups.update', (updates) => {
+    let touched = 0
+    for (const update of updates || []) {
+      if (!update?.id || !update.subject) continue
+      const chat = sessionState.chats.get(update.id)
+      if (chat && chat.name !== update.subject) {
+        chat.name = update.subject
+        chat.isGroup = true
+        touched++
+      }
+    }
+    if (touched > 0) scheduleChatSave(sessionState)
   })
 
   sock.ev.on('contacts.upsert', (contacts) => {
@@ -906,8 +1021,10 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
         try {
           const groups = await sock.groupFetchAllParticipating()
           let added = 0
+          let renamed = 0
           for (const [gid, meta] of Object.entries(groups)) {
-            if (!sessionState.chats.has(gid)) {
+            const existing = sessionState.chats.get(gid)
+            if (!existing) {
               sessionState.chats.set(gid, {
                 id: gid,
                 name: meta.subject || gid,
@@ -915,13 +1032,26 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
                 lastTime: meta.subjectTime
                   ? new Date(meta.subjectTime * 1000).toISOString()
                   : null,
-                phone: null
+                // This was missing, so every group discovered here was stored
+                // with isGroup undefined and rendered as a 1:1 chat: no group
+                // icon, and the thread showed no per-sender names.
+                isGroup: true,
+                phone: null,
+                archived: false
               })
               added++
+            } else {
+              // The chat may already exist from a message, in which case its
+              // name is the raw JID. The subject is authoritative for a group.
+              existing.isGroup = true
+              if (meta.subject && isNumericName(existing.name)) {
+                existing.name = meta.subject
+                renamed++
+              }
             }
           }
-          if (added > 0) {
-            console.log(`Auto-fetched ${added} groups for session ${sessionState.sessionId}`)
+          if (added > 0 || renamed > 0) {
+            console.log(`Groups: ${added} added, ${renamed} named from subject (session ${sessionState.sessionId})`)
             scheduleChatSave(sessionState)
           }
         } catch (err) {
@@ -1290,7 +1420,21 @@ export function getSessionChats(tenantId, sessionId) {
 
   const chatList = []
   for (const chat of s.chats.values()) {
-    chatList.push(chat)
+    // displayName is resolved at read time, not at ingest: contact sync usually
+    // lands after the chats it would have named, so a name baked in at ingest
+    // stays stale. null means "we genuinely do not know" — the caller must
+    // render that as Unknown rather than falling back to the JID.
+    const identity = resolveIdentity(s, chat.id)
+    const displayName = chat.isGroup
+      ? (isNumericName(chat.name) ? null : chat.name)
+      : (identity.name || (identity.phone ? '+' + identity.phone : null))
+
+    chatList.push({
+      ...chat,
+      archived: chat.archived === true,
+      phone: chat.phone || identity.phone || null,
+      displayName
+    })
   }
   // Most recent first, chats that have never had activity last. Compared as
   // instants rather than strings so a malformed/legacy lastTime cannot wedge a
@@ -1307,7 +1451,21 @@ export function getSessionMessages(tenantId, sessionId, chatId) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
   if (!s) return null
 
-  return s.messages.get(chatId) || []
+  const msgs = s.messages.get(chatId) || []
+  if (!chatId.endsWith('@g.us')) return msgs
+
+  // Group threads show who spoke. Re-resolve per read for the same reason as
+  // the chat list: a participant's contact entry usually arrives after their
+  // messages, so the name stored at ingest is often just their pushName or
+  // nothing at all.
+  return msgs.map(m => {
+    if (m.fromMe || !m.senderJid) return m
+    const identity = resolveIdentity(s, m.senderJid)
+    const better = identity.name
+      || m.senderName
+      || (identity.phone ? '+' + identity.phone : null)
+    return better === m.senderName ? m : { ...m, senderName: better }
+  })
 }
 
 export async function getMediaBuffer(tenantId, sessionId, messageId) {
@@ -1396,7 +1554,9 @@ export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
       lastMessage: text,
       lastTime: entry.time,
       isGroup: chatId.endsWith('@g.us'),
-      phone: existing?.phone || null
+      phone: existing?.phone || null,
+      // Replying does not un-archive a chat.
+      archived: existing?.archived || false
     })
 
     scheduleChatSave(s)

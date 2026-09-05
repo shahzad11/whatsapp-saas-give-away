@@ -94,12 +94,15 @@ require_once dirname(__DIR__) . '/includes/header.php';
         window.location.href = 'chats.php?account=' + accountId;
     }
 
+    // Filters only the rows currently rendered, so a search inside the Archived
+    // view stays inside it rather than silently matching unarchived chats.
     function filterChats(query) {
         const items = document.querySelectorAll('.chat-list-item');
         query = query.toLowerCase();
         items.forEach(item => {
             const name = item.querySelector('.chat-name')?.textContent?.toLowerCase() || '';
-            item.style.display = name.includes(query) ? '' : 'none';
+            const preview = item.querySelector('.chat-preview')?.textContent?.toLowerCase() || '';
+            item.style.display = (name.includes(query) || preview.includes(query)) ? '' : 'none';
         });
     }
 

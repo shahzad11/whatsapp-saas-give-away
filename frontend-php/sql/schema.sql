@@ -273,6 +273,34 @@ CREATE TABLE IF NOT EXISTS wa_contacts (
     INDEX idx_account_time (account_id, last_message_time DESC)
 ) ENGINE=InnoDB;
 
+-- Archived chats are isolated in the UI the way WhatsApp Web does it, so the
+-- flag has to be queryable rather than derived. Added with the same
+-- information_schema guard as plans.features: no ADD COLUMN IF NOT EXISTS, and
+-- this file re-runs on every container start.
+SET @add_archived := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_contacts ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_contacts' AND COLUMN_NAME = 'is_archived'
+);
+PREPARE stmt_add_archived FROM @add_archived;
+EXECUTE stmt_add_archived;
+DEALLOCATE PREPARE stmt_add_archived;
+
+-- The main list excludes archived chats and both views sort on recency, so the
+-- existing (account_id, last_message_time) index no longer covers the query.
+SET @add_arch_idx := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_account_archived_time ON wa_contacts (account_id, is_archived, last_message_time DESC)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_contacts' AND INDEX_NAME = 'idx_account_archived_time'
+);
+PREPARE stmt_add_arch_idx FROM @add_arch_idx;
+EXECUTE stmt_add_arch_idx;
+DEALLOCATE PREPARE stmt_add_arch_idx;
+
 CREATE TABLE IF NOT EXISTS wa_messages (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     account_id INT NOT NULL,
@@ -292,3 +320,18 @@ CREATE TABLE IF NOT EXISTS wa_messages (
     INDEX idx_account_chat (account_id, chat_id, message_timestamp),
     INDEX idx_account_time (account_id, message_timestamp)
 ) ENGINE=InnoDB;
+
+-- Who actually spoke, inside a group. key.remoteJid is the group; the sender is
+-- key.participant. Stored alongside the resolved name so the name can be
+-- re-resolved later: a participant's contact entry usually arrives after their
+-- messages do.
+SET @add_sender_jid := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_messages ADD COLUMN sender_jid VARCHAR(100) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_messages' AND COLUMN_NAME = 'sender_jid'
+);
+PREPARE stmt_add_sender_jid FROM @add_sender_jid;
+EXECUTE stmt_add_sender_jid;
+DEALLOCATE PREPARE stmt_add_sender_jid;

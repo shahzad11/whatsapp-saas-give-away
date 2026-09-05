@@ -238,6 +238,10 @@ function renderMediaPreview(msg) {
     return `${icons[t] || ''} ${labels[t] || t}`;
 }
 
+// Which list the sidebar is showing. WhatsApp Web keeps archived chats out of
+// the main list entirely and only reveals them inside their own view.
+let showingArchived = false;
+
 function loadChats(sessionId) {
     if (!sessionId) return;
     fetch(`ajax/get-chats.php?session_id=${sessionId}`)
@@ -254,22 +258,64 @@ function loadChats(sessionId) {
         });
 }
 
+function toggleArchivedView(sessionId) {
+    showingArchived = !showingArchived;
+    renderChatList(sessionId, allChatsData);
+    const search = document.getElementById('chatSearch');
+    if (search) { search.value = ''; }
+}
+
 function renderChatList(sessionId, chats) {
     const chatList = document.getElementById('chatList');
     if (!chatList) return;
-    chatList.innerHTML = chats.map(chat => {
-        const initial = (chat.name || chat.id).charAt(0).toUpperCase();
-        const name = escapeHtml(chat.name || chat.id.split('@')[0]);
+
+    const archived = chats.filter(c => c.archived);
+    const active = chats.filter(c => !c.archived);
+    const visible = showingArchived ? archived : active;
+
+    let html = '';
+
+    if (showingArchived) {
+        html += `
+            <div class="chat-list-header" onclick="toggleArchivedView('${escapeAttr(sessionId)}')">
+                <i class="bi bi-arrow-left me-2"></i><span>Archived</span>
+                <span class="chat-list-count">${archived.length}</span>
+            </div>
+        `;
+    } else if (archived.length > 0) {
+        // Only offered when there is something archived, so the row is never a
+        // dead end.
+        html += `
+            <div class="chat-list-header" onclick="toggleArchivedView('${escapeAttr(sessionId)}')">
+                <i class="bi bi-archive me-2"></i><span>Archived</span>
+                <span class="chat-list-count">${archived.length}</span>
+            </div>
+        `;
+    }
+
+    if (visible.length === 0) {
+        html += `<div class="p-3 text-center text-muted small">${showingArchived ? 'No archived chats' : 'No chats yet'}</div>`;
+        chatList.innerHTML = html;
+        return;
+    }
+
+    html += visible.map(chat => {
+        // The server guarantees a human-readable name ("Group chat", "+92…",
+        // "Unknown contact"), so there is no JID fallback to do here.
+        const name = escapeHtml(chat.name || '');
+        const initial = chat.isGroup ? '' : (chat.name || '?').charAt(0).toUpperCase();
+        const avatar = chat.isGroup
+            ? '<i class="bi bi-people-fill"></i>'
+            : initial;
         const preview = escapeHtml(chat.lastMessage || '');
         const time = formatChatTime(chat.lastTime);
         const isActive = chat.id === currentChatId;
-        const groupIcon = chat.isGroup ? '<i class="bi bi-people-fill me-1 x-small"></i>' : '';
         return `
-            <div class="chat-list-item ${isActive ? 'active' : ''}" onclick="openChat('${sessionId}', '${chat.id}', this)">
-                <div class="chat-avatar ${chat.isGroup ? 'chat-avatar-group' : ''}">${initial}</div>
+            <div class="chat-list-item ${isActive ? 'active' : ''}" onclick="openChat('${escapeAttr(sessionId)}', '${escapeAttr(chat.id)}', this)">
+                <div class="chat-avatar ${chat.isGroup ? 'chat-avatar-group' : ''}">${avatar}</div>
                 <div class="chat-info">
                     <div class="chat-info-top">
-                        <span class="chat-name">${groupIcon}${name}</span>
+                        <span class="chat-name">${name}</span>
                         <span class="chat-time">${time}</span>
                     </div>
                     <div class="chat-preview">${preview}</div>
@@ -277,12 +323,17 @@ function renderChatList(sessionId, chats) {
             </div>
         `;
     }).join('');
+
+    chatList.innerHTML = html;
 }
 
 function openChat(sessionId, chatId, el) {
     currentChatId = chatId;
     const chatData = allChatsData.find(c => c.id === chatId);
-    currentChatName = chatData ? (chatData.name || chatId.split('@')[0]) : chatId.split('@')[0];
+    const isGroup = chatId.endsWith('@g.us');
+    // The name comes from the server, which never returns a JID. Falling back
+    // to the JID prefix here was how raw @lid identifiers reached the header.
+    currentChatName = (chatData && chatData.name) || (isGroup ? 'Group chat' : 'Unknown contact');
 
     document.querySelectorAll('.chat-list-item').forEach(e => e.classList.remove('active'));
     if (el) el.classList.add('active');
@@ -290,15 +341,31 @@ function openChat(sessionId, chatId, el) {
     const chatMain = document.getElementById('chatMain');
     if (!chatMain) return;
 
-    const isGroup = chatId.endsWith('@g.us');
-    const initial = currentChatName.charAt(0).toUpperCase();
-    const subtext = isGroup ? 'Group' : chatId.split('@')[0];
+    const avatar = isGroup
+        ? '<i class="bi bi-people-fill"></i>'
+        : currentChatName.charAt(0).toUpperCase();
+
+    // Subtext: never the JID. A group says so; a contact shows the phone number
+    // only when it is not already the title.
+    let subtext;
+    if (isGroup) {
+        subtext = 'Group';
+    } else if (chatData && chatData.name && chatData.name.startsWith('+')) {
+        subtext = '';
+    } else if (chatId.endsWith('@s.whatsapp.net')) {
+        subtext = '+' + chatId.split('@')[0].replace(/\D/g, '');
+    } else {
+        subtext = '';
+    }
+    const archivedBadge = (chatData && chatData.archived)
+        ? '<span class="chat-header-archived"><i class="bi bi-archive me-1"></i>Archived</span>'
+        : '';
 
     chatMain.innerHTML = `
         <div class="chat-main-header">
-            <div class="chat-header-avatar">${initial}</div>
+            <div class="chat-header-avatar ${isGroup ? 'chat-avatar-group' : ''}">${avatar}</div>
             <div class="chat-header-info">
-                <div class="chat-header-name">${escapeHtml(currentChatName)}</div>
+                <div class="chat-header-name">${escapeHtml(currentChatName)}${archivedBadge}</div>
                 <div class="chat-header-status">${escapeHtml(subtext)}</div>
             </div>
         </div>
@@ -307,8 +374,8 @@ function openChat(sessionId, chatId, el) {
         </div>
         <div class="chat-input-area">
             <input type="text" class="form-control" id="messageInput" placeholder="Type a message..."
-                   onkeypress="if(event.key==='Enter')sendMessage('${sessionId}','${chatId}')">
-            <button class="btn btn-send" onclick="sendMessage('${sessionId}','${chatId}')">
+                   onkeypress="if(event.key==='Enter')sendMessage('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
+            <button class="btn btn-send" onclick="sendMessage('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
                 <i class="bi bi-send-fill"></i>
             </button>
         </div>
@@ -338,11 +405,14 @@ function loadMessages(sessionId, chatId) {
 
             let html = '';
             let lastDate = '';
+            let lastSender = null;
+            const inGroup = !!(currentChatId && currentChatId.endsWith('@g.us'));
 
             for (const msg of msgs) {
                 const msgDateStr = msg.time ? msg.time.split(' ')[0] : '';
                 if (msgDateStr && msgDateStr !== lastDate) {
                     lastDate = msgDateStr;
+                    lastSender = null; // repeat the name after a date break
                     html += `<div class="date-separator"><span>${formatDateSeparator(msg.time)}</span></div>`;
                 }
 
@@ -353,9 +423,13 @@ function loadMessages(sessionId, chatId) {
 
                 html += `<div class="msg-row ${msg.fromMe ? 'msg-out' : 'msg-in'}">`;
                 html += `<div class="chat-bubble ${bubbleClass}">`;
-                if (!msg.fromMe && msg.senderName && currentChatId && currentChatId.endsWith('@g.us')) {
+                // Group threads label the sender, once per run of consecutive
+                // messages from the same person — as WhatsApp does. The server
+                // only populates senderName for group messages.
+                if (inGroup && !msg.fromMe && msg.senderName && msg.senderName !== lastSender) {
                     html += `<div class="bubble-sender">${escapeHtml(msg.senderName)}</div>`;
                 }
+                lastSender = msg.fromMe ? null : (msg.senderName || null);
                 html += `<div class="bubble-content">${content}</div>`;
                 html += `<div class="bubble-meta"><span class="bubble-time">${time}</span>${tickMark}</div>`;
                 html += `</div></div>`;
@@ -392,4 +466,22 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// For a value interpolated into an inline handler, e.g.
+// onclick="openChat('...', '<here>')".
+//
+// escapeHtml() is not enough: it leaves the single quote alone, so a value
+// containing one would close the JS string literal and everything after it
+// would be executed. WhatsApp JIDs cannot contain quotes today, which makes
+// this theoretical — but the ids flow from a remote party through the database
+// into markup, and that is exactly the path that stops being theoretical when
+// someone later reuses the helper for a user-supplied value.
+function escapeAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
