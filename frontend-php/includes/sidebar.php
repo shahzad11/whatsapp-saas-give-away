@@ -38,14 +38,10 @@
                 <i class="bi bi-gear"></i><span>Settings</span>
             </a>
         </div>
-        <?php if (isAdmin()): ?>
-        <div class="nav-section">
-            <span class="nav-section-title">Administration</span>
-            <a href="<?= APP_URL ?>/admin/index.php" class="nav-link-item <?= $currentPage === 'index' && str_contains($_SERVER['PHP_SELF'], '/admin/') ? 'active' : '' ?>">
-                <i class="bi bi-shield-lock"></i><span>Tenants</span>
-            </a>
-        </div>
-        <?php endif; ?>
+        <?php // No Administration section here by design. Platform management is
+              // its own console under /admin/* with its own layout and nav, not a
+              // tab in the tenant menu. Admins reach it from the user dropdown in
+              // includes/header.php. ?>
     </nav>
     <div class="sidebar-footer">
         <div class="d-flex align-items-center gap-2">

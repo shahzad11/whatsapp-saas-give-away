@@ -1,0 +1,68 @@
+/* Admin console theme.
+ *
+ * Loaded only by includes/admin-header.php, after style.css. Kept in its own
+ * file rather than added to style.css so the tenant app never ships admin
+ * styling, and so the two layouts can diverge without regression risk.
+ *
+ * The whole point is that the admin area does not look like the tenant app:
+ * these pages act on other people's accounts, so "which surface am I on?"
+ * should never need a second look. */
+
+.admin-console {
+    --admin-accent: #dc2626;
+    --sidebar-bg: #1a1014;
+    --sidebar-active: #2c1a1f;
+}
+
+/* Shield, not the WhatsApp mark — this is the platform, not an account. */
+.admin-console .sidebar-brand i {
+    color: var(--admin-accent);
+}
+
+.admin-console .sidebar-brand span::after {
+    content: " Admin";
+    font-weight: 400;
+    opacity: 0.55;
+}
+
+.admin-scope-banner {
+    background: var(--admin-accent);
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: center;
+    padding: 5px 20px;
+}
+
+.admin-console .nav-link-item.active {
+    border-left-color: var(--admin-accent);
+}
+
+/* A hairline of the accent colour along the top of the content area, so the
+ * context is visible even when the sidebar is collapsed on mobile. */
+.admin-console .app-topbar {
+    border-top: 3px solid var(--admin-accent);
+}
+
+.admin-console .app-topbar h5::before {
+    content: "Admin";
+    display: inline-block;
+    margin-right: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--admin-accent);
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    vertical-align: middle;
+}
+
+/* Destructive tenant actions (suspend, demote) should read as destructive. */
+.admin-console .table-card .btn-outline-danger:hover {
+    background: var(--admin-accent);
+    border-color: var(--admin-accent);
+}

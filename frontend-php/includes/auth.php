@@ -26,10 +26,16 @@ function isAdmin() {
     return $user && (int)$user['is_admin'] === 1;
 }
 
+// Guards every page under /admin/. Reached through includes/admin-init.php so an
+// admin page cannot be added without it.
+//
+// A non-admin gets 302 → dashboard, identical to the pre-existing behaviour. The
+// previous http_response_code(403) here was dead code: PHP replaces the status
+// with 302 when a Location header is sent unless a 201 or 3xx was already set,
+// so it never reached the client and only implied a response this never returns.
 function requireAdmin() {
     requireLogin();
     if (!isAdmin()) {
-        http_response_code(403);
         flash('error', 'You do not have access to that area.');
         redirect(APP_URL . '/dashboard.php');
     }

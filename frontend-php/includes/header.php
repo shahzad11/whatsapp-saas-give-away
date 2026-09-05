@@ -36,6 +36,14 @@ $pageTitle = $pageTitle ?? 'Dashboard';
                     <ul class="dropdown-menu dropdown-menu-end">
                         <li><a class="dropdown-item" href="<?= APP_URL ?>/profile.php"><i class="bi bi-person me-2"></i>Profile</a></li>
                         <li><a class="dropdown-item" href="<?= APP_URL ?>/settings.php"><i class="bi bi-gear me-2"></i>Settings</a></li>
+                        <?php // The only route into the admin console from the tenant app, and
+                              // only for admins. Never rendered for a regular tenant — and the
+                              // console guards itself server-side regardless, since hiding a
+                              // link is not access control. ?>
+                        <?php if (isAdmin()): ?>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="<?= APP_URL ?>/admin/index.php"><i class="bi bi-shield-lock me-2"></i>Admin console</a></li>
+                        <?php endif; ?>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item text-danger" href="<?= APP_URL ?>/logout.php"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
                     </ul>
