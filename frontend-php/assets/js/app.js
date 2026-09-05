@@ -127,6 +127,149 @@ function formatDateSeparator(dateStr) {
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/* ===== WhatsApp text formatting =====
+ *
+ * Messages arrive as plain text carrying WhatsApp's markers, and we were
+ * printing them literally — a bulk-forwarded job post reads as a wall of
+ * asterisks instead of bold headings. Both the phone app and WhatsApp Web
+ * render these, so a client that does not is visibly broken.
+ *
+ * Supported, matching WhatsApp: *bold*, _italic_, ~strikethrough~,
+ * ```monospace blocks```, `inline code`, "> " quotes, "- " bullet lists,
+ * "1. " numbered lists, and clickable links.
+ *
+ * The order below is not incidental. Escaping happens first, so nothing here
+ * can produce markup from message content. Code spans and URLs are then lifted
+ * out into placeholders *before* any inline formatting runs, because a URL
+ * containing underscores (very common) would otherwise be chopped into italics,
+ * and code is meant to be literal.
+ */
+const WA_PLACEHOLDER = '\u0000';
+
+function waEscapeHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// A delimiter only counts when it hugs the text: "*bold*" formats, "* not *"
+// does not. This mirrors WhatsApp, and it is what stops a bare asterisk in
+// "2 * 3" from opening a run that swallows the rest of the message.
+// '>' and '<' count as boundaries so *_nested_* works: by the time the italic
+// pass runs, the underscore sits against the <strong> tag the bold pass added.
+// A literal angle bracket from the message was escaped to &lt;/&gt; long before
+// this, so the only brackets present are our own.
+function applyInlineMarker(html, marker, tag) {
+    const m = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(
+        `(^|[\\s.,!?;:('"¡¿\\-—(\\[{>])${m}(\\S|\\S[\\s\\S]*?\\S)${m}(?=$|[\\s.,!?;:)'"\\-—)\\]}<])`,
+        'g'
+    );
+    // Repeat so sibling runs on one line all match — a global regex resumes
+    // after the previous match and would skip a delimiter it used as a boundary.
+    let out = html;
+    for (let i = 0; i < 3; i++) {
+        const next = out.replace(re, `$1<${tag}>$2</${tag}>`);
+        if (next === out) break;
+        out = next;
+    }
+    return out;
+}
+
+function formatMessageText(raw) {
+    if (raw === null || raw === undefined) return '';
+    // Null bytes are the placeholder marker; a message may not smuggle one in.
+    let text = String(raw).replace(/\u0000/g, '');
+    if (text === '') return '';
+
+    let html = waEscapeHtml(text);
+
+    const stash = [];
+    const keep = (replacement) => {
+        stash.push(replacement);
+        return WA_PLACEHOLDER + (stash.length - 1) + WA_PLACEHOLDER;
+    };
+
+    // 1. Fenced monospace, then inline code. Contents stay literal.
+    html = html.replace(/```([\s\S]+?)```/g, (_, code) => keep(`<pre class="wa-pre">${code}</pre>`));
+    html = html.replace(/`([^`\n]+)`/g, (_, code) => keep(`<code class="wa-code">${code}</code>`));
+
+    // 2. Links. Lifted out before inline formatting so underscores and tildes
+    //    inside a URL survive; www. is included because people paste it.
+    html = html.replace(/\b((?:https?:\/\/|www\.)[^\s<]+)/gi, (match) => {
+        // Trailing punctuation belongs to the sentence, not the URL.
+        const trail = match.match(/[.,;:!?)\]}'"]+$/);
+        const url = trail ? match.slice(0, -trail[0].length) : match;
+        const href = /^www\./i.test(url) ? 'https://' + url : url;
+        return keep(`<a href="${href}" target="_blank" rel="noopener noreferrer nofollow">${url}</a>`) + (trail ? trail[0] : '');
+    });
+
+    // 3. Block structure, line by line: quotes and lists.
+    const lines = html.split('\n');
+    const out = [];
+    let list = null;      // 'ul' | 'ol' | null
+    let quoting = false;
+
+    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    const closeQuote = () => { if (quoting) { out.push('</blockquote>'); quoting = false; } };
+
+    for (const line of lines) {
+        // '>' has already been escaped by this point.
+        const quote = line.match(/^&gt;\s?(.*)$/);
+        const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+        const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+
+        if (quote) {
+            closeList();
+            if (!quoting) { out.push('<blockquote class="wa-quote">'); quoting = true; }
+            out.push(formatInline(quote[1]) + '<br>');
+            continue;
+        }
+        closeQuote();
+
+        if (bullet || numbered) {
+            const want = bullet ? 'ul' : 'ol';
+            if (list !== want) { closeList(); out.push(`<${want} class="wa-list">`); list = want; }
+            out.push(`<li>${formatInline((bullet || numbered)[1])}</li>`);
+            continue;
+        }
+        closeList();
+        out.push(formatInline(line) + '<br>');
+    }
+    closeList();
+    closeQuote();
+
+    html = out.join('')
+        // A trailing <br> from the last line adds phantom height to the bubble.
+        .replace(/(<br>)+$/, '');
+
+    // 4. Put the code spans and links back.
+    return html.replace(new RegExp(WA_PLACEHOLDER + '(\\d+)' + WA_PLACEHOLDER, 'g'), (_, i) => stash[Number(i)]);
+}
+
+function formatInline(line) {
+    let s = applyInlineMarker(line, '*', 'strong');
+    s = applyInlineMarker(s, '_', 'em');
+    s = applyInlineMarker(s, '~', 'del');
+    return s;
+}
+
+// The chat list shows one line of plain text, so markers are removed rather
+// than rendered — the same thing WhatsApp Web does in its sidebar.
+function stripFormatting(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/```([\s\S]+?)```/g, '$1')
+        .replace(/`([^`\n]+)`/g, '$1')
+        .replace(/(^|[\s.,!?;:('"\-])([*_~])(\S|\S[\s\S]*?\S)\2(?=$|[\s.,!?;:)'"\-])/g, '$1$3')
+        .replace(/^&gt;\s?|^>\s?/gm, '')
+        .replace(/\s*\n\s*/g, ' ')
+        .trim();
+}
+
 function mediaUrl(sessionId, messageId) {
     return `ajax/get-media.php?session_id=${encodeURIComponent(sessionId)}&message_id=${encodeURIComponent(messageId)}`;
 }
@@ -141,7 +284,8 @@ function openLightbox(src) {
 
 function renderMediaContent(msg) {
     const t = msg.mediaType || 'text';
-    const text = escapeHtml(msg.text || '');
+    // Message bodies and media captions both carry WhatsApp's markers.
+    const text = formatMessageText(msg.text || '');
     const sid = currentSessionId;
     const mid = msg.id;
     const mUrl = sid ? mediaUrl(sid, mid) : '';
@@ -229,7 +373,7 @@ function renderMediaContent(msg) {
 
 function renderMediaPreview(msg) {
     const t = msg.mediaType || 'text';
-    const text = msg.text || '';
+    const text = stripFormatting(msg.text || '');
     const icons = { image: '📷', video: '🎥', audio: '🎵', voice: '🎤', document: '📄', sticker: '🏷️', contact: '👤', location: '📍' };
     const labels = { image: 'Photo', video: 'Video', audio: 'Audio', voice: 'Voice message', document: 'Document', sticker: 'Sticker', contact: 'Contact', location: 'Location' };
 
@@ -307,7 +451,9 @@ function renderChatList(sessionId, chats) {
         const avatar = chat.isGroup
             ? '<i class="bi bi-people-fill"></i>'
             : initial;
-        const preview = escapeHtml(chat.lastMessage || '');
+        // Markers are stripped, not rendered: the sidebar is one line of plain
+        // text, as in WhatsApp Web.
+        const preview = escapeHtml(stripFormatting(chat.lastMessage || ''));
         const time = formatChatTime(chat.lastTime);
         const isActive = chat.id === currentChatId;
         return `

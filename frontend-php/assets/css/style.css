@@ -1220,6 +1220,53 @@ body {
 
 .media-caption { margin-top: 4px; font-size: 0.875rem; }
 
+/* ===== WhatsApp text formatting inside bubbles ===== */
+.bubble-content a {
+    color: #027eb5;
+    text-decoration: underline;
+    word-break: break-word;
+}
+
+.chat-bubble.outgoing .bubble-content a { color: #056162; }
+
+.bubble-content strong { font-weight: 600; }
+.bubble-content del { text-decoration: line-through; opacity: 0.85; }
+
+.wa-code,
+.wa-pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 4px;
+}
+
+.wa-code { padding: 1px 4px; }
+
+.wa-pre {
+    display: block;
+    padding: 8px 10px;
+    margin: 4px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* WhatsApp marks a quote with a bar, not an indent-and-italic. */
+.wa-quote {
+    margin: 2px 0;
+    padding: 2px 0 2px 10px;
+    border-left: 4px solid rgba(0, 0, 0, 0.2);
+    color: inherit;
+    font-size: inherit;
+    opacity: 0.85;
+}
+
+.wa-list {
+    margin: 2px 0;
+    padding-left: 22px;
+}
+
+.wa-list li { margin: 1px 0; }
+
 .media-lightbox {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.85); z-index: 9999;
