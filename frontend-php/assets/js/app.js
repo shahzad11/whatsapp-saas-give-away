@@ -372,14 +372,46 @@ function openChat(sessionId, chatId, el) {
         <div class="chat-messages" id="chatMessages">
             <div class="chat-loading"><div class="spinner-border spinner-border-sm"></div> Loading messages...</div>
         </div>
-        <div class="chat-input-area">
-            <input type="text" class="form-control" id="messageInput" placeholder="Type a message..."
-                   onkeypress="if(event.key==='Enter')sendMessage('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
-            <button class="btn btn-send" onclick="sendMessage('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
-                <i class="bi bi-send-fill"></i>
-            </button>
+        <div class="composer">
+            <div class="composer-error" id="composerError" style="display:none;"></div>
+            <div class="composer-preview" id="composerPreview" style="display:none;"></div>
+            <div class="composer-recording" id="composerRecording" style="display:none;">
+                <span class="rec-dot"></span>
+                <span class="rec-label">Recording</span>
+                <span class="rec-timer" id="recTimer">0:00</span>
+                <button class="btn btn-link btn-sm rec-cancel" onclick="cancelVoiceRecording()">Cancel</button>
+            </div>
+            <div class="chat-input-area">
+                <div class="dropup composer-attach">
+                    <button class="btn btn-attach" data-bs-toggle="dropdown" title="Attach">
+                        <i class="bi bi-paperclip"></i>
+                    </button>
+                    <ul class="dropdown-menu">
+                        <li><a class="dropdown-item" href="#" onclick="pickAttachment('image');return false;"><i class="bi bi-image me-2"></i>Photo</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="pickAttachment('video');return false;"><i class="bi bi-camera-video me-2"></i>Video</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="pickAttachment('camera');return false;"><i class="bi bi-camera me-2"></i>Camera</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="pickAttachment('audio');return false;"><i class="bi bi-music-note-beamed me-2"></i>Audio file</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="pickAttachment('document');return false;"><i class="bi bi-file-earmark me-2"></i>Document</a></li>
+                    </ul>
+                    <input type="file" id="attachInput" class="d-none" onchange="attachmentChosen(this)">
+                </div>
+                <input type="text" class="form-control" id="messageInput" placeholder="Type a message..."
+                       onkeypress="if(event.key==='Enter')composerSend('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
+                <button class="btn btn-mic" id="micButton" onclick="toggleVoiceRecording('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')" title="Record a voice note">
+                    <i class="bi bi-mic-fill"></i>
+                </button>
+                <button class="btn btn-send" id="sendButton" onclick="composerSend('${escapeAttr(sessionId)}','${escapeAttr(chatId)}')">
+                    <i class="bi bi-send-fill"></i>
+                </button>
+            </div>
         </div>
     `;
+
+    // Switching chats abandons anything staged in the old composer — the markup
+    // above has just replaced it, so leaving the state behind would attach a
+    // file to the wrong conversation.
+    discardVoiceRecording();
+    pendingAttachment = null;
 
     currentSessionId = sessionId;
     loadMessages(sessionId, chatId);
@@ -458,8 +490,323 @@ function sendMessage(sessionId, chatId) {
         .then(data => {
             if (data.ok) {
                 loadMessages(sessionId, chatId);
+            } else {
+                // A failed text send used to vanish silently, taking the typed
+                // message with it. Put it back and say why.
+                input.value = text;
+                showComposerError(data.error || 'Message could not be sent');
             }
+        })
+        .catch(() => {
+            input.value = text;
+            showComposerError('Message could not be sent');
         });
+}
+
+/* ===== Composer attachments =====
+ *
+ * The staged file lives here rather than in the DOM: the file input is cleared
+ * as soon as a file is chosen so re-picking the same file still fires change,
+ * and a Blob from MediaRecorder was never in an input to begin with.
+ */
+let pendingAttachment = null;   // { kind, file, name, size, previewUrl }
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordingTimer = null;
+let recordingStartedAt = 0;
+
+// Mirrors MAX_ATTACHMENT_BYTES in config/app.php. This copy is UX only — the
+// authoritative checks are in send-media.php and the backend, which a caller
+// bypassing this page still has to pass.
+const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+
+// Server-side accept lists reject on sniffed content, so these hints only steer
+// the picker; 'camera' is a photo whose input asks a phone for the camera app.
+const ATTACH_ACCEPT = {
+    image: 'image/*',
+    video: 'video/*',
+    camera: 'image/*',
+    audio: 'audio/*',
+    document: ''
+};
+
+function showComposerError(message) {
+    const box = document.getElementById('composerError');
+    if (!box) return;
+    box.textContent = message;
+    box.style.display = '';
+    clearTimeout(showComposerError._t);
+    showComposerError._t = setTimeout(() => { box.style.display = 'none'; }, 8000);
+}
+
+function clearComposerError() {
+    const box = document.getElementById('composerError');
+    if (box) box.style.display = 'none';
+}
+
+function humanSize(bytes) {
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+    return bytes + ' B';
+}
+
+function pickAttachment(kind) {
+    const input = document.getElementById('attachInput');
+    if (!input) return;
+    input.accept = ATTACH_ACCEPT[kind] ?? '';
+    if (kind === 'camera') input.setAttribute('capture', 'environment');
+    else input.removeAttribute('capture');
+    input.dataset.kind = kind;
+    input.value = '';
+    input.click();
+}
+
+function attachmentChosen(input) {
+    const file = input.files && input.files[0];
+    // 'camera' is only a picker hint; a photo from it is an image send.
+    const picked = input.dataset.kind === 'camera' ? 'image' : input.dataset.kind;
+    input.value = '';
+    if (!file) return;
+
+    if (file.size === 0) return showComposerError('That file is empty.');
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+        return showComposerError(`"${file.name}" is ${humanSize(file.size)} — the limit is ${humanSize(MAX_ATTACHMENT_BYTES)}.`);
+    }
+
+    stageAttachment({ kind: picked, file, name: file.name, size: file.size });
+}
+
+function stageAttachment(attachment) {
+    clearComposerError();
+    if (pendingAttachment?.previewUrl) URL.revokeObjectURL(pendingAttachment.previewUrl);
+
+    const isVisual = attachment.kind === 'image' || attachment.kind === 'video';
+    attachment.previewUrl = isVisual ? URL.createObjectURL(attachment.file) : null;
+    pendingAttachment = attachment;
+
+    const box = document.getElementById('composerPreview');
+    if (!box) return;
+
+    const thumb = attachment.kind === 'image'
+        ? `<img src="${attachment.previewUrl}" alt="">`
+        : `<i class="bi ${{ video: 'bi-camera-video', audio: 'bi-music-note-beamed', voice: 'bi-mic-fill' }[attachment.kind] || 'bi-file-earmark'}"></i>`;
+
+    box.innerHTML = `
+        <div class="composer-preview-thumb">${thumb}</div>
+        <div class="composer-preview-info">
+            <div class="composer-preview-name">${escapeHtml(attachment.name)}</div>
+            <div class="composer-preview-meta">${humanSize(attachment.size)}</div>
+            <div class="composer-progress" id="composerProgress" style="display:none;"><div class="composer-progress-bar" id="composerProgressBar"></div></div>
+        </div>
+        <button class="btn btn-link btn-sm composer-preview-remove" onclick="clearAttachment()" title="Remove">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    `;
+    box.style.display = '';
+
+    const input = document.getElementById('messageInput');
+    if (input) {
+        // Captions are not supported on audio: WhatsApp drops them.
+        const captionable = attachment.kind !== 'audio' && attachment.kind !== 'voice';
+        input.placeholder = captionable ? 'Add a caption...' : 'Send without a caption';
+        input.disabled = !captionable;
+        if (captionable) input.focus();
+    }
+}
+
+function clearAttachment() {
+    if (pendingAttachment?.previewUrl) URL.revokeObjectURL(pendingAttachment.previewUrl);
+    pendingAttachment = null;
+
+    const box = document.getElementById('composerPreview');
+    if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+    const input = document.getElementById('messageInput');
+    if (input) { input.placeholder = 'Type a message...'; input.disabled = false; }
+    clearComposerError();
+}
+
+// One send button for both cases: with something staged it sends the
+// attachment, otherwise the typed text.
+function composerSend(sessionId, chatId) {
+    if (pendingAttachment) return sendAttachment(sessionId, chatId);
+    return sendMessage(sessionId, chatId);
+}
+
+function sendAttachment(sessionId, chatId) {
+    const attachment = pendingAttachment;
+    if (!attachment) return;
+
+    const input = document.getElementById('messageInput');
+    const caption = input && !input.disabled ? input.value.trim() : '';
+
+    const form = new FormData();
+    form.append('csrf_token', window.waCsrfToken || '');
+    form.append('session_id', sessionId);
+    form.append('chat_id', chatId);
+    form.append('kind', attachment.kind);
+    form.append('caption', caption);
+    form.append('file', attachment.file, attachment.name);
+
+    setComposerBusy(true);
+    const progress = document.getElementById('composerProgress');
+    const bar = document.getElementById('composerProgressBar');
+    if (progress) progress.style.display = '';
+
+    // XHR rather than fetch: upload progress is the whole point, and fetch still
+    // cannot report it.
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'ajax/send-media.php');
+    xhr.upload.onprogress = e => {
+        if (!bar || !e.lengthComputable) return;
+        bar.style.width = Math.round((e.loaded / e.total) * 100) + '%';
+    };
+    xhr.onload = () => {
+        setComposerBusy(false);
+        let data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (_) {}
+
+        if (data && data.ok) {
+            if (input) input.value = '';
+            clearAttachment();
+            loadMessages(sessionId, chatId);
+            return;
+        }
+        // The file stays staged so the send can be retried without re-picking.
+        if (progress) progress.style.display = 'none';
+        showComposerError((data && data.error) || `Upload failed (HTTP ${xhr.status})`);
+    };
+    xhr.onerror = () => {
+        setComposerBusy(false);
+        if (progress) progress.style.display = 'none';
+        showComposerError('Upload failed — check your connection and try again.');
+    };
+    xhr.send(form);
+}
+
+function setComposerBusy(busy) {
+    for (const id of ['sendButton', 'micButton']) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = busy;
+    }
+    const send = document.getElementById('sendButton');
+    if (send) {
+        send.innerHTML = busy
+            ? '<span class="spinner-border spinner-border-sm"></span>'
+            : '<i class="bi bi-send-fill"></i>';
+    }
+}
+
+/* ===== Voice notes =====
+ *
+ * MediaRecorder's output container is browser-dependent (webm/opus in Chrome,
+ * ogg/opus in Firefox, mp4/aac in Safari). None of that is decided here: the
+ * backend transcodes whatever arrives to ogg/opus, which is the only format
+ * WhatsApp renders as a voice message.
+ */
+function preferredRecordingMime() {
+    const candidates = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4'];
+    if (typeof MediaRecorder === 'undefined') return null;
+    return candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+}
+
+function toggleVoiceRecording(sessionId, chatId) {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        // Stop and send; onstop stages the blob.
+        mediaRecorder.stop();
+        return;
+    }
+    startVoiceRecording();
+}
+
+function startVoiceRecording() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        return showComposerError('This browser cannot record audio. Attach an audio file instead.');
+    }
+
+    clearComposerError();
+    const mimeType = preferredRecordingMime();
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            recordedChunks = [];
+            mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+            mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+            mediaRecorder.onstop = () => {
+                stream.getTracks().forEach(t => t.stop());
+                stopRecordingUi();
+                const type = mediaRecorder?.mimeType || mimeType || 'audio/webm';
+                mediaRecorder = null;
+
+                const blob = new Blob(recordedChunks, { type });
+                recordedChunks = [];
+                if (blob.size === 0) return showComposerError('Nothing was recorded.');
+                if (blob.size > MAX_ATTACHMENT_BYTES) {
+                    return showComposerError(`That recording is ${humanSize(blob.size)} — the limit is ${humanSize(MAX_ATTACHMENT_BYTES)}.`);
+                }
+
+                // Extension follows the container so the server's sniffed type
+                // and the filename agree.
+                const ext = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm';
+                stageAttachment({
+                    kind: 'voice',
+                    file: blob,
+                    name: `voice-note.${ext}`,
+                    size: blob.size
+                });
+            };
+            mediaRecorder.start();
+            startRecordingUi();
+        })
+        .catch(err => {
+            showComposerError(err && err.name === 'NotAllowedError'
+                ? 'Microphone access was blocked. Allow it in your browser to record voice notes.'
+                : 'Could not start recording: ' + (err?.message || 'unknown error'));
+        });
+}
+
+// Abandons a recording without staging it. Also the cleanup path when the user
+// switches chats mid-recording.
+function cancelVoiceRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.onstop = null;
+        const stream = mediaRecorder.stream;
+        mediaRecorder.stop();
+        stream?.getTracks().forEach(t => t.stop());
+    }
+    mediaRecorder = null;
+    recordedChunks = [];
+    stopRecordingUi();
+}
+
+function discardVoiceRecording() {
+    cancelVoiceRecording();
+}
+
+function startRecordingUi() {
+    recordingStartedAt = Date.now();
+    const bar = document.getElementById('composerRecording');
+    const mic = document.getElementById('micButton');
+    if (bar) bar.style.display = '';
+    if (mic) mic.classList.add('recording');
+
+    const tick = () => {
+        const el = document.getElementById('recTimer');
+        if (!el) return;
+        const secs = Math.floor((Date.now() - recordingStartedAt) / 1000);
+        el.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    };
+    tick();
+    clearInterval(recordingTimer);
+    recordingTimer = setInterval(tick, 1000);
+}
+
+function stopRecordingUi() {
+    clearInterval(recordingTimer);
+    recordingTimer = null;
+    const bar = document.getElementById('composerRecording');
+    const mic = document.getElementById('micButton');
+    if (bar) bar.style.display = 'none';
+    if (mic) mic.classList.remove('recording');
 }
 
 function escapeHtml(text) {

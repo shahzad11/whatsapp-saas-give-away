@@ -864,9 +864,17 @@ body {
     font-size: 0.875rem;
 }
 
+/* Wraps the input row plus the error / preview / recording strips that stack
+   above it. .chat-main is a flex column whose .chat-messages takes the slack, so
+   this must not grow. */
+.composer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--border-color);
+    background: #f0f2f5;
+}
+
 .chat-input-area {
     padding: 10px 16px;
-    border-top: 1px solid var(--border-color);
     display: flex;
     gap: 10px;
     align-items: center;
@@ -900,6 +908,157 @@ body {
 
 .btn-send:hover {
     background: var(--primary-hover);
+}
+
+.btn-send:disabled,
+.btn-mic:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.btn-attach,
+.btn-mic {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: #54656f;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-attach:hover,
+.btn-mic:hover {
+    background: rgba(0, 0, 0, 0.06);
+    color: var(--primary);
+}
+
+/* Recording is a mode, not a moment — the button has to look latched. */
+.btn-mic.recording {
+    background: #e74c3c;
+    color: #fff;
+}
+
+.composer-attach .dropdown-menu {
+    font-size: 0.875rem;
+    min-width: 190px;
+}
+
+.composer-error {
+    margin: 0;
+    padding: 8px 16px;
+    background: #fdecea;
+    color: #a32b21;
+    font-size: 0.82rem;
+    border-bottom: 1px solid #f5c6c2;
+}
+
+.composer-preview,
+.composer-recording {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: #e9edf0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.composer-preview-thumb {
+    width: 46px;
+    height: 46px;
+    border-radius: 6px;
+    background: #fff;
+    border: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    flex-shrink: 0;
+    color: var(--primary);
+    font-size: 1.3rem;
+}
+
+.composer-preview-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.composer-preview-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.composer-preview-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.composer-preview-meta {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.composer-preview-remove {
+    color: var(--text-secondary);
+    text-decoration: none;
+    flex-shrink: 0;
+}
+
+.composer-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.1);
+    margin-top: 6px;
+    overflow: hidden;
+}
+
+.composer-progress-bar {
+    height: 100%;
+    width: 0;
+    background: var(--primary);
+    transition: width 0.15s linear;
+}
+
+.composer-recording .rec-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e74c3c;
+    flex-shrink: 0;
+    animation: rec-pulse 1.2s ease-in-out infinite;
+}
+
+.composer-recording .rec-label {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.composer-recording .rec-timer {
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.composer-recording .rec-cancel {
+    color: #e74c3c;
+    text-decoration: none;
+}
+
+@keyframes rec-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
 }
 
 .chat-empty {

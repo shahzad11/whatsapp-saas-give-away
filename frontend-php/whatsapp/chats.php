@@ -90,6 +90,11 @@ require_once dirname(__DIR__) . '/includes/header.php';
 <script>
     const selectedSessionId = '<?= sanitize($selectedAccount['session_id'] ?? '') ?>';
 
+    // The attachment endpoint is a multipart POST, which is forgeable from
+    // another origin without a preflight — unlike the JSON endpoints. The token
+    // travels with every upload; send-media.php rejects the request without it.
+    window.waCsrfToken = '<?= csrfToken() ?>';
+
     function switchAccount(accountId) {
         window.location.href = 'chats.php?account=' + accountId;
     }

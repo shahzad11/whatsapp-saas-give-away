@@ -27,6 +27,12 @@ define('ALLOW_REGISTRATION', envBool('ALLOW_REGISTRATION', false));
 // otherwise local HTTP development silently loses the session.
 define('SESSION_SECURE', envBool('SESSION_SECURE', true));
 
+// Composer attachment ceiling, matching WhatsApp Web's own limit for photos and
+// video. Not env-tunable: the backend enforces the same 16 MB independently and
+// php.ini's post_max_size (32M) has to stay above it plus base64 overhead, so
+// three values would have to move together. Change all three or none.
+define('MAX_ATTACHMENT_BYTES', 16 * 1024 * 1024);
+
 define('DEFAULT_PLAN_CODE', env('DEFAULT_PLAN_CODE', 'free'));
 define('LOGIN_MAX_ATTEMPTS', (int)env('LOGIN_MAX_ATTEMPTS', 8));
 define('LOGIN_LOCKOUT_MINUTES', (int)env('LOGIN_LOCKOUT_MINUTES', 15));

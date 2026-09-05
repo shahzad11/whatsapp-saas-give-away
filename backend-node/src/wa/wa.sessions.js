@@ -2,6 +2,8 @@ import path from 'path'
 import fs from 'fs/promises'
 import { existsSync } from 'fs'
 import { createHash, randomUUID } from 'crypto'
+import { spawn } from 'child_process'
+import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import pino from 'pino'
 import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage } from 'baileys'
@@ -1524,11 +1526,46 @@ export async function getMediaBuffer(tenantId, sessionId, messageId) {
   }
 }
 
-export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
+// The three guards every send has to pass. Returned as a value rather than
+// thrown so both send paths answer with the same shapes.
+function sendableSession(tenantId, sessionId) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
-  if (!s) return { ok: false, error: 'Session not found' }
-  if (!s.sock) return { ok: false, error: 'Socket not available' }
-  if (s.status !== 'connected') return { ok: false, error: 'Session not connected' }
+  if (!s) return { error: 'Session not found' }
+  if (!s.sock) return { error: 'Socket not available' }
+  if (s.status !== 'connected') return { error: 'Session not connected' }
+  return { session: s }
+}
+
+// Files a message we just sent into the in-memory thread and moves the chat
+// summary forward. Shared by text and media sends so an attachment cannot end
+// up half-recorded (in the thread but not in the chat list, say).
+function recordOutgoing(s, entry) {
+  const { chatId } = entry
+  if (!s.messages.has(chatId)) {
+    s.messages.set(chatId, [])
+  }
+  insertMessageSorted(s.messages.get(chatId), entry)
+
+  const existing = s.chats.get(chatId)
+  s.chats.set(chatId, {
+    ...existing,
+    id: chatId,
+    name: existing?.name || chatId.split('@')[0],
+    lastMessage: previewFor(entry),
+    lastTime: entry.time,
+    isGroup: chatId.endsWith('@g.us'),
+    phone: existing?.phone || null,
+    // Replying does not un-archive a chat.
+    archived: existing?.archived || false
+  })
+
+  scheduleChatSave(s)
+  scheduleMessageSave(s, chatId)
+}
+
+export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
+  const { session: s, error } = sendableSession(tenantId, sessionId)
+  if (error) return { ok: false, error }
 
   try {
     const sent = await s.sock.sendMessage(chatId, { text })
@@ -1541,28 +1578,145 @@ export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
       time: new Date().toISOString()
     }
 
-    if (!s.messages.has(chatId)) {
-      s.messages.set(chatId, [])
-    }
-    insertMessageSorted(s.messages.get(chatId), entry)
-
-    const existing = s.chats.get(chatId)
-    s.chats.set(chatId, {
-      ...existing,
-      id: chatId,
-      name: existing?.name || chatId.split('@')[0],
-      lastMessage: text,
-      lastTime: entry.time,
-      isGroup: chatId.endsWith('@g.us'),
-      phone: existing?.phone || null,
-      // Replying does not un-archive a chat.
-      archived: existing?.archived || false
-    })
-
-    scheduleChatSave(s)
-    scheduleMessageSave(s, chatId)
+    recordOutgoing(s, entry)
 
     return { ok: true, messageId: sent.key.id }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+}
+
+// What the composer may send, and what WhatsApp content each maps to. 'voice'
+// is not a WhatsApp type — it is an audioMessage with ptt set, which is the one
+// flag that makes a recipient's client render a waveform instead of a file.
+export const UPLOAD_KINDS = ['image', 'video', 'audio', 'voice', 'document']
+
+// 16 MB, matching WhatsApp Web's own ceiling for photos and video. Enforced in
+// four places on purpose (browser, PHP upload, JSON body parser, here): the
+// browser check is UX, the rest are the actual limit.
+export const MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+
+// A voice note has to be ogg/opus. MediaRecorder produces webm/opus in Chrome,
+// ogg/opus in Firefox and mp4/aac in Safari, so anything that is not already
+// ogg is transcoded rather than passed through — WhatsApp clients render a
+// mislabelled voice note as a broken attachment.
+//
+// Temp files rather than pipes because Safari's mp4 needs a seekable input, and
+// ffmpeg cannot seek a pipe.
+async function transcodeToOpus(buffer) {
+  const base = path.join(tmpdir(), `wa-voice-${randomUUID()}`)
+  const inPath = base + '.in'
+  const outPath = base + '.ogg'
+
+  try {
+    await fs.writeFile(inPath, buffer)
+    await new Promise((resolve, reject) => {
+      const ff = spawn('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-i', inPath,
+        '-vn', '-c:a', 'libopus', '-b:a', '32k', '-ar', '48000', '-ac', '1',
+        '-f', 'ogg', outPath
+      ])
+      let stderr = ''
+      ff.stderr.on('data', d => { stderr += d.toString().slice(0, 500) })
+      ff.on('error', err => reject(new Error(
+        err.code === 'ENOENT' ? 'Voice notes need ffmpeg, which is not installed' : err.message
+      )))
+      ff.on('close', code => code === 0
+        ? resolve()
+        : reject(new Error('Audio conversion failed' + (stderr ? ': ' + stderr.trim() : ''))))
+    })
+    return await fs.readFile(outPath)
+  } finally {
+    await Promise.all([fs.rm(inPath, { force: true }), fs.rm(outPath, { force: true })])
+  }
+}
+
+// The WhatsApp content object for an attachment. Kept separate from the send so
+// the mapping is testable without a live socket — it is the part that decides
+// what a recipient's phone actually renders:
+//   ptt: true             — a voice message with a waveform, not an audio file
+//   fileName on documents — what the recipient sees and saves it as
+//   caption: undefined    — omitted rather than empty, which WhatsApp treats as
+//                           a real (blank) caption on some clients
+export function buildMediaContent(kind, buffer, mime, filename, caption) {
+  switch (kind) {
+    case 'image': return { image: buffer, mimetype: mime, caption: caption || undefined }
+    case 'video': return { video: buffer, mimetype: mime, caption: caption || undefined }
+    case 'audio': return { audio: buffer, mimetype: mime, ptt: false }
+    case 'voice': return { audio: buffer, mimetype: mime, ptt: true }
+    case 'document': return {
+      document: buffer,
+      mimetype: mime,
+      fileName: filename || 'file',
+      caption: caption || undefined
+    }
+    default: return null
+  }
+}
+
+export async function sendSessionMedia(tenantId, sessionId, chatId, upload) {
+  const { session: s, error } = sendableSession(tenantId, sessionId)
+  if (error) return { ok: false, error }
+
+  const { kind, filename, caption = '' } = upload
+  if (!UPLOAD_KINDS.includes(kind)) return { ok: false, error: 'Unsupported attachment type' }
+  if (!Buffer.isBuffer(upload.buffer) || upload.buffer.length === 0) {
+    return { ok: false, error: 'Attachment is empty' }
+  }
+  if (upload.buffer.length > MAX_UPLOAD_BYTES) {
+    return { ok: false, error: `Attachment exceeds the ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB limit` }
+  }
+
+  let buffer = upload.buffer
+  let mime = upload.mime || 'application/octet-stream'
+
+  if (kind === 'voice') {
+    if (!mime.startsWith('audio/ogg')) {
+      try {
+        buffer = await transcodeToOpus(buffer)
+      } catch (err) {
+        // Fail closed: sending the original would arrive as an unplayable file.
+        return { ok: false, error: err.message }
+      }
+    }
+    mime = 'audio/ogg; codecs=opus'
+  }
+
+  const content = buildMediaContent(kind, buffer, mime, filename, caption)
+
+  try {
+    const sent = await s.sock.sendMessage(chatId, content)
+
+    const entry = {
+      id: sent.key.id,
+      chatId,
+      fromMe: true,
+      text: kind === 'audio' || kind === 'voice' ? '' : caption,
+      mediaType: kind,
+      mediaMime: mime,
+      mediaFilename: kind === 'document' ? (filename || 'file') : null,
+      time: new Date().toISOString(),
+      // The unwrapped content, matching storeMessage(), so a later cache miss
+      // can still re-download this message's media.
+      rawMessage: sent.message ? unwrapMessage(sent.message) : undefined
+    }
+
+    // Seed the disk cache from what we already hold in memory. Without this the
+    // thread would have to fetch our own attachment back out of WhatsApp to
+    // render it, which costs a round trip and fails while offline.
+    const dir = sessionPath(s)
+    try {
+      await fs.mkdir(path.join(dir, MEDIA_DIR), { recursive: true })
+      await fs.writeFile(getMediaPath(dir, entry.id, mime), buffer)
+    } catch (_) {
+      // Cache-only failure. The message is sent; getMediaBuffer falls back to a
+      // live download.
+    }
+
+    recordOutgoing(s, entry)
+
+    return { ok: true, messageId: sent.key.id, mediaType: kind }
   } catch (err) {
     return { ok: false, error: err.message }
   }

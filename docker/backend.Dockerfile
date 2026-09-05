@@ -2,8 +2,11 @@
 # prebuilt binaries are far better tested against glibc than musl.
 FROM node:22-bookworm-slim
 
+# ffmpeg is a hard requirement, not a nicety: a browser-recorded voice note is
+# webm/opus or mp4/aac, and WhatsApp only renders a voice message from ogg/opus.
+# Baileys also uses it to extract video thumbnails.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

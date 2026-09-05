@@ -1,5 +1,5 @@
 import express from 'express'
-import { createSession, listSessions, getQr, getStatus, logoutSession, getChats, getMessages, downloadMedia, sendMessage } from './wa.controller.js'
+import { createSession, listSessions, getQr, getStatus, logoutSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia } from './wa.controller.js'
 
 export const waRouter = express.Router()
 
@@ -12,3 +12,4 @@ waRouter.get('/sessions/:sessionId/chats', getChats)
 waRouter.get('/sessions/:sessionId/chats/:chatId/messages', getMessages)
 waRouter.get('/sessions/:sessionId/messages/:messageId/media', downloadMedia)
 waRouter.post('/sessions/:sessionId/chats/:chatId/messages', sendMessage)
+waRouter.post('/sessions/:sessionId/chats/:chatId/media', sendMedia)

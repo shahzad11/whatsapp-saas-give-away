@@ -1,12 +1,25 @@
 import express from 'express'
 import { waRouter } from './wa/wa.routes.js'
+import { MAX_UPLOAD_BYTES } from './wa/wa.sessions.js'
 import { requireApiKey, requireTenant } from './middleware/auth.js'
+
+// base64 inflates a payload by a third; the slack covers the JSON envelope.
+const UPLOAD_BODY_LIMIT = Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 64 * 1024
 
 export function createApp() {
   const app = express()
 
   app.disable('x-powered-by')
-  app.use(express.json({ limit: '1mb' }))
+
+  // Only the attachment endpoint gets the large body limit. Raising it globally
+  // would let any endpoint be handed 20 MB to parse, which is a cheap way to
+  // make the backend spend memory.
+  const jsonDefault = express.json({ limit: '1mb' })
+  const jsonUpload = express.json({ limit: UPLOAD_BODY_LIMIT })
+  app.use((req, res, next) => {
+    const parser = req.method === 'POST' && req.path.endsWith('/media') ? jsonUpload : jsonDefault
+    return parser(req, res, next)
+  })
 
   // Unauthenticated on purpose: the container healthcheck runs before any
   // secret is available to it, and this leaks nothing.

@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMediaBuffer, sendSessionMessage, logoutAndDeleteSession } from './wa.sessions.js'
+import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMediaBuffer, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -132,6 +132,53 @@ export async function sendMessage(req, res, next) {
     }
 
     const result = await sendSessionMessage(req.tenantId, sessionId, chatId, text.trim())
+    if (!result.ok) {
+      return res.status(400).json(result)
+    }
+
+    return res.json(result)
+  } catch (e) {
+    next(e)
+  }
+}
+
+// Attachments arrive base64-encoded inside JSON rather than as multipart. The
+// frontend is a PHP process that already speaks JSON to this API over an
+// authenticated internal hop, so this keeps one transport and one auth path
+// instead of adding a multipart parser to the backend.
+export async function sendMedia(req, res, next) {
+  try {
+    const { sessionId, chatId } = req.params
+    const { kind, data, mimetype, fileName, caption } = req.body || {}
+
+    if (!UPLOAD_KINDS.includes(kind)) {
+      return res.status(400).json({ ok: false, error: 'Unsupported attachment type' })
+    }
+    if (typeof data !== 'string' || data.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Attachment data is required' })
+    }
+
+    // Buffer.from ignores anything that is not base64, so a garbage payload
+    // decodes to a short buffer rather than failing. Length is the check.
+    const buffer = Buffer.from(data, 'base64')
+    if (buffer.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Attachment could not be decoded' })
+    }
+    if (buffer.length > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        ok: false,
+        error: `Attachment exceeds the ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB limit`
+      })
+    }
+
+    const result = await sendSessionMedia(req.tenantId, sessionId, chatId, {
+      kind,
+      buffer,
+      mime: typeof mimetype === 'string' ? mimetype : null,
+      filename: typeof fileName === 'string' ? fileName : null,
+      caption: typeof caption === 'string' ? caption.trim() : ''
+    })
+
     if (!result.ok) {
       return res.status(400).json(result)
     }

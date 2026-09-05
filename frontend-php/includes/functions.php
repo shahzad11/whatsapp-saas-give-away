@@ -18,13 +18,18 @@ function backendHeaders($tenantId = null) {
     return $headers;
 }
 
-function callBackendApi($method, $path, $data = null, $tenantId = null) {
+// $timeout is a parameter because one caller legitimately needs longer than the
+// rest: an attachment send waits for the backend to upload the file to
+// WhatsApp's media servers. Timing that out would be the worst outcome — the
+// message may already have been sent, and the frontend would report a failure
+// and skip counting it.
+function callBackendApi($method, $path, $data = null, $tenantId = null, $timeout = 30) {
     $url = BACKEND_URL . $path;
     $ch = curl_init();
 
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
     // The backend is an internal service on a known hostname; never let it
     // redirect us somewhere else.
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
