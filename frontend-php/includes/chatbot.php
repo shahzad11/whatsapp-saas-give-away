@@ -131,13 +131,20 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             handoff_notify_number = VALUES(handoff_notify_number),
             handoff_notify_email = VALUES(handoff_notify_email)"
     );
-    $stmt->bind_param(
-        'iiissssssiisssiiiississssss',
+    // The type string is derived from the values, not written by hand. This
+    // statement binds 26 columns and the hand-written string had drifted by one
+    // character, so `bind_param` threw `ArgumentCountError` and *every* save of
+    // this form 500'd. Deriving it cannot drift when a column is added.
+    $params = [
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb, $greeting,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
         $apptOn, $lead, $horizon, $reminders, $confirm,
-        $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail
-    );
+        $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
+    ];
+    $types = '';
+    foreach ($params as $p) $types .= is_int($p) ? 'i' : 's';
+
+    $stmt->bind_param($types, ...$params);
     $stmt->execute();
     $stmt->close();
 }
