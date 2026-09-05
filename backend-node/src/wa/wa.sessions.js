@@ -232,6 +232,35 @@ function chatShardName(chatId) {
   return createHash('sha1').update(chatId).digest('hex') + '.json'
 }
 
+// Every message array is kept sorted oldest → newest. Baileys delivers history
+// in arbitrary order across (and within) batches, so an append-only array ends
+// up shuffled — which made the chat list order look random and, worse, made the
+// trim below drop the *newest* messages because it discards from the front.
+function msgTime(m) {
+  const t = Date.parse(m?.time)
+  return Number.isNaN(t) ? 0 : t
+}
+
+function sortMessages(msgs) {
+  return msgs.sort((a, b) => msgTime(a) - msgTime(b))
+}
+
+// Binary insert: a bulk history dump is mostly out of order, so re-sorting the
+// whole chat on every message would be O(n² log n) over a sync of thousands.
+function insertMessageSorted(arr, entry) {
+  const t = msgTime(entry)
+  let lo = 0
+  let hi = arr.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (msgTime(arr[mid]) <= t) lo = mid + 1
+    else hi = mid
+  }
+  arr.splice(lo, 0, entry)
+}
+
+// Keeping the newest MAX_MESSAGES_PER_CHAT is only correct because the array is
+// sorted; see insertMessageSorted.
 function stripRaw(msgs) {
   return msgs.slice(-MAX_MESSAGES_PER_CHAT).map(m => {
     if (!m.rawMessage) return m
@@ -278,7 +307,9 @@ async function readMessages(sessionPath) {
     try {
       const raw = await fs.readFile(path.join(dir, file), 'utf-8')
       const shard = JSON.parse(raw)
-      if (shard?.chatId && Array.isArray(shard.msgs)) map.set(shard.chatId, shard.msgs)
+      // Sort on load: shards written before the ordering fix are shuffled, and
+      // the sorted-array invariant has to hold before anything is inserted.
+      if (shard?.chatId && Array.isArray(shard.msgs)) map.set(shard.chatId, sortMessages(shard.msgs))
     } catch (_) {
       // skip unreadable/corrupt shard rather than failing the whole restore
     }
@@ -293,6 +324,7 @@ async function readMessages(sessionPath) {
       let migrated = 0
       for (const [chatId, msgs] of Object.entries(obj)) {
         if (map.has(chatId) || !Array.isArray(msgs)) continue
+        sortMessages(msgs)
         map.set(chatId, msgs)
         await writeJsonAtomic(path.join(dir, chatShardName(chatId)), { chatId, msgs })
         migrated++
@@ -415,7 +447,8 @@ function storeMessage(sessionState, msg) {
       arr[existingIdx].locationInfo = entry.locationInfo || arr[existingIdx].locationInfo
     }
   } else {
-    arr.push(entry)
+    insertMessageSorted(arr, entry)
+    // Safe to drop from the front only because the array is sorted oldest-first.
     if (arr.length > MAX_MESSAGES_PER_CHAT) {
       arr.splice(0, arr.length - MAX_MESSAGES_PER_CHAT)
     }
@@ -437,17 +470,25 @@ function storeMessage(sessionState, msg) {
 
   const isGroup = chatId.endsWith('@g.us')
   const existing = sessionState.chats.get(chatId)
+
+  // A history dump replays old messages. Whichever one happened to be processed
+  // last used to define the chat's lastMessage/lastTime, so the chat list — which
+  // sorts on lastTime — came out in effectively random order. Only ever advance
+  // the summary forwards in time.
+  const isNewest = !existing?.lastTime || msgTime(entry) >= Date.parse(existing.lastTime)
+
   let chatName = existing?.name || chatId.split('@')[0]
-  if (!fromMe && !isGroup && msg.pushName) {
+  // pushName from an old message is stale; only trust it from the newest one.
+  if (isNewest && !fromMe && !isGroup && msg.pushName) {
     chatName = msg.pushName
   }
 
-  const existingPhone = sessionState.chats.get(chatId)?.phone || sessionState.phoneNumbers.get(chatId) || null
+  const existingPhone = existing?.phone || sessionState.phoneNumbers.get(chatId) || null
   sessionState.chats.set(chatId, {
     id: chatId,
     name: chatName,
-    lastMessage: preview,
-    lastTime: timestamp,
+    lastMessage: isNewest ? preview : (existing.lastMessage || ''),
+    lastTime: isNewest ? timestamp : existing.lastTime,
     isGroup,
     phone: existingPhone
   })
@@ -627,15 +668,27 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
     if (syncedChats) {
       for (const chat of syncedChats) {
         if (chat.id === 'status@broadcast') continue
-        if (!sessionState.chats.has(chat.id)) {
+        // conversationTimestamp is WhatsApp's own "last activity" for the chat,
+        // so it is the authoritative sort key — better than the timestamp of
+        // whichever message we happen to have received. Apply it even when the
+        // chat already exists, but never move the chat backwards in time.
+        const convTime = chat.conversationTimestamp
+          ? new Date(Number(chat.conversationTimestamp) * 1000).toISOString()
+          : null
+        const existing = sessionState.chats.get(chat.id)
+
+        if (existing) {
+          if (convTime && (!existing.lastTime || convTime > existing.lastTime)) {
+            existing.lastTime = convTime
+          }
+          if (chat.name && isNumericName(existing.name)) existing.name = chat.name
+        } else {
           const mappedName = sessionState.contactNames.get(chat.id)
           sessionState.chats.set(chat.id, {
             id: chat.id,
             name: mappedName || chat.name || chat.id.split('@')[0],
             lastMessage: '',
-            lastTime: chat.conversationTimestamp
-              ? new Date(Number(chat.conversationTimestamp) * 1000).toISOString()
-              : null,
+            lastTime: convTime,
             isGroup: chat.id.endsWith('@g.us'),
             phone: sessionState.phoneNumbers.get(chat.id) || null
           })
@@ -644,7 +697,13 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
     }
 
     if (syncedMessages) {
-      for (const msg of syncedMessages) {
+      // Process oldest → newest. Baileys hands the batch over in arbitrary
+      // order; ingesting it as-is left message timelines shuffled and made each
+      // chat's summary depend on iteration order rather than on recency.
+      const ordered = [...syncedMessages].sort(
+        (a, b) => Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0)
+      )
+      for (const msg of ordered) {
         storeMessage(sessionState, msg)
       }
     }
@@ -1106,7 +1165,14 @@ export function getSessionChats(tenantId, sessionId) {
   for (const chat of s.chats.values()) {
     chatList.push(chat)
   }
-  chatList.sort((a, b) => (b.lastTime || '').localeCompare(a.lastTime || ''))
+  // Most recent first, chats that have never had activity last. Compared as
+  // instants rather than strings so a malformed/legacy lastTime cannot wedge a
+  // chat at the top of the list.
+  chatList.sort((a, b) => {
+    const ta = a.lastTime ? Date.parse(a.lastTime) : 0
+    const tb = b.lastTime ? Date.parse(b.lastTime) : 0
+    return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta)
+  })
   return chatList
 }
 
@@ -1193,15 +1259,17 @@ export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
     if (!s.messages.has(chatId)) {
       s.messages.set(chatId, [])
     }
-    s.messages.get(chatId).push(entry)
+    insertMessageSorted(s.messages.get(chatId), entry)
 
+    const existing = s.chats.get(chatId)
     s.chats.set(chatId, {
+      ...existing,
       id: chatId,
-      name: s.chats.get(chatId)?.name || chatId.split('@')[0],
+      name: existing?.name || chatId.split('@')[0],
       lastMessage: text,
       lastTime: entry.time,
       isGroup: chatId.endsWith('@g.us'),
-      phone: s.chats.get(chatId)?.phone || null
+      phone: existing?.phone || null
     })
 
     scheduleChatSave(s)

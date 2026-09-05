@@ -28,8 +28,20 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
             ELSE COALESCE(VALUES(contact_name), contact_name)
         END,
         phone_number = COALESCE(VALUES(phone_number), phone_number),
-        last_message = VALUES(last_message),
-        last_message_time = COALESCE(VALUES(last_message_time), last_message_time), is_group = VALUES(is_group)");
+        -- Only ever move a chat forwards in time. During a history sync the
+        -- backend can report an older message as the chat's last one, and
+        -- overwriting unconditionally reshuffled the chat list on every poll.
+        last_message = CASE
+            WHEN VALUES(last_message_time) IS NULL THEN last_message
+            WHEN last_message_time IS NULL OR VALUES(last_message_time) >= last_message_time THEN VALUES(last_message)
+            ELSE last_message
+        END,
+        last_message_time = CASE
+            WHEN VALUES(last_message_time) IS NULL THEN last_message_time
+            WHEN last_message_time IS NULL OR VALUES(last_message_time) >= last_message_time THEN VALUES(last_message_time)
+            ELSE last_message_time
+        END,
+        is_group = VALUES(is_group)");
 
     foreach ($resp['chats'] as $chat) {
         $chatId = $chat['id'] ?? '';
