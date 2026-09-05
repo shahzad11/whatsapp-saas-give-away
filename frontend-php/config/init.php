@@ -33,4 +33,7 @@ require_once $basePath . '/includes/profile.php';
 // llm before chatbot: the chatbot resolves models and decrypts provider keys
 // through the LLM layer, and both need plan.php's feature flags above.
 require_once $basePath . '/includes/llm.php';
+// appointments before chatbot: the chatbot's booking prompt and its action
+// handler are built from the appointment layer.
+require_once $basePath . '/includes/appointments.php';
 require_once $basePath . '/includes/chatbot.php';

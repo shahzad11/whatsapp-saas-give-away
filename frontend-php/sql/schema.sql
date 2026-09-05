@@ -436,3 +436,94 @@ CREATE TABLE IF NOT EXISTS chatbot_events (
     INDEX idx_user_time (user_id, created_at),
     INDEX idx_outcome_time (outcome, created_at)
 ) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- Appointment booking over WhatsApp (issue #14)
+-- ---------------------------------------------------------------------------
+
+-- What a tenant offers. Duration drives slot maths, so it is minutes, not text.
+CREATE TABLE IF NOT EXISTS appointment_services (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    duration_minutes INT NOT NULL DEFAULT 30,
+    description VARCHAR(255) DEFAULT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_active (user_id, is_active)
+) ENGINE=InnoDB;
+
+-- When the tenant is open, in their own timezone. weekday follows PHP's 'w':
+-- 0 = Sunday … 6 = Saturday.
+CREATE TABLE IF NOT EXISTS appointment_availability (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    weekday TINYINT NOT NULL,
+    start_time CHAR(5) NOT NULL,
+    end_time CHAR(5) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_day (user_id, weekday)
+) ENGINE=InnoDB;
+
+-- scheduled_at is UTC, like every other timestamp in this schema. It is
+-- rendered in the tenant's timezone and was spoken about in the customer's
+-- words, but it is stored as an instant so a timezone change cannot move
+-- somebody's booking.
+CREATE TABLE IF NOT EXISTS appointments (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    account_id INT DEFAULT NULL,
+    service_id INT DEFAULT NULL,
+    service_name VARCHAR(100) NOT NULL,      -- copied: renaming a service must not rewrite history
+    duration_minutes INT NOT NULL DEFAULT 30,
+    customer_phone VARCHAR(32) DEFAULT NULL,
+    customer_name VARCHAR(120) DEFAULT NULL,
+    chat_id VARCHAR(100) DEFAULT NULL,
+    scheduled_at DATETIME NOT NULL,
+    status ENUM('booked','completed','cancelled','no_show') NOT NULL DEFAULT 'booked',
+    notes VARCHAR(500) DEFAULT NULL,
+    source VARCHAR(20) NOT NULL DEFAULT 'chatbot',   -- chatbot | manual
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES wa_accounts(id) ON DELETE SET NULL,
+    FOREIGN KEY (service_id) REFERENCES appointment_services(id) ON DELETE SET NULL,
+    INDEX idx_user_time (user_id, scheduled_at),
+    INDEX idx_user_status (user_id, status, scheduled_at),
+    INDEX idx_chat (user_id, chat_id, status)
+) ENGINE=InnoDB;
+
+-- One row per reminder per appointment. The unique key is what makes the sender
+-- idempotent: a scheduler that runs twice cannot message the customer twice.
+CREATE TABLE IF NOT EXISTS appointment_reminders (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    minutes_before INT NOT NULL,
+    send_at DATETIME NOT NULL,
+    sent_at DATETIME DEFAULT NULL,
+    status ENUM('pending','sent','failed','skipped') NOT NULL DEFAULT 'pending',
+    detail VARCHAR(255) DEFAULT NULL,
+    FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_reminder (appointment_id, minutes_before),
+    INDEX idx_due (status, send_at)
+) ENGINE=InnoDB;
+
+-- Appointment settings ride on chatbot_configs: the booking flow is the chatbot.
+SET @add_appt := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs
+            ADD COLUMN appointments_enabled TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN appointment_lead_minutes INT NOT NULL DEFAULT 60,
+            ADD COLUMN appointment_horizon_days INT NOT NULL DEFAULT 30,
+            ADD COLUMN reminder_minutes VARCHAR(64) DEFAULT ''1440,60'',
+            ADD COLUMN booking_confirmation TEXT DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'appointments_enabled'
+);
+PREPARE stmt_add_appt FROM @add_appt;
+EXECUTE stmt_add_appt;
+DEALLOCATE PREPARE stmt_add_appt;

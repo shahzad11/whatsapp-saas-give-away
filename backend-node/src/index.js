@@ -19,12 +19,56 @@ initAuth()
 const app = createApp()
 
 let server
+let reminderTimer
+
+// Appointment reminders need something that runs continuously, and this process
+// is the only such thing in the stack. It does not decide anything: it pokes a
+// PHP endpoint that owns the schedule, the quota and the sending. There is no
+// cron in the frontend image, and adding one would mean two schedulers.
+//
+// Once a minute is enough granularity for "24 hours before" and "1 hour before",
+// and the endpoint is idempotent, so a missed or doubled tick is harmless.
+const REMINDER_TICK_MS = 60_000
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://frontend').replace(/\/+$/, '')
+
+function startReminderScheduler() {
+  if (!process.env.BACKEND_API_KEY) return
+
+  const tick = async () => {
+    try {
+      const res = await fetch(`${FRONTEND_URL}/internal/appointment-reminders.php`, {
+        method: 'POST',
+        headers: { 'X-Api-Key': process.env.BACKEND_API_KEY },
+        signal: AbortSignal.timeout(45_000)
+      })
+      if (res.status === 401) {
+        console.error('Reminder scheduler rejected: BACKEND_API_KEY mismatch with the frontend')
+        return
+      }
+      const body = await res.json().catch(() => null)
+      // Only speak when something happened: a log line a minute would bury
+      // everything else.
+      if (body?.sent || body?.failed) {
+        console.log(`Appointment reminders: sent ${body.sent}, failed ${body.failed}`)
+      }
+    } catch (err) {
+      if (err?.name !== 'TimeoutError' && err?.name !== 'AbortError') {
+        console.error('Reminder scheduler tick failed:', err.message)
+      }
+    }
+  }
+
+  reminderTimer = setInterval(tick, REMINDER_TICK_MS)
+  // Do not hold the process open on this alone.
+  reminderTimer.unref?.()
+}
 
 async function start() {
   await restoreAllSessions()
   server = app.listen(port, host, () => {
     console.log(`Backend listening on http://${host}:${port}`)
   })
+  startReminderScheduler()
 }
 
 let shuttingDown = false
@@ -34,6 +78,7 @@ async function shutdown(signal) {
   shuttingDown = true
   console.log(`Received ${signal} — flushing pending writes before exit`)
 
+  if (reminderTimer) clearInterval(reminderTimer)
   if (server) server.close()
 
   try {

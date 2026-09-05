@@ -73,8 +73,11 @@ function requireOwnedAccount(mysqli $conn, $sessionId, $jsonResponse = true) {
     return [(int)$account['id'], 't' . $userId, $userId];
 }
 
-function logAudit(mysqli $conn, $action, $entity = null, $entityId = null, array $meta = []) {
-    $userId = $_SESSION['user_id'] ?? null;
+// $actingUserId is for the paths that have no session: the chatbot webhook acts
+// for a tenant on WhatsApp's behalf, and an unattributed audit row is not much
+// of an audit row.
+function logAudit(mysqli $conn, $action, $entity = null, $entityId = null, array $meta = [], $actingUserId = null) {
+    $userId = $actingUserId !== null ? (int)$actingUserId : ($_SESSION['user_id'] ?? null);
     $ip = $_SERVER['REMOTE_ADDR'] ?? null;
     $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
     $metaJson = $meta ? json_encode($meta) : null;

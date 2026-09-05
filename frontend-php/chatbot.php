@@ -24,6 +24,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
 
     $action = $_POST['action'] ?? 'save';
 
+    if ($action === 'save_service') {
+        [$ok, $err] = apptSaveService(
+            $conn, $userId,
+            $_POST['service_name'] ?? '',
+            $_POST['service_minutes'] ?? 30,
+            $_POST['service_description'] ?? '',
+            ($_POST['service_id'] ?? '') === '' ? null : (int)$_POST['service_id']
+        );
+        flash($ok ? 'success' : 'error', $ok ? 'Service saved.' : $err);
+        redirect(APP_URL . '/chatbot.php');
+    }
+
+    if ($action === 'toggle_service') {
+        apptSetServiceActive($conn, $userId, (int)($_POST['service_id'] ?? 0), !empty($_POST['enable']));
+        redirect(APP_URL . '/chatbot.php');
+    }
+
+    if ($action === 'save_hours') {
+        $windows = [];
+        foreach (($_POST['day'] ?? []) as $weekday => $rows) {
+            foreach (($rows['start'] ?? []) as $i => $start) {
+                $windows[] = [
+                    'weekday' => (int)$weekday,
+                    'start' => $start,
+                    'end' => $rows['end'][$i] ?? '',
+                ];
+            }
+        }
+        apptSaveAvailability($conn, $userId, $windows);
+        flash('success', 'Opening hours saved.');
+        redirect(APP_URL . '/chatbot.php');
+    }
+
     if ($action === 'clear_key') {
         chatbotClearByoKey($conn, $userId);
         flash('success', 'Your API key has been removed.');
@@ -82,6 +115,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
 }
 
 $hasByoKey = !empty($config['byo_api_key_encrypted']);
+$services = apptServices($conn, $userId, false);
+$availability = apptAvailability($conn, $userId);
+$hoursByDay = [];
+foreach ($availability as $w) $hoursByDay[(int)$w['weekday']][] = $w;
 $events = $hasChatbot ? chatbotRecentEvents($conn, $userId, 15) : [];
 $repliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
 $tz = getUserTimezone($conn, $userId);
@@ -137,6 +174,7 @@ require_once __DIR__ . '/includes/header.php';
                 <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-kb" type="button">Knowledge base</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-model" type="button">Model</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-behaviour" type="button">Behaviour</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-appointments" type="button">Appointments</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-test" type="button">Test</button></li>
             </ul>
 
@@ -279,6 +317,55 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
+                <div class="tab-pane fade p-3" id="tab-appointments">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" name="appointments_enabled" value="1"
+                               id="appointments_enabled" <?= !empty($config['appointments_enabled']) ? 'checked' : '' ?>>
+                        <label class="form-check-label fw-500" for="appointments_enabled">
+                            Let customers book appointments in the chat
+                        </label>
+                        <div class="form-text">
+                            The bot may only <em>propose</em> a time. Whether a booking is real is decided here
+                            against your calendar — so it cannot confirm a slot that is taken or a time you are closed.
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label small">Minimum notice</label>
+                            <div class="input-group input-group-sm">
+                                <input type="number" name="appointment_lead_minutes" class="form-control" min="0" max="10080"
+                                       value="<?= (int)($config['appointment_lead_minutes'] ?? 60) ?>">
+                                <span class="input-group-text">minutes</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Book at most</label>
+                            <div class="input-group input-group-sm">
+                                <input type="number" name="appointment_horizon_days" class="form-control" min="1" max="365"
+                                       value="<?= (int)($config['appointment_horizon_days'] ?? 30) ?>">
+                                <span class="input-group-text">days ahead</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Remind before</label>
+                            <input type="text" name="reminder_minutes" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['reminder_minutes'] ?? '1440,60') ?>" placeholder="1440,60">
+                            <div class="form-text">Minutes, comma separated. 1440 = a day.</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">Confirmation wording</label>
+                            <input type="text" name="booking_confirmation" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['booking_confirmation'] ?? '') ?>"
+                                   placeholder="Confirmed: {service} on {when}.">
+                            <div class="form-text"><code>{service}</code> and <code>{when}</code> are filled in.</div>
+                        </div>
+                    </div>
+                    <div class="alert alert-light border small">
+                        Services and opening hours are saved separately — the two forms below act on their own.
+                    </div>
+                </div>
+
                 <div class="tab-pane fade p-3" id="tab-test">
                     <p class="text-muted small">
                         Runs the real pipeline with your saved settings — same prompt, same model, same limits —
@@ -297,6 +384,94 @@ require_once __DIR__ . '/includes/header.php';
                 <button class="btn btn-primary" type="submit">Save settings</button>
             </div>
         </form>
+
+        <?php // Separate forms, not nested ones: nesting is invalid HTML and the
+              // browser silently drops the inner form's fields. ?>
+        <div class="card mt-3">
+            <div class="card-header"><i class="bi bi-list-check me-2"></i>Services</div>
+            <div class="card-body">
+                <?php if ($services): ?>
+                    <table class="table table-sm align-middle">
+                        <tbody>
+                        <?php foreach ($services as $s): ?>
+                            <tr class="<?= $s['is_active'] ? '' : 'opacity-50' ?>">
+                                <td>
+                                    <div class="small fw-500"><?= sanitize($s['name']) ?></div>
+                                    <?php if ($s['description']): ?>
+                                        <div class="x-small text-muted"><?= sanitize($s['description']) ?></div>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="small text-muted"><?= (int)$s['duration_minutes'] ?> min</td>
+                                <td class="text-end">
+                                    <form method="post" class="d-inline">
+                                        <?= csrfField() ?>
+                                        <input type="hidden" name="action" value="toggle_service">
+                                        <input type="hidden" name="service_id" value="<?= (int)$s['id'] ?>">
+                                        <input type="hidden" name="enable" value="<?= $s['is_active'] ? '0' : '1' ?>">
+                                        <button class="btn btn-outline-secondary btn-sm" type="submit">
+                                            <?= $s['is_active'] ? 'Disable' : 'Enable' ?>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php else: ?>
+                    <p class="text-muted small">No services yet. The bot cannot take a booking without one.</p>
+                <?php endif; ?>
+
+                <form method="post" class="row g-2 align-items-end border-top pt-3">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="save_service">
+                    <div class="col-md-4">
+                        <label class="form-label small">Name</label>
+                        <input type="text" name="service_name" class="form-control form-control-sm" placeholder="Consultation" required>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">Minutes</label>
+                        <input type="number" name="service_minutes" class="form-control form-control-sm" value="30" min="5" max="480">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small">Description</label>
+                        <input type="text" name="service_description" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-primary btn-sm w-100" type="submit">Add</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header"><i class="bi bi-clock me-2"></i>Opening hours</div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Bookings are only accepted inside these windows, and an appointment must
+                    <em>finish</em> before you close. Times are <?= sanitize($tz) ?>.
+                </p>
+                <form method="post">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="save_hours">
+                    <?php foreach (apptWeekdayNames() as $num => $name):
+                        $window = $hoursByDay[$num][0] ?? null; ?>
+                        <div class="row g-2 align-items-center mb-2">
+                            <div class="col-4 col-md-3 small"><?= $name ?></div>
+                            <div class="col-4 col-md-3">
+                                <input type="time" class="form-control form-control-sm"
+                                       name="day[<?= $num ?>][start][]" value="<?= sanitize($window['start_time'] ?? '') ?>">
+                            </div>
+                            <div class="col-4 col-md-3">
+                                <input type="time" class="form-control form-control-sm"
+                                       name="day[<?= $num ?>][end][]" value="<?= sanitize($window['end_time'] ?? '') ?>">
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                    <div class="form-text mb-2">Leave a day blank to stay closed.</div>
+                    <button class="btn btn-primary btn-sm" type="submit">Save hours</button>
+                </form>
+            </div>
+        </div>
     </div>
 
     <div class="col-lg-4">

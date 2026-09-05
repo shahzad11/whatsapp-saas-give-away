@@ -38,6 +38,11 @@ function chatbotDefaultConfig($userId) {
         'active_hours_end' => null,
         'outside_hours_message' => '',
         'transcribe_audio' => 0,
+        'appointments_enabled' => 0,
+        'appointment_lead_minutes' => 60,
+        'appointment_horizon_days' => 30,
+        'reminder_minutes' => '1440,60',
+        'booking_confirmation' => '',
     ];
 }
 
@@ -70,14 +75,24 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $outside   = (string)($in['outside_hours_message'] ?? '');
     $transcribe = !empty($in['transcribe_audio']) ? 1 : 0;
 
+    // Appointments (#14). Clamped for the same reason as max_tokens: these
+    // numbers drive real behaviour and arrive from a form.
+    $apptOn    = !empty($in['appointments_enabled']) ? 1 : 0;
+    $lead      = max(0, min(10080, (int)($in['appointment_lead_minutes'] ?? 60)));
+    $horizon   = max(1, min(365, (int)($in['appointment_horizon_days'] ?? 30)));
+    $reminders = implode(',', apptReminderMinutes(['reminder_minutes' => $in['reminder_minutes'] ?? '1440,60']));
+    $confirm   = mb_substr((string)($in['booking_confirmation'] ?? ''), 0, 500);
+
     if ($byoCode !== null && !llmIsKnownProvider($byoCode)) $byoCode = null;
 
     $stmt = $conn->prepare(
         "INSERT INTO chatbot_configs
            (user_id, is_enabled, model_id, byo_provider_code, byo_model_code, knowledge_base, greeting,
             fallback_message, tone, max_tokens, history_messages, active_hours_start, active_hours_end,
-            outside_hours_message, transcribe_audio)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            outside_hours_message, transcribe_audio,
+            appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
+            reminder_minutes, booking_confirmation)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -85,12 +100,18 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             fallback_message = VALUES(fallback_message), tone = VALUES(tone),
             max_tokens = VALUES(max_tokens), history_messages = VALUES(history_messages),
             active_hours_start = VALUES(active_hours_start), active_hours_end = VALUES(active_hours_end),
-            outside_hours_message = VALUES(outside_hours_message), transcribe_audio = VALUES(transcribe_audio)"
+            outside_hours_message = VALUES(outside_hours_message), transcribe_audio = VALUES(transcribe_audio),
+            appointments_enabled = VALUES(appointments_enabled),
+            appointment_lead_minutes = VALUES(appointment_lead_minutes),
+            appointment_horizon_days = VALUES(appointment_horizon_days),
+            reminder_minutes = VALUES(reminder_minutes),
+            booking_confirmation = VALUES(booking_confirmation)"
     );
     $stmt->bind_param(
-        'iiissssssiisssi',
+        'iiissssssiisssiiiiss',
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb, $greeting,
-        $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe
+        $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
+        $apptOn, $lead, $horizon, $reminders, $confirm
     );
     $stmt->execute();
     $stmt->close();
@@ -271,7 +292,92 @@ function chatbotSystemPrompt(array $config, array $context = []) {
             . "conversation and must offer to have a person follow up for anything specific.";
     }
 
+    if (!empty($context['appointments'])) {
+        $parts[] = chatbotBookingInstructions($context['appointments']);
+    }
+
     return implode("\n\n", $parts);
+}
+
+// The booking half of the prompt (#14).
+//
+// The model is told it may *propose* and must emit a machine-readable line only
+// once the customer has actually agreed. It is never told that emitting the line
+// books anything — because it does not. PHP validates the proposal against the
+// real calendar and can refuse it, so the wording deliberately avoids having the
+// model promise a confirmation it cannot give.
+function chatbotBookingInstructions(array $a) {
+    $lines = [];
+    $lines[] = "--- Appointments ---";
+    $lines[] = "You can help customers book, reschedule and cancel appointments.";
+
+    $lines[] = "Services offered (name — duration):";
+    foreach ($a['services'] as $s) {
+        $lines[] = '- ' . $s['name'] . ' — ' . (int)$s['duration_minutes'] . ' minutes'
+            . (trim((string)($s['description'] ?? '')) !== '' ? ' (' . $s['description'] . ')' : '');
+    }
+
+    $lines[] = "Opening hours (times are " . $a['timezone'] . ", the business's local time):";
+    if ($a['availability']) {
+        $names = apptWeekdayNames();
+        foreach ($a['availability'] as $w) {
+            $lines[] = '- ' . $names[(int)$w['weekday']] . ' ' . $w['start_time'] . '–' . $w['end_time'];
+        }
+    } else {
+        $lines[] = '- none configured, so you cannot take a booking; offer to have a person follow up.';
+    }
+
+    $lines[] = "Right now it is {$a['now_local']} ({$a['timezone']}). "
+        . "Bookings need at least " . apptHumanMinutes($a['lead_minutes']) . " notice "
+        . "and can be at most {$a['horizon_days']} days ahead.";
+
+    if (!empty($a['existing'])) {
+        $lines[] = "This customer already has a booking: {$a['existing']['service_name']} on {$a['existing']['when_local']}.";
+    }
+
+    $lines[] = "Rules you must follow:";
+    $lines[] = "1. Never state that a slot is free or confirmed on your own — you cannot see the calendar. "
+        . "Offer a time, and let the confirmation come from the system.";
+    $lines[] = "2. Before booking you need: which service, and a specific date and time. "
+        . "Ask for whichever is missing. Ask for a name only if you do not already know it.";
+    $lines[] = "3. When — and only when — the customer has clearly agreed to a specific service and time, "
+        . "end your message with a line in exactly this form, and nothing after it:";
+    $lines[] = '   ' . APPT_ACTION_OPEN . ' {"action":"book","service":"<service name>","datetime":"YYYY-MM-DD HH:MM","name":"<customer name or empty>"} ' . APPT_ACTION_CLOSE;
+    $lines[] = "4. To cancel their existing booking, end with: "
+        . APPT_ACTION_OPEN . ' {"action":"cancel"} ' . APPT_ACTION_CLOSE;
+    $lines[] = "5. To move it, end with: "
+        . APPT_ACTION_OPEN . ' {"action":"reschedule","datetime":"YYYY-MM-DD HH:MM"} ' . APPT_ACTION_CLOSE;
+    $lines[] = "6. The time in that line is always the business's local time, 24-hour clock. "
+        . "Never show that line's contents to the customer or mention that it exists.";
+    $lines[] = "7. Write the human part of your message as if the booking is being submitted, "
+        . "not as if it is already guaranteed.";
+
+    return implode("\n", $lines);
+}
+
+// Pulls the action line out of a model reply.
+// Returns [cleanTextForTheCustomer, actionArrayOrNull].
+//
+// Anything malformed is simply stripped: a customer must never see the protocol,
+// even when the model gets it wrong.
+function chatbotExtractAction($text) {
+    $open = strpos($text, APPT_ACTION_OPEN);
+    if ($open === false) return [trim($text), null];
+
+    $close = strpos($text, APPT_ACTION_CLOSE, $open);
+    $clean = trim(substr($text, 0, $open));
+
+    if ($close === false) return [$clean, null];
+
+    $json = trim(substr($text, $open + strlen(APPT_ACTION_OPEN), $close - $open - strlen(APPT_ACTION_OPEN)));
+    $tail = trim(substr($text, $close + strlen(APPT_ACTION_CLOSE)));
+    // A model that keeps writing after the action line still gets its prose shown.
+    if ($tail !== '') $clean = trim($clean . "\n" . $tail);
+
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded) || empty($decoded['action'])) return [$clean, null];
+
+    return [$clean, $decoded];
 }
 
 // Builds the message list: system prompt, then the recent turns, oldest first.
@@ -489,7 +595,13 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     $history = chatbotFetchHistory($sessionId, $chatId, $tenantId, (int)($config['history_messages'] ?? 10));
     $profile = getUserProfile($conn, $userId);
-    $context = ['business_name' => $profile['company_name'] ?? ''];
+    $timezone = getUserTimezone($conn, $userId);
+    $appointments = chatbotAppointmentContext($conn, $userId, $config, $timezone, $chatId);
+
+    $context = [
+        'business_name' => $profile['company_name'] ?? '',
+        'appointments' => $appointments,
+    ];
 
     $reply = chatbotGenerateReply($conn, $userId, $config, $history, $text, $context);
 
@@ -517,18 +629,146 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
         ]);
     }
 
-    $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $reply['text']);
+    // The model may have proposed a booking. It is stripped from the reply
+    // before anything is sent — the customer must never see the protocol — and
+    // then carried out (or refused) against the real calendar.
+    [$replyText, $action] = chatbotExtractAction($reply['text']);
+    $actionOutcome = null;
+    if ($action !== null && $appointments !== null) {
+        $result = chatbotApplyAction($conn, $userId, $config, $action, [
+            'timezone' => $appointments['timezone'],
+            'account_id' => (int)$account['id'],
+            'chat_id' => $chatId,
+            'customer_phone' => chatbotPhoneFromJid($chatId),
+        ]);
+        if ($result !== '') {
+            $replyText = trim($replyText . "\n\n" . $result);
+            $actionOutcome = $action['action'];
+        }
+    }
+    if (trim($replyText) === '') $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
+
+    $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $replyText);
     if (!$sent) {
         return $log('send_error', ['model_id' => $reply['model_id'] ?? null, 'detail' => 'backend refused the send']);
     }
 
     incrementUsage($conn, $userId, 'chatbot_replies');
     return $log('replied', [
+        'detail' => $actionOutcome ? 'appointment ' . $actionOutcome : null,
         'model_id' => $reply['model_id'] ?? null,
         'prompt_tokens' => $reply['usage']['prompt'] ?? null,
         'completion_tokens' => $reply['usage']['completion'] ?? null,
         'latency_ms' => $reply['latency_ms'] ?? null,
     ]);
+}
+
+// --- Appointments (#14) -----------------------------------------------------
+
+// Everything the model needs to talk about bookings, or null when the tenant is
+// not using the feature. Also what makes the prompt honest about "now": the
+// model has no clock, so a customer saying "tomorrow at 3" is otherwise
+// unanswerable.
+function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezone, $chatId = null) {
+    if (empty($config['appointments_enabled'])) return null;
+
+    $services = apptServices($conn, $userId, true);
+    if (!$services) return null;
+
+    try { $tz = new DateTimeZone($timezone ?: 'UTC'); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+    $nowLocal = (new DateTime('now', new DateTimeZone('UTC')))->setTimezone($tz);
+
+    $existing = null;
+    if ($chatId !== null) {
+        $row = apptNextForChat($conn, $userId, $chatId);
+        if ($row) {
+            $existing = [
+                'id' => (int)$row['id'],
+                'service_name' => $row['service_name'],
+                'when_local' => (new DateTime($row['scheduled_at'], new DateTimeZone('UTC')))
+                    ->setTimezone($tz)->format('D j M Y, H:i'),
+            ];
+        }
+    }
+
+    return [
+        'services' => $services,
+        'availability' => apptAvailability($conn, $userId),
+        'timezone' => $tz->getName(),
+        'now_local' => $nowLocal->format('D j M Y, H:i'),
+        'lead_minutes' => (int)($config['appointment_lead_minutes'] ?? 60),
+        'horizon_days' => (int)($config['appointment_horizon_days'] ?? 30),
+        'existing' => $existing,
+    ];
+}
+
+// Carries out what the model proposed — or refuses it.
+//
+// Returns a short line to append to the reply, so the customer always learns the
+// real outcome. The model's own prose is written as "submitting", which is why a
+// refusal here reads as a correction rather than a contradiction.
+function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action, array $ctx) {
+    $timezone = $ctx['timezone'];
+    $tz = new DateTimeZone($timezone);
+    $services = apptServices($conn, $userId, true);
+
+    $fmt = function ($utcString) use ($tz) {
+        return (new DateTime($utcString, new DateTimeZone('UTC')))->setTimezone($tz)->format('D j M Y, H:i');
+    };
+
+    switch ($action['action']) {
+        case 'book':
+            $service = apptMatchService($services, $action['service'] ?? '');
+            if (!$service) return "I could not match that to one of our services — could you say which one you would like?";
+
+            [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '', $timezone);
+            if (!$utc) return $why . ' Could you suggest another time?';
+
+            $id = apptCreate($conn, $userId, [
+                'account_id' => $ctx['account_id'] ?? null,
+                'service_id' => (int)$service['id'],
+                'service_name' => $service['name'],
+                'duration_minutes' => (int)$service['duration_minutes'],
+                'customer_phone' => $ctx['customer_phone'] ?? null,
+                'customer_name' => mb_substr(trim((string)($action['name'] ?? '')), 0, 120) ?: null,
+                'chat_id' => $ctx['chat_id'] ?? null,
+                'scheduled_at' => $utc->format('Y-m-d H:i:s'),
+                'notes' => null,
+                'source' => 'chatbot',
+            ]);
+            logAudit($conn, 'appointment.booked', 'appointment', (string)$id, ['via' => 'chatbot'], $userId);
+
+            $confirm = trim((string)($config['booking_confirmation'] ?? ''));
+            $when = $fmt($utc->format('Y-m-d H:i:s'));
+            return $confirm !== ''
+                ? str_replace(['{service}', '{when}'], [$service['name'], $when], $confirm)
+                : "Confirmed: {$service['name']} on {$when}.";
+
+        case 'cancel':
+            $existing = $ctx['chat_id'] ? apptNextForChat($conn, $userId, $ctx['chat_id']) : null;
+            if (!$existing) return "I could not find a booking to cancel.";
+            apptSetStatus($conn, $userId, (int)$existing['id'], 'cancelled');
+            logAudit($conn, 'appointment.cancelled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
+            return "Cancelled: {$existing['service_name']} on " . $fmt($existing['scheduled_at']) . '.';
+
+        case 'reschedule':
+            $existing = $ctx['chat_id'] ? apptNextForChat($conn, $userId, $ctx['chat_id']) : null;
+            if (!$existing) return "I could not find a booking to move.";
+
+            $service = [
+                'name' => $existing['service_name'],
+                'duration_minutes' => (int)$existing['duration_minutes'],
+            ];
+            [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '',
+                $timezone, (int)$existing['id']);
+            if (!$utc) return $why . ' Could you suggest another time?';
+
+            apptReschedule($conn, $userId, (int)$existing['id'], $utc);
+            logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
+            return "Moved: {$existing['service_name']} is now " . $fmt($utc->format('Y-m-d H:i:s')) . '.';
+    }
+
+    return '';
 }
 
 // Sends through the same endpoint the composer uses, and meters it the same
@@ -540,6 +780,15 @@ function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId,
     if (!$resp || empty($resp['ok'])) return false;
     incrementUsage($conn, $userId, 'messages_sent');
     return true;
+}
+
+// A phone number only when the JID actually carries one. An @lid is an opaque
+// identifier that merely looks like a number, and storing it as a customer's
+// phone would put a fabricated number on an appointment.
+function chatbotPhoneFromJid($jid) {
+    if (!str_ends_with((string)$jid, '@s.whatsapp.net')) return null;
+    $digits = preg_replace('/\D+/', '', explode('@', $jid)[0]);
+    return $digits !== '' ? $digits : null;
 }
 
 function chatbotAccountForSession(mysqli $conn, $sessionId) {
