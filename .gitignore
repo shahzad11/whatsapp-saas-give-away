@@ -16,6 +16,7 @@ frontend-php/logs/
 # Local notes that must never reach a server or a registry
 development-tasks.md
 technical-doc.md
+HANDOFF.md
 
 .DS_Store
 **/.DS_Store
