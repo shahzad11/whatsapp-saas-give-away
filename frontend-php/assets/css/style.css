@@ -431,6 +431,7 @@ body {
     font-size: 0.8rem;
     justify-content: space-between;
     align-items: center;
+    display: inline-flex;
 }
 
 /* ===== QR Code ===== */
