@@ -30,3 +30,7 @@ require_once $basePath . '/includes/mail-templates.php';
 require_once $basePath . '/includes/plan.php';
 require_once $basePath . '/includes/billing.php';
 require_once $basePath . '/includes/profile.php';
+// llm before chatbot: the chatbot resolves models and decrypts provider keys
+// through the LLM layer, and both need plan.php's feature flags above.
+require_once $basePath . '/includes/llm.php';
+require_once $basePath . '/includes/chatbot.php';

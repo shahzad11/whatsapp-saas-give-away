@@ -25,6 +25,13 @@
             <a href="<?= APP_URL ?>/whatsapp/chats.php" class="nav-link-item <?= $currentPage === 'chats' ? 'active' : '' ?>">
                 <i class="bi bi-chat-dots"></i><span>Chats</span>
             </a>
+            <?php // Shown to everyone, including plans without the feature: the page
+                  // explains what the plan is missing and links to billing, which is
+                  // more useful than the entry silently not existing. The page and
+                  // every endpoint behind it still enforce the flag server-side. ?>
+            <a href="<?= APP_URL ?>/chatbot.php" class="nav-link-item <?= $currentPage === 'chatbot' ? 'active' : '' ?>">
+                <i class="bi bi-robot"></i><span>Chatbot</span>
+            </a>
         </div>
         <div class="nav-section">
             <span class="nav-section-title">Account</span>

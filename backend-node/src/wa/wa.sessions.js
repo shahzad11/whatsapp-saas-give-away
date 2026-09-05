@@ -767,6 +767,80 @@ function markSyncComplete(sessionState) {
   }
 }
 
+// --- Chatbot hand-off -------------------------------------------------------
+//
+// The backend does not decide anything about the chatbot. It cannot: the plan,
+// the tenant's configuration, the quota and the audit log all live in MySQL,
+// which PHP owns. So this hands the message over and forgets about it. Every
+// rule — including "never in a group, never in an archived chat" — is enforced
+// on the PHP side, where it exists once instead of twice.
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://frontend').replace(/\/+$/, '')
+const CHATBOT_HOOK_TIMEOUT_MS = 5000
+
+// Fire and forget. The reply itself takes seconds (a model call plus a send) and
+// nothing here waits for it: blocking the socket's event loop on an HTTP request
+// would stall message ingest for every chat.
+function notifyChatbot(sessionState, msg) {
+    if (!process.env.BACKEND_API_KEY) return
+    if (msg?.key?.fromMe) return
+    if (msg?.key?.remoteJid === 'status@broadcast') return
+
+    const content = unwrapMessage(msg.message)
+    if (!content) return
+
+    const media = detectMediaType(content)
+    const text = extractText(content)
+    // Nothing to answer: a reaction, a receipt, a poll vote.
+    if (media.type === 'text' && !text) return
+
+    const chatId = msg.key.remoteJid
+    const chat = sessionState.chats.get(chatId)
+    // The linked number's own chat. Answering it would have the bot talking to
+    // itself, forever.
+    const selfJid = sessionState.sock?.user?.id || ''
+    const selfPhone = selfJid.split(':')[0].split('@')[0]
+    const isSelfChat = !!selfPhone && chatId.startsWith(selfPhone + '@')
+
+    const payload = JSON.stringify({
+      sessionId: sessionState.sessionId,
+      chatId,
+      messageId: msg.key.id,
+      text,
+      mediaType: media.type,
+      fromMe: false,
+      isGroup: chatId.endsWith('@g.us'),
+      // Read from the chat state the backend already keeps current through
+      // chats.update, so an archived conversation is known as such immediately.
+      archived: !!chat?.archived,
+      isSelfChat
+    })
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), CHATBOT_HOOK_TIMEOUT_MS)
+
+    fetch(`${FRONTEND_URL}/internal/chatbot-inbound.php`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': process.env.BACKEND_API_KEY,
+        'X-Tenant-Id': sessionState.tenantId
+      },
+      body: payload,
+      signal: controller.signal
+    })
+      .then(res => {
+        // A 401 here means the two halves disagree about the shared secret —
+        // silent chatbots are the hardest thing to debug, so say it loudly.
+        if (res.status === 401) console.error('Chatbot hook rejected: BACKEND_API_KEY mismatch with the frontend')
+      })
+      .catch(err => {
+        // An abort is expected: PHP keeps working after we stop listening
+        // (ignore_user_abort), so a slow reply is not a failure.
+        if (err?.name !== 'AbortError') console.error('Chatbot hook failed:', err.message)
+      })
+      .finally(() => clearTimeout(timer))
+}
+
 function attachSocketEvents(sessionState, sock, saveCreds) {
   sock.ev.on('creds.update', saveCreds)
 
@@ -984,9 +1058,13 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
     scheduleChatSave(sessionState)
   })
 
-  sock.ev.on('messages.upsert', ({ messages: msgs }) => {
+  sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
     for (const msg of msgs) {
       storeMessage(sessionState, msg)
+      // 'notify' means this arrived now. 'append' is backfill, and
+      // messaging-history.set does not come through here at all — which is the
+      // whole point: a 9,000-message history sync must never wake the chatbot.
+      if (type === 'notify') notifyChatbot(sessionState, msg)
     }
   })
 

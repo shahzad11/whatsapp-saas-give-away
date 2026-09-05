@@ -335,3 +335,104 @@ SET @add_sender_jid := (
 PREPARE stmt_add_sender_jid FROM @add_sender_jid;
 EXECUTE stmt_add_sender_jid;
 DEALLOCATE PREPARE stmt_add_sender_jid;
+
+-- ---------------------------------------------------------------------------
+-- LLM chatbot (issues #9, #14, #16, #22)
+-- ---------------------------------------------------------------------------
+
+-- A provider is a vendor account the platform owner pays for. The API key is
+-- encrypted with the same libsodium secretbox used for the SMTP password
+-- (includes/crypto.php) and is never returned to any browser, admin or tenant.
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(32) NOT NULL,           -- openai | anthropic | google
+    label VARCHAR(80) NOT NULL,
+    api_key_encrypted TEXT DEFAULT NULL,
+    base_url VARCHAR(255) DEFAULT NULL,  -- override for gateways/proxies
+    is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    last_tested_at DATETIME DEFAULT NULL,
+    last_test_ok TINYINT(1) DEFAULT NULL,
+    last_test_error VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_provider (code)
+) ENGINE=InnoDB;
+
+-- Models are listed explicitly rather than fetched: the admin decides what
+-- tenants may spend money on, and a vendor adding an expensive model must never
+-- silently become selectable.
+CREATE TABLE IF NOT EXISTS llm_models (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    provider_id INT NOT NULL,
+    model_code VARCHAR(100) NOT NULL,    -- as the vendor's API expects it
+    label VARCHAR(100) NOT NULL,
+    kind ENUM('chat','transcribe') NOT NULL DEFAULT 'chat',
+    is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_model (provider_id, model_code),
+    INDEX idx_kind_enabled (kind, is_enabled)
+) ENGINE=InnoDB;
+
+-- Which plans may use which model. Absence of a row means no access, so a new
+-- model is unavailable until the admin grants it — never the other way round.
+CREATE TABLE IF NOT EXISTS plan_llm_models (
+    plan_id INT NOT NULL,
+    model_id INT NOT NULL,
+    PRIMARY KEY (plan_id, model_id),
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES llm_models(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- One chatbot configuration per tenant.
+--
+-- reply_to_groups / reply_to_archived exist as columns but default to 0 and the
+-- UI does not offer them yet (#22): the bot must never speak in a group or
+-- revive an archived chat. They are columns so the future opt-in described in
+-- #22 does not need a migration.
+CREATE TABLE IF NOT EXISTS chatbot_configs (
+    user_id INT NOT NULL PRIMARY KEY,
+    is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    model_id INT DEFAULT NULL,
+    byo_provider_code VARCHAR(32) DEFAULT NULL,
+    byo_model_code VARCHAR(100) DEFAULT NULL,
+    byo_api_key_encrypted TEXT DEFAULT NULL,
+    knowledge_base MEDIUMTEXT DEFAULT NULL,
+    greeting TEXT DEFAULT NULL,
+    fallback_message TEXT DEFAULT NULL,
+    tone VARCHAR(32) NOT NULL DEFAULT 'professional',
+    max_tokens INT NOT NULL DEFAULT 400,
+    history_messages INT NOT NULL DEFAULT 10,
+    reply_to_groups TINYINT(1) NOT NULL DEFAULT 0,
+    reply_to_archived TINYINT(1) NOT NULL DEFAULT 0,
+    active_hours_start CHAR(5) DEFAULT NULL,   -- 'HH:MM' in the tenant timezone
+    active_hours_end CHAR(5) DEFAULT NULL,
+    outside_hours_message TEXT DEFAULT NULL,
+    transcribe_audio TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES llm_models(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Per-reply record. Deliberately metadata only: no message text and no model
+-- output is stored, because the admin console reads this table and admins must
+-- never see message content. `outcome` is what makes a silent bot debuggable.
+CREATE TABLE IF NOT EXISTS chatbot_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    account_id INT DEFAULT NULL,
+    chat_key CHAR(64) DEFAULT NULL,      -- sha256(chat jid): correlate without storing who
+    outcome VARCHAR(32) NOT NULL,        -- replied | skipped_group | skipped_archived | quota | error | ...
+    detail VARCHAR(255) DEFAULT NULL,
+    model_id INT DEFAULT NULL,
+    prompt_tokens INT DEFAULT NULL,
+    completion_tokens INT DEFAULT NULL,
+    latency_ms INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES llm_models(id) ON DELETE SET NULL,
+    INDEX idx_user_time (user_id, created_at),
+    INDEX idx_outcome_time (outcome, created_at)
+) ENGINE=InnoDB;
