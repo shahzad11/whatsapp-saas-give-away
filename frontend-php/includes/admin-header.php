@@ -8,13 +8,19 @@
 $currentPage = currentPage();
 $user = getCurrentUser();
 $pageTitle = $pageTitle ?? 'Admin';
+$brandName = brandName($conn ?? null);
+$brandLogo = brandLogoUrl($conn ?? null);
+$brandFavicon = brandFaviconUrl($conn ?? null);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= sanitize($pageTitle) ?> - <?= APP_NAME ?> Admin</title>
+    <title><?= sanitize($pageTitle) ?> - <?= sanitize($brandName) ?> Admin</title>
+    <?php if ($brandFavicon !== ''): ?>
+        <link rel="icon" href="<?= sanitize($brandFavicon) ?>">
+    <?php endif; ?>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -24,9 +30,15 @@ $pageTitle = $pageTitle ?? 'Admin';
 <body class="admin-console">
 <div class="app-wrapper">
     <aside class="app-sidebar" id="appSidebar">
+        <?php // The shield stays even with a logo set: this is the console, and the
+              // icon is what makes that unmistakable at a glance. ?>
         <div class="sidebar-brand">
             <i class="bi bi-shield-lock"></i>
-            <span><?= APP_NAME ?></span>
+            <?php if ($brandLogo !== ''): ?>
+                <img src="<?= sanitize($brandLogo) ?>" alt="<?= sanitize($brandName) ?>" class="sidebar-brand-logo">
+            <?php else: ?>
+                <span><?= sanitize($brandName) ?></span>
+            <?php endif; ?>
         </div>
         <div class="admin-scope-banner">Admin console</div>
         <nav class="sidebar-nav">
@@ -49,6 +61,9 @@ $pageTitle = $pageTitle ?? 'Admin';
                 <span class="nav-section-title">Instance</span>
                 <a href="<?= APP_URL ?>/admin/settings.php" class="nav-link-item <?= $currentPage === 'settings' ? 'active' : '' ?>">
                     <i class="bi bi-sliders"></i><span>Settings</span>
+                </a>
+                <a href="<?= APP_URL ?>/admin/branding.php" class="nav-link-item <?= $currentPage === 'branding' ? 'active' : '' ?>">
+                    <i class="bi bi-palette"></i><span>Branding</span>
                 </a>
                 <a href="<?= APP_URL ?>/admin/email.php" class="nav-link-item <?= $currentPage === 'email' ? 'active' : '' ?>">
                     <i class="bi bi-envelope-at"></i><span>Email / SMTP</span>

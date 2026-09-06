@@ -56,8 +56,14 @@ require_once __DIR__ . '/includes/auth-header.php';
 
 <div class="auth-card">
     <div class="auth-brand">
-        <i class="bi bi-whatsapp"></i>
-        <h2><?= APP_NAME ?></h2>
+        <?php // #23: $brandName and the logo come from auth-header.php. ?>
+        <?php $authLogo = brandLogoUrl($conn); ?>
+        <?php if ($authLogo !== ''): ?>
+            <img src="<?= sanitize($authLogo) ?>" alt="<?= sanitize($brandName) ?>" class="auth-brand-logo">
+        <?php else: ?>
+            <i class="bi bi-whatsapp"></i>
+            <h2><?= sanitize($brandName) ?></h2>
+        <?php endif; ?>
         <p>Sign in to your account</p>
     </div>
 

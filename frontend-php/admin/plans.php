@@ -22,11 +22,10 @@ function parseLimit($raw, $field, array &$errors) {
     return (int)$value;
 }
 
+$self = APP_URL . '/admin/plans.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/admin/plans.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? '';
 
@@ -38,16 +37,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $plan = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
-        if (!$plan) {
-            flash('error', 'Plan not found.');
-            redirect(APP_URL . '/admin/plans.php');
-        }
+        if (!$plan) formRespond(false, 'Plan not found.', $self);
 
         // Deactivating the plan new tenants are assigned would leave signup
         // unable to give anyone a plan, and quota checks with nothing to read.
         if ((int)$plan['is_active'] === 1 && $plan['code'] === defaultPlanCode($conn)) {
-            flash('error', 'This is the default plan for new tenants. Choose a different default in Settings first.');
-            redirect(APP_URL . '/admin/plans.php');
+            formRespond(false, 'This is the default plan for new tenants. Choose a different default in Settings first.', $self);
         }
 
         $stmt = $conn->prepare("UPDATE plans SET is_active = 1 - is_active WHERE id = ?");
@@ -55,8 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
         $stmt->close();
         logAudit($conn, 'admin.plan.toggle_active', 'plan', $planId);
-        flash('success', 'Plan ' . ((int)$plan['is_active'] === 1 ? 'deactivated' : 'activated') . '.');
-        redirect(APP_URL . '/admin/plans.php');
+        formRespond(true, 'Plan ' . ((int)$plan['is_active'] === 1 ? 'deactivated' : 'activated') . '.', $self);
     }
 
     if ($action === 'save') {
@@ -168,8 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             logAudit($conn, $isNew ? 'admin.plan.create' : 'admin.plan.update', 'plan', $savedId, [
                 'code' => $code, 'price_cents' => $priceMinor, 'currency' => $currency,
             ]);
-            flash('success', 'Plan ' . ($isNew ? 'created' : 'updated') . '.');
-            redirect(APP_URL . '/admin/plans.php');
+            formRespond(true, 'Plan ' . ($isNew ? 'created' : 'updated') . '.', $self);
         }
 
         // Redisplay the form with what was typed.
@@ -181,7 +174,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'max_services' => $maxServices,
             'features' => $features, 'is_active' => $isActive, 'sort_order' => $sortOrder,
         ];
-        flash('error', 'Please correct the highlighted fields.');
+        // formErrors(), not formRespond(): the plain-form path falls through to
+        // the render with what was typed still in the fields.
+        formErrors('Please correct the highlighted fields.', $errors);
     }
 }
 
@@ -213,6 +208,17 @@ $grantedModelIds = ($_SERVER['REQUEST_METHOD'] === 'POST')
     ? array_map('intval', (array)($_POST['llm_models'] ?? []))
     : (($editing && !empty($editing['id'])) ? llmPlanModelIds($conn, (int)$editing['id']) : []);
 
+// The populated form, on its own, for the modal to load (#24).
+//
+// Sent only in reply to our own fetch() — the X-Requested-With header is what
+// distinguishes it — so a normal ?edit=N page load is unaffected and still
+// renders the whole page. requireAdmin() has already run, from admin-init.php,
+// before anything here.
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isXhrRequest() && isset($_GET['edit'])) {
+    require __DIR__ . '/partials/plan-form.php';
+    exit;
+}
+
 function pErr($k) { global $errors; return empty($errors[$k]) ? '' : '<div class="invalid-feedback d-block">' . sanitize($errors[$k]) . '</div>'; }
 function pCls($k) { global $errors; return empty($errors[$k]) ? '' : ' is-invalid'; }
 
@@ -240,7 +246,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <div class="card table-card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span>Packages</span>
-        <a href="<?= APP_URL ?>/admin/plans.php#planForm" class="btn btn-sm btn-primary">
+        <?php // href is a real link to the same page's form, so this works with
+              // JavaScript off; the data-* attributes upgrade it to the modal. ?>
+        <a href="<?= APP_URL ?>/admin/plans.php#planShell" class="btn btn-sm btn-primary"
+           data-modal-target="#planModal" data-modal-url="<?= APP_URL ?>/admin/plans.php?edit=0"
+           data-modal-title="New plan">
             <i class="bi bi-plus-lg me-1"></i>New plan
         </a>
     </div>
@@ -286,13 +296,23 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     </td>
                     <td>
                         <div class="d-flex gap-1">
-                            <a href="<?= APP_URL ?>/admin/plans.php?edit=<?= (int)$p['id'] ?>#planForm"
-                               class="btn btn-sm btn-outline-primary">Edit</a>
-                            <form method="POST" onsubmit="return confirm('<?= $p['is_active'] ? 'Deactivate' : 'Activate' ?> this plan?')">
+                            <a href="<?= APP_URL ?>/admin/plans.php?edit=<?= (int)$p['id'] ?>#planShell"
+                               class="btn btn-sm btn-outline-primary"
+                               data-modal-target="#planModal"
+                               data-modal-url="<?= APP_URL ?>/admin/plans.php?edit=<?= (int)$p['id'] ?>"
+                               data-modal-title="Edit <?= sanitize($p['name']) ?>">Edit</a>
+                            <form method="POST" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="action" value="toggle_active">
                                 <input type="hidden" name="plan_id" value="<?= (int)$p['id'] ?>">
-                                <button class="btn btn-sm btn-outline-secondary">
+                                <?php // Only deactivating is confirmed: it removes the plan from
+                                      // signup and from the tenant comparison. Activating is
+                                      // additive, and a dialog on a harmless action teaches people
+                                      // to dismiss dialogs. ?>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                    <?php if ($p['is_active']): ?>
+                                        data-confirm="Deactivate <?= sanitize($p['name']) ?>? It stops being offered to new tenants. The <?= number_format((int)$p['tenant_count']) ?> tenant(s) already on it keep it."
+                                    <?php endif; ?>>
                                     <?= $p['is_active'] ? 'Disable' : 'Enable' ?>
                                 </button>
                             </form>
@@ -312,166 +332,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 </div>
 
-<div class="card" id="planForm">
+<?php // Rendered exactly once, as a plain card, and promoted to a modal by
+      // forms.js when JavaScript is available (#24).
+      //
+      // The alternative — a modal copy plus a <noscript> copy — puts the same
+      // twenty field ids in the document twice, which silently breaks every
+      // <label for> in whichever copy comes second. Rendering once and letting the
+      // enhancement layer move the node keeps one source of truth, and with
+      // JavaScript off this is the full-page editor it has always been.
+      //
+      // The form itself is filled by the server, never from data-* attributes on
+      // the table rows: it has five limits, seven feature switches and a model
+      // grant matrix, and reproducing that in markup would be a second
+      // implementation of the form. Editing fetches the populated partial. ?>
+<div class="card" id="planShell" data-modal-shell="planModal"
+     data-modal-title="<?= $editing && !empty($editing['id']) ? 'Edit plan' : 'New plan' ?>"
+     <?= ($editing && !empty($editing['id'])) ? 'data-modal-open="1"' : '' ?>>
     <div class="card-header"><?= $editing && !empty($editing['id']) ? 'Edit Plan' : 'New Plan' ?></div>
     <div class="card-body">
-        <form method="POST">
-            <?= csrfField() ?>
-            <input type="hidden" name="action" value="save">
-            <input type="hidden" name="plan_id" value="<?= (int)($editing['id'] ?? 0) ?>">
-
-            <div class="row g-3">
-                <div class="col-md-5">
-                    <label class="form-label">Name <span class="text-danger">*</span></label>
-                    <input type="text" name="name" class="form-control<?= pCls('name') ?>"
-                           value="<?= sanitize($editing['name'] ?? '') ?>" maxlength="100" required>
-                    <?= pErr('name') ?>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Code <span class="text-danger">*</span></label>
-                    <input type="text" name="code" class="form-control<?= pCls('code') ?>"
-                           value="<?= sanitize($editing['code'] ?? '') ?>" maxlength="40" required
-                           placeholder="starter">
-                    <div class="form-text">Used in config and URLs. Changing it breaks existing references.</div>
-                    <?= pErr('code') ?>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Sort order</label>
-                    <input type="number" name="sort_order" class="form-control"
-                           value="<?= (int)($editing['sort_order'] ?? 0) ?>">
-                </div>
-
-                <div class="col-12">
-                    <label class="form-label">Description</label>
-                    <input type="text" name="description" class="form-control<?= pCls('description') ?>"
-                           value="<?= sanitize($editing['description'] ?? '') ?>" maxlength="255">
-                    <?= pErr('description') ?>
-                </div>
-
-                <div class="col-md-4">
-                    <label class="form-label">Price</label>
-                    <input type="text" name="price" class="form-control<?= pCls('price') ?>"
-                           value="<?= sanitize(priceInputValue($editing)) ?>" placeholder="1500">
-                    <div class="form-text">Major units. 0 shows as “Free”.</div>
-                    <?= pErr('price') ?>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Currency</label>
-                    <select name="currency" class="form-select<?= pCls('currency') ?>">
-                        <?php $selCur = $editing['currency'] ?? appCurrency($conn); ?>
-                        <?php foreach (currencyChoices() as $code => $label): ?>
-                            <option value="<?= $code ?>" <?= $selCur === $code ? 'selected' : '' ?>><?= sanitize($label) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <?= pErr('currency') ?>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Billing period</label>
-                    <select name="billing_period" class="form-select<?= pCls('billing_period') ?>">
-                        <?php foreach (['month' => 'Monthly', 'year' => 'Yearly', 'none' => 'One-time'] as $v => $l): ?>
-                            <option value="<?= $v ?>" <?= ($editing['billing_period'] ?? 'month') === $v ? 'selected' : '' ?>><?= $l ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <?= pErr('billing_period') ?>
-                </div>
-            </div>
-
-            <hr class="my-4">
-            <h6 class="fw-600 mb-3">Limits <span class="text-muted small fw-normal">— blank = unlimited, 0 = none allowed</span></h6>
-            <div class="row g-3">
-                <?php
-                $limits = [
-                    'max_wa_accounts' => 'WhatsApp accounts',
-                    'max_contacts' => 'Contacts',
-                    'max_messages_per_month' => 'Messages / month',
-                    'max_chatbot_replies' => 'AI replies / month',
-                    'max_services' => 'Bookable services',
-                ];
-                foreach ($limits as $field => $label):
-                    $val = $editing[$field] ?? null;
-                ?>
-                <div class="col-md-4">
-                    <label class="form-label"><?= $label ?></label>
-                    <input type="text" name="<?= $field ?>" class="form-control<?= pCls($field) ?>"
-                           value="<?= $val === null ? '' : (int)$val ?>" placeholder="Unlimited">
-                    <?= pErr($field) ?>
-                </div>
-                <?php endforeach; ?>
-            </div>
-
-            <hr class="my-4">
-            <h6 class="fw-600 mb-3">Features</h6>
-            <div class="row g-2">
-                <?php $active = planFeatures($editing ?: []); ?>
-                <?php foreach (planFeatureDefinitions() as $key => $def): ?>
-                <div class="col-md-6">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="features[<?= $key ?>]"
-                               id="feat_<?= $key ?>" <?= !empty($active[$key]) ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="feat_<?= $key ?>"><?= sanitize($def['label']) ?></label>
-                        <div class="form-text x-small"><?= sanitize($def['help']) ?></div>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            </div>
-
-            <?php if ($chatModels): ?>
-            <hr class="my-4">
-            <h6 class="fw-600 mb-1">AI models</h6>
-            <p class="text-muted x-small">
-                Which models tenants on this plan may choose in Chatbot → Model. The
-                <strong>AI chatbot</strong> feature above must also be on. Writes the same table as
-                <a href="<?= APP_URL ?>/admin/llm.php">AI / LLM</a>, so either page can be used.
-            </p>
-            <?php // Marks the section as rendered. The save handler will not touch
-                  // plan_llm_models without it — see the comment there. ?>
-            <input type="hidden" name="llm_models_present" value="1">
-            <div class="row g-2">
-                <?php foreach ($chatModels as $m): ?>
-                <div class="col-md-6">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" name="llm_models[]"
-                               value="<?= (int)$m['id'] ?>" id="llmModel_<?= (int)$m['id'] ?>"
-                               <?= in_array((int)$m['id'], $grantedModelIds, true) ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="llmModel_<?= (int)$m['id'] ?>">
-                            <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?>
-                            <?php if (!$m['is_enabled'] || !$m['provider_enabled']): ?>
-                                <span class="badge bg-secondary x-small">disabled</span>
-                            <?php endif; ?>
-                        </label>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            </div>
-            <?php else: ?>
-            <?php // The section is hidden when there is nothing to grant, which left the
-                  // AI chatbot toggle above looking complete on its own. It is not: a plan
-                  // with the feature on and no model gives every tenant on it "no models
-                  // available on your plan". Say so, and link to where models come from. ?>
-            <hr class="my-4">
-            <h6 class="fw-600 mb-1">AI models</h6>
-            <p class="text-muted small mb-0">
-                No AI models exist on this instance yet, so switching <strong>AI chatbot</strong> on above
-                will not give tenants a working bot — they will see "no models available on your plan".
-                Add a provider on <a href="<?= APP_URL ?>/admin/llm.php">AI / LLM</a> first; its models then
-                appear here to grant.
-            </p>
-            <?php endif; ?>
-
-            <hr class="my-4">
-            <div class="form-check form-switch mb-4">
-                <input class="form-check-input" type="checkbox" name="is_active" id="isActive"
-                       <?= ($editing === null || !empty($editing['is_active'])) ? 'checked' : '' ?>>
-                <label class="form-check-label" for="isActive">Active (offered to tenants)</label>
-            </div>
-
-            <button type="submit" class="btn btn-primary">
-                <?= $editing && !empty($editing['id']) ? 'Save Plan' : 'Create Plan' ?>
-            </button>
-            <?php if ($editing && !empty($editing['id'])): ?>
-                <a href="<?= APP_URL ?>/admin/plans.php" class="btn btn-link">Cancel</a>
-            <?php endif; ?>
-        </form>
+        <?php require __DIR__ . '/partials/plan-form.php'; ?>
     </div>
 </div>
 

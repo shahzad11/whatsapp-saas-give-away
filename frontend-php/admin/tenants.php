@@ -4,11 +4,10 @@
 // guard.
 require_once dirname(__DIR__) . '/includes/admin-init.php';
 
+$self = APP_URL . '/admin/tenants.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/admin/tenants.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? '';
     $targetId = (int)($_POST['user_id'] ?? 0);
@@ -16,8 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // An admin locking themselves out, or demoting the last admin, leaves the
     // instance unadministrable. Block both.
     if ($targetId === $adminId && in_array($action, ['suspend', 'toggle_admin'], true)) {
-        flash('error', 'You cannot change your own access.');
-        redirect(APP_URL . '/admin/tenants.php');
+        formRespond(false, 'You cannot change your own access.', $self);
     }
 
     if ($action === 'suspend' || $action === 'activate') {
@@ -27,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
         $stmt->close();
         logAudit($conn, 'admin.user.' . $action, 'user', $targetId);
-        flash('success', 'User ' . $action . 'd.');
+        formRespond(true, 'User ' . $action . 'd.', $self);
     }
 
     if ($action === 'change_plan') {
@@ -40,10 +38,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($planId > 0 && getPlanById($conn, $planId)) {
             assignPlan($conn, $targetId, $planId);
             logAudit($conn, 'admin.user.change_plan', 'user', $targetId, ['plan_id' => $planId]);
-            flash('success', 'Plan updated.');
-        } else {
-            flash('error', 'That plan does not exist.');
+            formRespond(true, 'Plan updated.', $self);
         }
+        // The key is the <select>'s own name, so the AJAX path marks the very
+        // control that was wrong — a plan can disappear between the page being
+        // rendered and the Set button being pressed.
+        formRespond(false, 'That plan does not exist.', $self, ['plan_id' => 'Pick a plan that still exists.']);
     }
 
     if ($action === 'toggle_admin') {
@@ -52,10 +52,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
         $stmt->close();
         logAudit($conn, 'admin.user.toggle_admin', 'user', $targetId);
-        flash('success', 'Admin flag toggled.');
+        formRespond(true, 'Admin flag toggled.', $self);
     }
 
-    redirect(APP_URL . '/admin/tenants.php');
+    // Every branch above exits, so this is only reached by a POST naming an
+    // action that does not exist. It has to answer through formRespond() rather
+    // than redirect(): a bare 302 to an HTML page would come back to fetch() as
+    // something it cannot parse, and the submit would look like a network error.
+    formRespond(false, 'Unknown action.', $self);
 }
 
 $plans = getActivePlans($conn);
@@ -225,7 +229,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="text-muted x-small">tenant id: t<?= (int)$u['id'] ?></div>
                     </td>
                     <td>
-                        <form method="POST" class="d-flex gap-1">
+                        <form method="POST" class="d-flex gap-1" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="change_plan">
                             <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
@@ -255,37 +259,39 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <td>
                         <?php if ((int)$u['id'] !== $adminId): ?>
                         <div class="d-flex gap-1">
-                            <?php
-                            // Suspending locks the tenant out on their next request,
-                            // so it is confirmed like the admin toggle beside it.
-                            // Reactivating is not destructive and needs no prompt.
-                            //
-                            // json_encode produces the JS string literal (quotes and
-                            // escaping included) and htmlspecialchars makes it safe
-                            // inside the attribute. sanitize() alone would not do:
-                            // it turns an apostrophe into &#039;, which the HTML
-                            // parser hands back to JS as a quote and breaks the call.
-                            $suspendConfirm = '';
-                            if ($u['status'] !== 'suspended') {
-                                $msg = json_encode('Suspend ' . $u['email']
-                                    . '? They will be signed out and unable to log in until reactivated.');
-                                $suspendConfirm = ' onsubmit="return confirm('
-                                    . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . ')"';
-                            }
-                            ?>
-                            <form method="POST"<?= $suspendConfirm ?>>
+                            <form method="POST" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
                                 <input type="hidden" name="action" value="<?= $u['status'] === 'suspended' ? 'activate' : 'suspend' ?>">
-                                <button class="btn btn-sm btn-outline-<?= $u['status'] === 'suspended' ? 'success' : 'danger' ?>">
+                                <?php // Suspending locks the tenant out on their next request, so it
+                                      // is confirmed. Reactivating is additive and needs no prompt.
+                                      //
+                                      // The message now goes in a data attribute rather than into an
+                                      // onsubmit="confirm(...)", so it is plain text in HTML and
+                                      // sanitize() is exactly the right escaping. The old code had to
+                                      // json_encode() first because the value was JavaScript source,
+                                      // where sanitize()'s &#039; comes back as a quote and breaks
+                                      // the call. Removing the inline script removes that trap. ?>
+                                <button class="btn btn-sm btn-outline-<?= $u['status'] === 'suspended' ? 'success' : 'danger' ?>"
+                                    <?php if ($u['status'] !== 'suspended'): ?>
+                                        data-confirm="Suspend <?= sanitize($u['email']) ?>? They will be signed out and unable to log in until reactivated."
+                                    <?php endif; ?>>
                                     <?= $u['status'] === 'suspended' ? 'Reactivate' : 'Suspend' ?>
                                 </button>
                             </form>
-                            <form method="POST" onsubmit="return confirm('Toggle admin rights for this tenant?')">
+                            <form method="POST" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
                                 <input type="hidden" name="action" value="toggle_admin">
-                                <button class="btn btn-sm btn-outline-dark">Admin</button>
+                                <?php // Both directions are confirmed here, unlike the Suspend button
+                                      // above: removing admin rights can leave a colleague locked out
+                                      // of the console, and granting them hands one tenant account
+                                      // full sight of every other tenant on the instance. Neither is
+                                      // the harmless additive case that a dialog would devalue. ?>
+                                <button class="btn btn-sm btn-outline-dark"
+                                    data-confirm="<?= $u['is_admin']
+                                        ? 'Remove admin rights from ' . sanitize($u['email']) . '? They keep their own tenant account and lose the admin console.'
+                                        : 'Give ' . sanitize($u['email']) . ' admin rights? They will be able to see and change every tenant on this instance.' ?>">Admin</button>
                             </form>
                         </div>
                         <?php else: ?>

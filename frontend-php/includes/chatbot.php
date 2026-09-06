@@ -49,6 +49,8 @@ function chatbotDefaultConfig($userId) {
         'handoff_resume_message' => '',
         'handoff_notify_number' => null,
         'handoff_notify_email' => null,
+        'handoff_share_number' => 0,
+        'handoff_share_message' => '',
     ];
 }
 
@@ -65,10 +67,18 @@ function chatbotDefaultConfig($userId) {
 // Normalising at the top of the reply path makes plan and behaviour agree
 // everywhere downstream. The individual checks further down are kept as defence
 // in depth, for callers that did not come through here.
-function chatbotEffectiveConfig(array $config, $plan) {
+// $conn is needed for one thing only: resolving the handover notification number
+// (#26), which may come from the tenant's own field or from the instance-wide
+// admin fallback. It is resolved here, once, so both the reply path's
+// "never answer the notification number" rule and the alert sender read the same
+// value — computing it separately in each is how the bot ends up replying to the
+// very phone it just alerted.
+function chatbotEffectiveConfig(?mysqli $conn, array $config, $plan) {
     if (!planHasFeature($plan, 'appointments'))        $config['appointments_enabled'] = 0;
     if (!planHasFeature($plan, 'handoff'))             $config['handoff_enabled'] = 0;
     if (!planHasFeature($plan, 'voice_transcription')) $config['transcribe_audio'] = 0;
+
+    $config['notify_number_effective'] = handoffNotifyNumber($conn, $config);
     return $config;
 }
 
@@ -113,11 +123,17 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $phrases    = mb_substr(trim((string)($in['handoff_phrases'] ?? '')), 0, 500);
     $ackMsg     = mb_substr((string)($in['handoff_ack_message'] ?? ''), 0, 500);
     $resumeMsg  = mb_substr((string)($in['handoff_resume_message'] ?? ''), 0, 500);
-    $notifyNum  = preg_replace('/\D+/', '', (string)($in['handoff_notify_number'] ?? ''));
-    $notifyNum  = $notifyNum !== '' ? mb_substr($notifyNum, 0, 32) : null;
+    // #26: normalised to bare E.164 digits, and a value that is not a valid
+    // international number is stored as NULL rather than as something that looks
+    // saved and can never be messaged. The page validates first and refuses the
+    // save, so reaching the NULL here means a crafted POST.
+    $notifyNum  = handoffNormaliseNumber($in['handoff_notify_number'] ?? '');
+    $notifyNum  = (is_string($notifyNum) && $notifyNum !== '') ? $notifyNum : null;
     $notifyMail = trim((string)($in['handoff_notify_email'] ?? ''));
     if ($notifyMail !== '' && !filter_var($notifyMail, FILTER_VALIDATE_EMAIL)) $notifyMail = null;
     $notifyMail = $notifyMail ?: null;
+    $shareNum   = !empty($in['handoff_share_number']) ? 1 : 0;
+    $shareMsg   = mb_substr(trim((string)($in['handoff_share_message'] ?? '')), 0, 500);
 
     if ($byoCode !== null && !llmIsKnownProvider($byoCode)) $byoCode = null;
 
@@ -134,8 +150,9 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
             reminder_minutes, booking_confirmation,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
-            handoff_notify_number, handoff_notify_email)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            handoff_notify_number, handoff_notify_email,
+            handoff_share_number, handoff_share_message)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -153,17 +170,21 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             handoff_ack_message = VALUES(handoff_ack_message),
             handoff_resume_message = VALUES(handoff_resume_message),
             handoff_notify_number = VALUES(handoff_notify_number),
-            handoff_notify_email = VALUES(handoff_notify_email)"
+            handoff_notify_email = VALUES(handoff_notify_email),
+            handoff_share_number = VALUES(handoff_share_number),
+            handoff_share_message = VALUES(handoff_share_message)"
     );
     // The type string is derived from the values, not written by hand. This
-    // statement binds 26 columns and the hand-written string had drifted by one
+    // statement binds 27 columns and the hand-written string had drifted by one
     // character, so `bind_param` threw `ArgumentCountError` and *every* save of
-    // this form 500'd. Deriving it cannot drift when a column is added.
+    // this form 500'd. Deriving it cannot drift when a column is added — which
+    // is what let #26 add two more here without touching it.
     $params = [
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
         $apptOn, $lead, $horizon, $reminders, $confirm,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
+        $shareNum, $shareMsg,
     ];
     $types = '';
     foreach ($params as $p) $types .= is_int($p) ? 'i' : 's';
@@ -236,6 +257,18 @@ function chatbotSkipReason(array $config, array $msg) {
 
     // The linked number talking to itself. Answering produces a loop.
     if (!empty($msg['isSelfChat']))                     return 'skipped_self_chat';
+
+    // #26: the handover notification number is a colleague's phone, not a
+    // customer's. The bot has just messaged it to say someone is waiting; if
+    // that colleague replies "on it", the bot must not answer them — and worse,
+    // an auto-reply there could match a handoff phrase and open a second
+    // handoff for the alert thread itself. The resolved number is put on the
+    // config by chatbotEffectiveConfig(), so the tenant's own field and the
+    // admin fallback are both covered.
+    $notify = (string)($config['notify_number_effective'] ?? '');
+    if ($notify !== '' && (string)($msg['chatId'] ?? '') === $notify . '@s.whatsapp.net') {
+        return 'skipped_notify_number';
+    }
 
     // Newsletters and channels are broadcasts, not conversations.
     $chatId = (string)($msg['chatId'] ?? '');
@@ -641,7 +674,7 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // what the tenant last saved: a downgrade must bite on the very next
     // message, not the next time they happen to open the settings page.
     $plan = getUserPlan($conn, $userId);
-    $config = chatbotEffectiveConfig(chatbotConfig($conn, $userId), $plan);
+    $config = chatbotEffectiveConfig($conn, chatbotConfig($conn, $userId), $plan);
 
     $log = function ($outcome, $extra = []) use ($conn, $userId, $account, $chatId) {
         chatbotLogEvent($conn, $userId, $outcome, $extra + [
@@ -871,9 +904,10 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
 
     switch ($action['action']) {
         case 'handoff':
-            // The model has already told the customer in its own words, so no
-            // extra line is appended — but the queue entry and the nudge to the
-            // tenant still have to happen.
+            // The model has already told the customer in its own words, so the
+            // only thing appended is the direct number the tenant chose to share
+            // (#26) — the model is never told that number, because it would then
+            // be free to quote it in conversations that are not a handover.
             if (empty($ctx['handoff_enabled'])) return '';
             [$id, $isNew] = handoffOpen($conn, $userId, [
                 'account_id' => $ctx['account_id'] ?? null,
@@ -886,6 +920,7 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
                 $handoff = handoffById($conn, $userId, $id);
                 if ($handoff) handoffNotify($conn, $userId, $config, $handoff, $ctx['session_id'] ?? null, $ctx['tenant_id'] ?? null);
                 logAudit($conn, 'handoff.requested', 'chat_handoff', (string)$id, ['reason' => 'model'], $userId);
+                return handoffShareLine($conn, $config);
             }
             return '';
 
@@ -894,7 +929,7 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             if (!$service) return "I could not match that to one of our services — could you say which one you would like?";
 
             [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '', $timezone);
-            if (!$utc) return $why . ' Could you suggest another time?';
+            if (!$utc) return apptRefusalLine($why);
 
             $id = apptCreate($conn, $userId, [
                 'account_id' => $ctx['account_id'] ?? null,
@@ -933,7 +968,7 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             ];
             [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '',
                 $timezone, (int)$existing['id']);
-            if (!$utc) return $why . ' Could you suggest another time?';
+            if (!$utc) return apptRefusalLine($why);
 
             apptReschedule($conn, $userId, (int)$existing['id'], $utc);
             logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
@@ -963,6 +998,12 @@ function chatbotStartHandoff(mysqli $conn, $userId, $tenantId, array $config, ar
     if ($isNew) {
         $ack = trim((string)($config['handoff_ack_message'] ?? ''));
         if ($ack === '') $ack = "Thanks — I'm passing you to a member of our team. They'll reply here shortly.";
+        // #26: the direct number, only when the tenant opted in. Appended to the
+        // acknowledgement rather than sent as a second message — two WhatsApp
+        // messages in a row cost the tenant two from their allowance and read as
+        // a bot stuttering.
+        $share = handoffShareLine($conn, $config);
+        if ($share !== '') $ack = trim($ack . "\n\n" . $share);
         chatbotSendReply($conn, $userId, $tenantId, $data['session_id'], $data['chat_id'], $ack);
 
         $handoff = handoffById($conn, $userId, $id);
@@ -1000,6 +1041,7 @@ function chatbotOutcomeLabel($outcome) {
         'skipped_archived'     => 'Skipped — archived chat',
         'skipped_own_message'  => 'Skipped — own message',
         'skipped_self_chat'    => 'Skipped — own number',
+        'skipped_notify_number'=> 'Skipped — handover notification number',
         'skipped_broadcast'    => 'Skipped — status broadcast',
         'skipped_newsletter'   => 'Skipped — channel',
         'skipped_disabled'     => 'Skipped — chatbot off',
@@ -1038,5 +1080,6 @@ function chatbotOutcomeHint($outcome) {
         'skipped_handoff'   => 'A person is handling that conversation, so the bot stayed silent.',
         'handoff'           => 'Someone asked for a person. Open Live chats to reply.',
         'skipped_disabled'  => 'The chatbot was switched off when this arrived.',
+        'skipped_notify_number' => 'That is the number your handover alerts go to, so the bot never answers it.',
     ][$outcome] ?? '';
 }

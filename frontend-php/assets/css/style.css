@@ -78,6 +78,16 @@ body {
     color: #25d366;
 }
 
+/* An admin-uploaded logo (#23). Bounded in both directions so a tall or very
+   wide upload cannot push the brand row out of the topbar's height, which is a
+   fixed layout variable everything else lines up against. */
+.sidebar-brand-logo {
+    max-height: 34px;
+    max-width: 100%;
+    width: auto;
+    object-fit: contain;
+}
+
 .sidebar-nav {
     flex: 1;
     overflow-y: auto;
@@ -375,6 +385,16 @@ body {
     color: var(--text-secondary);
     font-size: 0.875rem;
     margin-top: 4px;
+}
+
+/* An admin-uploaded logo on the sign-in card (#23). Taller than the sidebar's
+   because this card is the widest thing on the page, but still bounded — the
+   card has a fixed max-width and an unconstrained image would overflow it. */
+.auth-brand-logo {
+    max-height: 56px;
+    max-width: 100%;
+    width: auto;
+    object-fit: contain;
 }
 
 /* ===== Form Styles ===== */

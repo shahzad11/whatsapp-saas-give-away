@@ -112,7 +112,7 @@ require_once __DIR__ . '/includes/auth-header.php';
     <div class="auth-brand">
         <i class="bi bi-whatsapp"></i>
         <h2>Create Account</h2>
-        <p>Get started with <?= APP_NAME ?></p>
+        <p>Get started with <?= sanitize($brandName) ?></p>
     </div>
 
     <?php if ($error): ?>

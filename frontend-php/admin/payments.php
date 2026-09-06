@@ -8,11 +8,10 @@ $errors = [];
 $search = trim($_GET['q'] ?? '');
 $prefillUser = (int)($_GET['user'] ?? 0);
 
+$self = APP_URL . '/admin/payments.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/admin/payments.php');
-    }
+    formRequireCsrf($self);
 
     // Renewal reminders are a separate action on this page: the admin is
     // already looking at who is lapsing, so this is where it belongs.
@@ -31,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $l['name'], $l['plan_name'], $l['current_period_end'],
                 $instructions, APP_URL . '/billing.php'
             );
-            if (sendEmail($l['email'], 'Your ' . APP_NAME . ' plan is expiring', $html, $text)) {
+            if (sendEmail($l['email'], 'Your ' . brandName($conn) . ' plan is expiring', $html, $text)) {
                 $sent++;
                 logAudit($conn, 'admin.payment.reminder_sent', 'user', $l['user_id'], [
                     'period_end' => $l['current_period_end'],
@@ -42,13 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($sent === 0 && $failed === 0) {
-            flash('error', 'Nobody to remind — no paid period is lapsing.');
-        } elseif ($failed > 0) {
-            flash('error', "Sent {$sent}, failed {$failed}. Check Email / SMTP settings.");
-        } else {
-            flash('success', "Sent {$sent} renewal reminder(s).");
+            formRespond(false, 'Nobody to remind — no paid period is lapsing.', $self);
         }
-        redirect(APP_URL . '/admin/payments.php');
+        if ($failed > 0) {
+            formRespond(false, "Sent {$sent}, failed {$failed}. Check Email / SMTP settings.", $self);
+        }
+        formRespond(true, "Sent {$sent} renewal reminder(s).", $self);
     }
 
     $userId = (int)($_POST['user_id'] ?? 0);
@@ -121,15 +119,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             logAudit($conn, 'admin.payment.apply_plan', 'user', $userId, [
                 'plan_id' => $planId, 'period_end' => $periodEnd, 'payment_id' => $paymentId,
             ]);
-            flash('success', 'Payment logged and plan applied through ' . $periodEnd . '.');
-        } else {
-            flash('success', 'Payment logged.');
         }
 
-        redirect(APP_URL . '/admin/payments.php');
+        formRespond(true, $applyToPlan
+            ? 'Payment logged and plan applied through ' . $periodEnd . '.'
+            : 'Payment logged.', $self);
     }
 
-    flash('error', 'Please correct the highlighted fields.');
+    // formErrors(), not formRespond(): this handler deliberately falls through to
+    // render the form again with the tenant the admin had chosen still selected,
+    // and a redirect would throw that away.
+    formErrors('Please correct the highlighted fields.', $errors);
     $prefillUser = $userId;
 }
 
@@ -143,6 +143,12 @@ $plans = $conn->query("SELECT id, name, code, price_cents, currency, billing_per
 $payments = getPayments($conn, null, 100, $search);
 $totals = paymentTotals($conn);
 $lapsing = lapsingSubscriptions($conn, 7);
+
+// The log form is promoted into a modal by forms.js, so it has to be told when
+// to open itself: an admin who arrived from the lapsing list (?user=N) came here
+// to bill that tenant, and a submit that came back with field errors must not
+// leave those errors hidden behind a closed dialog.
+$openLogForm = $prefillUser > 0 || $errors;
 
 function yErr($k) { global $errors; return empty($errors[$k]) ? '' : '<div class="invalid-feedback d-block">' . sanitize($errors[$k]) . '</div>'; }
 function yCls($k) { global $errors; return empty($errors[$k]) ? '' : ' is-invalid'; }
@@ -185,11 +191,15 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span>Needs Attention</span>
                 <?php if ($lapsing): ?>
-                    <form method="POST" onsubmit="return confirm('Email a renewal reminder to all <?= count($lapsing) ?> tenant(s)?')">
+                    <form method="POST" data-ajax>
                         <?= csrfField() ?>
                         <input type="hidden" name="action" value="remind">
                         <input type="hidden" name="user_id" value="0">
-                        <button class="btn btn-sm btn-outline-primary" <?= smtpConfigured($conn) ? '' : 'disabled title="Configure SMTP first"' ?>>
+                        <?php // Confirmed because it leaves the instance and cannot be recalled:
+                              // one press sends real email to every lapsing tenant. ?>
+                        <button class="btn btn-sm btn-outline-primary"
+                                data-confirm="Email a renewal reminder to all <?= count($lapsing) ?> tenant(s)?"
+                            <?= smtpConfigured($conn) ? '' : 'disabled title="Configure SMTP first"' ?>>
                             <i class="bi bi-envelope me-1"></i>Remind all
                         </button>
                     </form>
@@ -220,10 +230,23 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 </div>
 
-<div class="card mb-4" id="logForm">
+<?php // Rendered exactly once, as a plain card, and moved into a real modal by
+      // forms.js when JavaScript is available — the same pattern as
+      // admin/plans.php (#24).
+      //
+      // A modal copy plus a plain fallback copy would put all thirteen field ids,
+      // and the #logForm anchor the lapsing list links to, in the document twice,
+      // which silently breaks the <label for> pairs of whichever copy came
+      // second. One render, moved, keeps a single source of truth, and with
+      // JavaScript off this is the full-page form it has always been.
+      //
+      // No data-modal-url fragment here, unlike the plan editor: this form only
+      // ever creates, so there is nothing per-row for the server to populate. ?>
+<div class="card mb-4" id="logForm" data-modal-shell="paymentModal" data-modal-title="Log a Payment"
+     <?= $openLogForm ? 'data-modal-open="1"' : '' ?>>
     <div class="card-header">Log a Payment</div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" data-ajax>
             <?= csrfField() ?>
             <div class="row g-3">
                 <div class="col-md-5">
@@ -315,16 +338,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 </div>
 
 <div class="card table-card">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span>Payment History</span>
-        <form method="GET" class="d-flex gap-2">
-            <input type="search" name="q" class="form-control form-control-sm" style="width:220px"
-                   placeholder="Tenant or reference" value="<?= sanitize($search) ?>">
-            <button class="btn btn-sm btn-outline-secondary">Search</button>
-            <?php if ($search !== ''): ?>
-                <a href="<?= APP_URL ?>/admin/payments.php" class="btn btn-sm btn-link">Clear</a>
-            <?php endif; ?>
-        </form>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+            <?php // The form above is inside a modal once JavaScript has moved it, so
+                  // the page needs a way back to it. The href is the same anchor the
+                  // lapsing list uses, which is the plain page with the form on it. ?>
+            <a href="<?= APP_URL ?>/admin/payments.php#logForm" class="btn btn-sm btn-primary"
+               data-modal-target="#paymentModal" data-modal-title="Log a Payment">
+                <i class="bi bi-plus-lg me-1"></i>Log a payment
+            </a>
+            <form method="GET" class="d-flex gap-2">
+                <input type="search" name="q" class="form-control form-control-sm" style="width:220px"
+                       placeholder="Tenant or reference" value="<?= sanitize($search) ?>">
+                <button class="btn btn-sm btn-outline-secondary">Search</button>
+                <?php if ($search !== ''): ?>
+                    <a href="<?= APP_URL ?>/admin/payments.php" class="btn btn-sm btn-link">Clear</a>
+                <?php endif; ?>
+            </form>
+        </div>
     </div>
     <div class="table-responsive">
         <table class="table align-middle mb-0">

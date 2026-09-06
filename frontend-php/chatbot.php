@@ -8,6 +8,7 @@ require_once __DIR__ . '/config/init.php';
 requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
+$errors = [];
 $plan = getUserPlan($conn, $userId);
 $hasChatbot = planHasFeature($plan, 'chatbot');
 $canByo = llmAllowByoKeys($conn) && planHasFeature($plan, 'llm_byok');
@@ -27,11 +28,13 @@ $availableModels = llmModelsForPlan($conn, (int)$plan['id']);
 // nothing, which chatbotSaveConfig() would store as NULL.
 $smtpReady = smtpConfigured($conn);
 
+// Every handler below ends at formRespond(), which answers JSON to the page's
+// own fetch() and flashes-and-redirects to a plain form post. One code path, two
+// audiences — see includes/ajax.php.
+$self = APP_URL . '/chatbot.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/chatbot.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? 'save';
 
@@ -43,35 +46,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
             $_POST['service_description'] ?? '',
             ($_POST['service_id'] ?? '') === '' ? null : (int)$_POST['service_id']
         );
-        flash($ok ? 'success' : 'error', $ok ? 'Service saved.' : $err);
-        redirect(APP_URL . '/chatbot.php');
+        formRespond($ok, $ok ? 'Service saved.' : $err, $self, $ok ? [] : ['service_name' => $err]);
     }
 
     if ($action === 'toggle_service') {
         apptSetServiceActive($conn, $userId, (int)($_POST['service_id'] ?? 0), !empty($_POST['enable']));
-        redirect(APP_URL . '/chatbot.php');
+        formRespond(true, 'Service updated.', $self);
     }
 
     if ($action === 'save_hours') {
+        // #25: one row per weekday with an on/off toggle, and any number of
+        // windows within a day. A day whose toggle is off contributes nothing,
+        // which is how "closed" is stored — the absence of a window, not a
+        // zero-length one.
         $windows = [];
+        $enabledDays = array_map('intval', array_keys((array)($_POST['day_enabled'] ?? [])));
         foreach (($_POST['day'] ?? []) as $weekday => $rows) {
+            if (!in_array((int)$weekday, $enabledDays, true)) continue;
             foreach (($rows['start'] ?? []) as $i => $start) {
-                $windows[] = [
-                    'weekday' => (int)$weekday,
-                    'start' => $start,
-                    'end' => $rows['end'][$i] ?? '',
-                ];
+                // A row the tenant added and left empty is not an error, it is a
+                // row they did not fill in.
+                $end = $rows['end'][$i] ?? '';
+                if (trim((string)$start) === '' && trim((string)$end) === '') continue;
+                $windows[] = ['weekday' => (int)$weekday, 'start' => $start, 'end' => $end];
             }
         }
-        apptSaveAvailability($conn, $userId, $windows);
-        flash('success', 'Opening hours saved.');
-        redirect(APP_URL . '/chatbot.php');
+
+        [$saved, $hourErrors] = apptSaveAvailability($conn, $userId, $windows);
+        if (!$saved) {
+            formRespond(false, 'Some opening hours could not be saved — see the highlighted rows.',
+                $self, $hourErrors);
+        }
+        formRespond(true, 'Opening hours saved.', $self);
     }
 
     if ($action === 'clear_key') {
         chatbotClearByoKey($conn, $userId);
-        flash('success', 'Your API key has been removed.');
-        redirect(APP_URL . '/chatbot.php');
+        formRespond(true, 'Your API key has been removed.', $self);
     }
 
     $input = $_POST;
@@ -110,6 +121,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     }
     if (!$canHandoff) {
         $input['handoff_enabled'] = 0;
+        $input['handoff_share_number'] = 0;
+    }
+
+    // #26. Refused rather than silently normalised: a number stored with a
+    // leading zero or missing its country code is unreachable on WhatsApp, and
+    // the failure is invisible — every alert goes nowhere and the tenant only
+    // finds out when a customer complains they were never called back.
+    if (handoffNormaliseNumber($input['handoff_notify_number'] ?? '') === false) {
+        formRespond(false, 'The handover notification number is not a valid international number.', $self, [
+            'handoff_notify_number' => 'Country code first, no leading zero, no spaces. e.g. 923001234567',
+        ]);
     }
 
     // Turning the bot on without something to answer with would produce a
@@ -122,13 +144,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     $usingByo = $canByo && !empty($input['byo_provider_code']);
     if (!empty($input['is_enabled']) && $chosen === null && !$usingByo) {
         if (!$availableModels) {
-            flash('error', isAdmin()
+            formRespond(false, isAdmin()
                 ? 'No AI models are assigned to your plan yet. Set one up under Admin → AI / LLM, then come back.'
-                : 'Your administrator has not set up any AI models yet, so the chatbot cannot be switched on. Please contact them.');
-        } else {
-            flash('error', 'Go to the Model tab and choose an AI model first — the bot needs one to write replies.');
+                : 'Your administrator has not set up any AI models yet, so the chatbot cannot be switched on. Please contact them.',
+                $self);
         }
-        redirect(APP_URL . '/chatbot.php');
+        formRespond(false, 'Go to the Model tab and choose an AI model first — the bot needs one to write replies.',
+            $self, ['model_id' => 'Pick a model before switching the bot on.']);
     }
 
     // Appointments with nothing bookable is the same class of mistake: the toggle
@@ -142,22 +164,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     // next to the toggle instead.
     if (!empty($input['appointments_enabled']) && empty($config['appointments_enabled'])
         && !apptServices($conn, $userId, true)) {
-        flash('error', 'Add at least one active service before switching appointment booking on — the bot has nothing to book without one.');
-        redirect(APP_URL . '/chatbot.php');
+        formRespond(false, 'Add at least one active service before switching appointment booking on — the bot has nothing to book without one.', $self);
     }
 
     chatbotSaveConfig($conn, $userId, $input);
 
     if ($usingByo) {
         [$ok, $err] = chatbotSaveByoKey($conn, $userId, $_POST['byo_api_key'] ?? '');
-        if (!$ok) {
-            flash('error', $err);
-            redirect(APP_URL . '/chatbot.php');
-        }
+        if (!$ok) formRespond(false, $err, $self, ['byo_api_key' => $err]);
+
         $fresh = chatbotConfig($conn, $userId);
         if (!empty($input['is_enabled']) && empty($fresh['byo_api_key_encrypted'])) {
-            flash('error', 'Enter your API key before switching the chatbot on.');
-            redirect(APP_URL . '/chatbot.php');
+            formRespond(false, 'Enter your API key before switching the chatbot on.', $self,
+                ['byo_api_key' => 'Required while the bot is on and set to your own key.']);
         }
     }
 
@@ -165,8 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
         'enabled' => !empty($input['is_enabled']),
         'byo' => $usingByo,
     ]);
-    flash('success', 'Chatbot settings saved.');
-    redirect(APP_URL . '/chatbot.php');
+    formRespond(true, 'Chatbot settings saved.', $self);
 }
 
 $hasByoKey = !empty($config['byo_api_key_encrypted']);
@@ -174,6 +192,12 @@ $services = apptServices($conn, $userId, false);
 $availability = apptAvailability($conn, $userId);
 $hoursByDay = [];
 foreach ($availability as $w) $hoursByDay[(int)$w['weekday']][] = $w;
+// #25: a tenant who has never saved a schedule is shown the default week
+// (Mon–Fri 09:00–17:00, weekends off) pre-filled rather than seven blank rows.
+// The default is offered, never written on their behalf — see
+// apptDefaultAvailability() for why that distinction matters.
+$hasSchedule = $hoursByDay !== [];
+if (!$hasSchedule) $hoursByDay = apptDefaultAvailability();
 $events = $hasChatbot ? chatbotRecentEvents($conn, $userId, 15) : [];
 $repliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
 // Reported through the same helper the reply path uses, so the number a tenant
@@ -183,6 +207,13 @@ $repliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
 $replyQuotaExhausted = !$replyQuotaOk;
 $usingOwnKey = !empty($config['byo_provider_code']) && !empty($config['byo_api_key_encrypted']) && $canByo;
 $tz = getUserTimezone($conn, $userId);
+
+// #26. Two separate facts, and the Handover tab needs both: whether an admin
+// fallback exists (so a tenant leaving the field blank can be told where alerts
+// go), and which number would actually be used (so the "share it with the
+// customer" switch is only offered when there is something to share).
+$adminNotifyNumber = (string)(overrideSetting($conn, 'handoff_notify_number') ?? '');
+$effectiveNotifyNumber = handoffNotifyNumber($conn, $config);
 
 // The prerequisites this page used to be silent about. A tenant could configure
 // every tab, switch the bot on, and get nothing — because there was no WhatsApp
@@ -245,7 +276,11 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="row g-3">
     <div class="col-lg-8">
-        <form method="post" id="chatbotForm">
+        <?php // data-ajax keeps the tenant on the tab they were editing (#25): a
+              // plain submit reloads and lands back on Knowledge base, which
+              // reads as the change having been discarded. Without JavaScript it
+              // is exactly the form it always was. ?>
+        <form method="post" id="chatbotForm" data-ajax data-ajax-reload="off">
             <?= csrfField() ?>
             <input type="hidden" name="action" value="save">
 
@@ -349,7 +384,11 @@ require_once __DIR__ . '/includes/header.php';
                               // belonging to chatbotForm. ?>
                         <?php if ($hasByoKey): ?>
                             <button class="btn btn-outline-danger btn-sm mt-2" type="submit" form="clearKeyForm"
-                                    onclick="return confirm('Remove your stored API key? The bot will go back to using the model selected above.')">
+                                    <?php // data-confirm replaces the old inline confirm(). Both
+                                          // together would ask twice; forms.js falls back to
+                                          // window.confirm() when Bootstrap is unavailable, so the
+                                          // guard is not lost. ?>
+                                    data-confirm="Remove your stored API key? The bot will go back to using the model selected above.">
                                 Remove my key
                             </button>
                         <?php endif; ?>
@@ -572,10 +611,26 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small">Notify this WhatsApp number</label>
-                            <input type="text" name="handoff_notify_number" class="form-control form-control-sm"
+                            <input type="text" name="handoff_notify_number" inputmode="numeric"
+                                   class="form-control form-control-sm<?= isset($errors['handoff_notify_number']) ? ' is-invalid' : '' ?>"
                                    value="<?= sanitize($config['handoff_notify_number'] ?? '') ?>"
                                    placeholder="923001234567">
-                            <div class="form-text">Counts as a message.</div>
+                            <?php if (isset($errors['handoff_notify_number'])): ?>
+                                <div class="invalid-feedback d-block"><?= sanitize($errors['handoff_notify_number']) ?></div>
+                            <?php endif; ?>
+                            <div class="form-text">
+                                <?php // #26: this is deliberately NOT the linked account. Said here
+                                      // because the obvious guess — "my WhatsApp number" — would have
+                                      // the bot alerting the very phone it is running on. ?>
+                                A colleague's phone, <strong>not</strong> your linked account — the bot never
+                                answers messages from this number. Country code, no leading zero.
+                                Each alert counts as one of your messages.
+                                <?php if (trim((string)($config['handoff_notify_number'] ?? '')) === '' && $adminNotifyNumber !== ''): ?>
+                                    <div class="text-muted x-small mt-1">
+                                        Blank, so alerts currently go to the number your administrator set.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small <?= $smtpReady ? '' : 'text-muted' ?>">Notify this email</label>
@@ -600,6 +655,45 @@ require_once __DIR__ . '/includes/header.php';
                                     Use the WhatsApp number above in the meantime.
                                 </div>
                             <?php endif; ?>
+                        </div>
+
+                        <?php // #26: the number is staff contact detail, so putting it in front of
+                              // a customer is an explicit choice, never a default. The switch is
+                              // disabled when there is no number to give — an invitation to call a
+                              // blank is worse than saying nothing. ?>
+                        <?php $shareable = $effectiveNotifyNumber !== ''; ?>
+                        <div class="col-12">
+                            <hr class="my-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="handoff_share_number" value="1"
+                                       id="handoff_share_number" <?= !empty($config['handoff_share_number']) ? 'checked' : '' ?>
+                                       <?= $shareable && $canHandoff ? '' : 'disabled' ?>>
+                                <label class="form-check-label <?= $shareable ? '' : 'text-muted' ?>" for="handoff_share_number">
+                                    Give the customer this number when handing over
+                                </label>
+                            </div>
+                            <?php if ($shareable): ?>
+                                <div class="form-text">
+                                    Added to the message above, so someone in a hurry can call instead of waiting.
+                                </div>
+                            <?php else: ?>
+                                <div class="form-text">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    Set a notification number first — there is nothing to share yet.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">How to word it</label>
+                            <input type="text" name="handoff_share_message" class="form-control form-control-sm"
+                                   value="<?= sanitize($config['handoff_share_message'] ?? '') ?>"
+                                   placeholder="You can also reach our team directly on {number}.">
+                            <div class="form-text">
+                                <code>{number}</code> is replaced with the number above in international form
+                                <?php if ($shareable): ?>
+                                    (<code>+<?= sanitize($effectiveNotifyNumber) ?></code>)<?php endif; ?>.
+                                Leave blank for the default wording.
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -632,7 +726,7 @@ require_once __DIR__ . '/includes/header.php';
               // redirected, discarding every unsaved edit on the page. A button
               // outside the form it submits (via the form= attribute) cannot
               // become chatbotForm's default. ?>
-        <form method="post" id="clearKeyForm" class="d-none">
+        <form method="post" id="clearKeyForm" class="d-none" data-ajax>
             <?= csrfField() ?>
             <input type="hidden" name="action" value="clear_key">
         </form>
@@ -640,10 +734,20 @@ require_once __DIR__ . '/includes/header.php';
         <?php // Separate forms, not nested ones: nesting is invalid HTML and the
               // browser silently drops the inner form's fields. ?>
         <div class="card mt-3">
-            <div class="card-header"><i class="bi bi-list-check me-2"></i>Services</div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-check me-2"></i>Services</span>
+                <?php // The href is the anchor of the form below, so with JavaScript
+                      // off this is still a working link to a real form (#24). ?>
+                <a href="#serviceCard" class="btn btn-sm btn-primary"
+                   data-modal-target="#serviceModal" data-modal-reset="on"
+                   data-modal-title="Add a service" data-field-service-id=""
+                   data-field-service-minutes="30">
+                    <i class="bi bi-plus-lg me-1"></i>Add service
+                </a>
+            </div>
             <div class="card-body">
                 <?php if ($services): ?>
-                    <table class="table table-sm align-middle">
+                    <table class="table table-sm align-middle mb-0">
                         <tbody>
                         <?php foreach ($services as $s): ?>
                             <tr class="<?= $s['is_active'] ? '' : 'opacity-50' ?>">
@@ -655,43 +759,40 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td class="small text-muted"><?= (int)$s['duration_minutes'] ?> min</td>
                                 <td class="text-end">
-                                    <form method="post" class="d-inline">
-                                        <?= csrfField() ?>
-                                        <input type="hidden" name="action" value="toggle_service">
-                                        <input type="hidden" name="service_id" value="<?= (int)$s['id'] ?>">
-                                        <input type="hidden" name="enable" value="<?= $s['is_active'] ? '0' : '1' ?>">
-                                        <button class="btn btn-outline-secondary btn-sm" type="submit">
-                                            <?= $s['is_active'] ? 'Disable' : 'Enable' ?>
-                                        </button>
-                                    </form>
+                                    <div class="d-flex gap-1 justify-content-end">
+                                        <?php // Editing was not possible at all before: apptSaveService()
+                                              // has always taken an id, but nothing on the page ever sent
+                                              // one, so a typo in a service name meant disabling it and
+                                              // adding another. ?>
+                                        <a href="#serviceCard" class="btn btn-sm btn-outline-primary"
+                                           data-modal-target="#serviceModal"
+                                           data-modal-title="Edit service"
+                                           data-field-service-id="<?= (int)$s['id'] ?>"
+                                           data-field-service-name="<?= sanitize($s['name']) ?>"
+                                           data-field-service-minutes="<?= (int)$s['duration_minutes'] ?>"
+                                           data-field-service-description="<?= sanitize((string)$s['description']) ?>">Edit</a>
+                                        <form method="post" class="d-inline" data-ajax>
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="toggle_service">
+                                            <input type="hidden" name="service_id" value="<?= (int)$s['id'] ?>">
+                                            <input type="hidden" name="enable" value="<?= $s['is_active'] ? '0' : '1' ?>">
+                                            <button class="btn btn-outline-secondary btn-sm" type="submit"
+                                                <?php // Only disabling is confirmed. Enabling is not
+                                                      // destructive, and a dialog on a harmless action
+                                                      // teaches people to dismiss dialogs. ?>
+                                                <?= $s['is_active'] ? 'data-confirm="Disable this service? The bot will stop offering it, and existing bookings are unaffected."' : '' ?>>
+                                                <?= $s['is_active'] ? 'Disable' : 'Enable' ?>
+                                            </button>
+                                        </form>
+                                    </div>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>
                     </table>
                 <?php else: ?>
-                    <p class="text-muted small">No services yet. The bot cannot take a booking without one.</p>
+                    <p class="text-muted small mb-0">No services yet. The bot cannot take a booking without one.</p>
                 <?php endif; ?>
-
-                <form method="post" class="row g-2 align-items-end border-top pt-3">
-                    <?= csrfField() ?>
-                    <input type="hidden" name="action" value="save_service">
-                    <div class="col-md-4">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="service_name" class="form-control form-control-sm" placeholder="Consultation" required>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label small">Minutes</label>
-                        <input type="number" name="service_minutes" class="form-control form-control-sm" value="30" min="5" max="480">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small">Description</label>
-                        <input type="text" name="service_description" class="form-control form-control-sm">
-                    </div>
-                    <div class="col-md-2">
-                        <button class="btn btn-primary btn-sm w-100" type="submit">Add</button>
-                    </div>
-                </form>
             </div>
         </div>
 
@@ -701,26 +802,114 @@ require_once __DIR__ . '/includes/header.php';
                 <p class="text-muted small">
                     Bookings are only accepted inside these windows, and an appointment must
                     <em>finish</em> before you close. Times are <?= sanitize($tz) ?>.
+                    <?php if (!$hasSchedule): ?>
+                        <br><strong>Nothing saved yet</strong> — the week below is pre-filled with
+                        Monday to Friday, 9 to 5. Adjust it and save, or save as it is.
+                    <?php endif; ?>
                 </p>
-                <form method="post">
+                <form method="post" data-ajax id="hoursForm">
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_hours">
                     <?php foreach (apptWeekdayNames() as $num => $name):
-                        $window = $hoursByDay[$num][0] ?? null; ?>
-                        <div class="row g-2 align-items-center mb-2">
-                            <div class="col-4 col-md-3 small"><?= $name ?></div>
-                            <div class="col-4 col-md-3">
-                                <input type="time" class="form-control form-control-sm"
-                                       name="day[<?= $num ?>][start][]" value="<?= sanitize($window['start_time'] ?? '') ?>">
+                        $dayWindows = $hoursByDay[$num] ?? [];
+                        $isOpen = $dayWindows !== [];
+                        // A closed day still renders one blank row, hidden. The
+                        // alternative — building the row in JS when the toggle is
+                        // switched on — means the row markup exists twice.
+                        if (!$isOpen) $dayWindows = [['start_time' => '09:00', 'end_time' => '17:00']];
+                        ?>
+                        <div class="border-bottom py-2" data-day-row="<?= $num ?>">
+                            <div class="d-flex align-items-center justify-content-between">
+                                <div class="form-check form-switch mb-0">
+                                    <input class="form-check-input" type="checkbox" id="day_on_<?= $num ?>"
+                                           name="day_enabled[<?= $num ?>]" value="1" <?= $isOpen ? 'checked' : '' ?>
+                                           data-day-toggle="<?= $num ?>">
+                                    <label class="form-check-label small fw-500" for="day_on_<?= $num ?>"><?= $name ?></label>
+                                </div>
+                                <button type="button" class="btn btn-link btn-sm p-0 x-small"
+                                        data-add-slot="<?= $num ?>" <?= $isOpen ? '' : 'hidden' ?>>
+                                    + another window
+                                </button>
                             </div>
-                            <div class="col-4 col-md-3">
-                                <input type="time" class="form-control form-control-sm"
-                                       name="day[<?= $num ?>][end][]" value="<?= sanitize($window['end_time'] ?? '') ?>">
+                            <div data-day-slots="<?= $num ?>" class="mt-2" <?= $isOpen ? '' : 'hidden' ?>>
+                                <?php foreach ($dayWindows as $w): ?>
+                                    <div class="row g-2 align-items-center mb-1" data-slot>
+                                        <div class="col-5 col-md-4">
+                                            <input type="time" class="form-control form-control-sm"
+                                                   name="day[<?= $num ?>][start][]" value="<?= sanitize($w['start_time']) ?>">
+                                        </div>
+                                        <div class="col-5 col-md-4">
+                                            <input type="time" class="form-control form-control-sm"
+                                                   name="day[<?= $num ?>][end][]" value="<?= sanitize($w['end_time']) ?>">
+                                        </div>
+                                        <div class="col-2">
+                                            <?php // Only ever removes a row from the form. The day is
+                                                  // closed by its toggle, not by deleting every window,
+                                                  // so this cannot leave an ambiguous state. ?>
+                                            <button type="button" class="btn btn-link btn-sm text-danger p-0"
+                                                    data-remove-slot title="Remove this window">
+                                                <i class="bi bi-x-lg"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
                             </div>
                         </div>
                     <?php endforeach; ?>
-                    <div class="form-text mb-2">Leave a day blank to stay closed.</div>
+                    <div class="form-text my-2">
+                        Turn a day off to close it. Windows on the same day must not overlap, and an end
+                        time must be after its start — a save that breaks either is refused rather than
+                        silently dropping the row.
+                    </div>
                     <button class="btn btn-primary btn-sm" type="submit">Save hours</button>
+                </form>
+            </div>
+        </div>
+
+        <?php // The service form, rendered once as an ordinary card and promoted
+              // into a modal by forms.js (#24).
+              //
+              // Not written as a literal `<div class="modal">`: Bootstrap's CSS
+              // hides .modal whether or not its JavaScript ever runs, so a
+              // hand-written modal is a form nobody without JavaScript can reach.
+              // The shell mechanism leaves this a visible, working card in that
+              // case — which is what the "Add service" link's href points at. ?>
+        <div class="card mt-3" id="serviceCard" data-modal-shell="serviceModal"
+             data-modal-title="Add a service">
+            <div class="card-header">Add or edit a service</div>
+            <div class="card-body">
+                <form method="post" id="serviceForm" data-ajax>
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="save_service">
+                    <?php // Empty means "create". apptSaveService() applies the plan's
+                          // service cap to a create and never to an edit, so a tenant
+                          // over their limit after a downgrade can still fix a typo. ?>
+                    <input type="hidden" name="service_id" value="">
+                    <div class="row g-2">
+                        <div class="col-md-5">
+                            <label class="form-label small" for="svcName">Name</label>
+                            <input type="text" id="svcName" name="service_name" class="form-control form-control-sm"
+                                   placeholder="Consultation" maxlength="100" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small" for="svcMinutes">Length</label>
+                            <div class="input-group input-group-sm">
+                                <input type="number" id="svcMinutes" name="service_minutes" class="form-control"
+                                       value="30" min="5" max="480">
+                                <span class="input-group-text">min</span>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small" for="svcDesc">Description</label>
+                            <input type="text" id="svcDesc" name="service_description"
+                                   class="form-control form-control-sm" maxlength="255">
+                        </div>
+                    </div>
+                    <div class="form-text mb-3">
+                        The length drives the slot maths, so it has to be the real length. The
+                        description is optional and the bot may repeat it to a customer.
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Save service</button>
                 </form>
             </div>
         </div>
@@ -793,6 +982,51 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <script>
+// Per-day opening hours (#25). Presentation only: the server decides what a
+// closed day means (no windows for it) and validates every window, so a browser
+// with JavaScript off still gets a usable form — the toggles are real checkboxes
+// and the pre-rendered rows are real inputs.
+(function () {
+    var form = document.getElementById('hoursForm');
+    if (!form) return;
+
+    function setDayOpen(day, open) {
+        form.querySelectorAll('[data-day-slots="' + day + '"], [data-add-slot="' + day + '"]')
+            .forEach(function (el) { el.hidden = !open; });
+    }
+
+    form.addEventListener('change', function (e) {
+        var toggle = e.target.closest('[data-day-toggle]');
+        if (toggle) setDayOpen(toggle.dataset.dayToggle, toggle.checked);
+    });
+
+    form.addEventListener('click', function (e) {
+        var add = e.target.closest('[data-add-slot]');
+        if (add) {
+            // Cloned from the day's own first row rather than built from a
+            // template string: the field names carry the weekday index, and a
+            // template would have to reproduce them correctly a second time.
+            var slots = form.querySelector('[data-day-slots="' + add.dataset.addSlot + '"]');
+            var copy = slots.querySelector('[data-slot]').cloneNode(true);
+            copy.querySelectorAll('input').forEach(function (input) { input.value = ''; });
+            copy.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+            slots.appendChild(copy);
+            return;
+        }
+
+        var remove = e.target.closest('[data-remove-slot]');
+        if (remove) {
+            var row = remove.closest('[data-slot]');
+            var day = row.parentNode;
+            // The last row is emptied, not deleted: a day with no row at all
+            // cannot be filled in again without reloading, and "closed" is the
+            // toggle's job.
+            if (day.querySelectorAll('[data-slot]').length > 1) row.remove();
+            else row.querySelectorAll('input').forEach(function (input) { input.value = ''; });
+        }
+    });
+})();
+
     function runChatbotTest() {
         const input = document.getElementById('testMessage');
         const out = document.getElementById('testOutput');

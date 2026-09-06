@@ -8,9 +8,16 @@
 //
 // Every interpolated value is escaped: these bodies carry user-supplied names
 // and admin-supplied instructions.
+//
+// The app name comes from brandName() (#23), not from APP_NAME, so an operator
+// who rebranded the instance is not still emailing their customers under the
+// deployment's name. brandName() falls back to APP_NAME, so nothing here
+// changes on an instance that never set one. No connection is passed: these are
+// called from request handlers and from the reminder cron, both of which have
+// the global $conn that settingsConn() resolves.
 
 function mailLayout($heading, $bodyHtml) {
-    $appName = sanitize(APP_NAME);
+    $appName = sanitize(brandName());
     return <<<HTML
 <!DOCTYPE html>
 <html><body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
@@ -48,11 +55,11 @@ function mailActivation($name, $link) {
     $html = mailLayout(
         'Confirm your email address',
         '<p>Hello ' . sanitize($name) . ',</p>'
-        . '<p>Confirm your email address to activate your ' . sanitize(APP_NAME) . ' account.</p>'
+        . '<p>Confirm your email address to activate your ' . sanitize(brandName()) . ' account.</p>'
         . mailButton($link, 'Activate my account')
     );
     $text = "Hello {$name},\n\nConfirm your email address to activate your "
-        . APP_NAME . " account:\n\n{$link}\n\nIf this was not expected, ignore this message.\n";
+        . brandName() . " account:\n\n{$link}\n\nIf this was not expected, ignore this message.\n";
     return [$html, $text];
 }
 
@@ -98,10 +105,10 @@ function mailPlanExpiring($name, $planName, $endDate, $instructions, $billingUrl
 function mailTest() {
     $html = mailLayout(
         'SMTP is working',
-        '<p>This is a test message from ' . sanitize(APP_NAME) . '.</p>'
+        '<p>This is a test message from ' . sanitize(brandName()) . '.</p>'
         . '<p>If you are reading it, the SMTP settings saved in the admin console '
         . 'can successfully deliver mail.</p>'
     );
-    return [$html, "This is a test message from " . APP_NAME . ".\n\n"
+    return [$html, "This is a test message from " . brandName() . ".\n\n"
         . "If you are reading it, your SMTP settings can deliver mail.\n"];
 }

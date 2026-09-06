@@ -19,10 +19,15 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once $basePath . '/config/database.php';
 require_once $basePath . '/includes/functions.php';
+// After functions.php, whose flash()/redirect()/csrfTokenValid() it wraps.
+require_once $basePath . '/includes/ajax.php';
 require_once $basePath . '/includes/auth.php';
 require_once $basePath . '/includes/tenant.php';
 // Loaded before plan.php: price formatting reads the instance-wide currency.
 require_once $basePath . '/includes/settings.php';
+// After settings.php, which owns overrideSetting(): branding is an admin
+// override over the APP_NAME env default, read by every layout and every email.
+require_once $basePath . '/includes/branding.php';
 // crypto before mailer: the mailer decrypts the stored SMTP password.
 require_once $basePath . '/includes/crypto.php';
 require_once $basePath . '/includes/mailer.php';

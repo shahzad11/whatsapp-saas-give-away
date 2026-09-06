@@ -99,25 +99,104 @@ function apptAvailability(mysqli $conn, $userId) {
     return $rows;
 }
 
+// Validates a whole week and writes it, or writes nothing (#25).
+//
+// Returns [ok, errors] keyed by the form field, so a bad row is pointed at
+// instead of vanishing. This used to `continue` past anything invalid, which
+// meant a typo silently produced a day that looked configured in the form and
+// was closed in the database — the worst of both, because the tenant had no way
+// to tell.
+//
+// All-or-nothing on purpose: a half-saved week is a schedule nobody intended,
+// and the failure would be discovered by a customer being turned away.
 function apptSaveAvailability(mysqli $conn, $userId, array $windows) {
+    [$clean, $errors] = apptValidateWeek($windows);
+    if ($errors) return [false, $errors];
+
     $stmt = $conn->prepare("DELETE FROM appointment_availability WHERE user_id = ?");
     $stmt->bind_param('i', $userId);
     $stmt->execute();
     $stmt->close();
 
     $stmt = $conn->prepare("INSERT INTO appointment_availability (user_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)");
-    foreach ($windows as $w) {
-        $day = (int)($w['weekday'] ?? -1);
-        $start = chatbotValidTime($w['start'] ?? '');
-        $end = chatbotValidTime($w['end'] ?? '');
-        // A window that ends before it starts is not a night shift here — the
-        // business day is a day. Skip it rather than store something the slot
-        // maths would read as negative.
-        if ($day < 0 || $day > 6 || !$start || !$end || $start >= $end) continue;
-        $stmt->bind_param('iiss', $userId, $day, $start, $end);
+    foreach ($clean as $w) {
+        $stmt->bind_param('iiss', $userId, $w['weekday'], $w['start'], $w['end']);
         $stmt->execute();
     }
     $stmt->close();
+
+    return [true, []];
+}
+
+// The rules, with no database in sight: returns [acceptedWindows, errors].
+//
+// Separate from the write so the validation is testable on its own — the
+// interesting cases are all refusals, and a test that had to reach a database to
+// prove "this week is rejected" would be proving it against the wrong thing.
+function apptValidateWeek(array $windows) {
+    $errors = [];
+    $clean = [];
+
+    foreach ($windows as $w) {
+        $day = (int)($w['weekday'] ?? -1);
+        $field = 'day[' . $day . '][start][]';
+
+        if ($day < 0 || $day > 6) continue;         // not a weekday: a crafted POST
+
+        $start = chatbotValidTime($w['start'] ?? '');
+        $end = chatbotValidTime($w['end'] ?? '');
+
+        if (!$start || !$end) {
+            $errors[$field] = 'Both a start and an end time are needed.';
+            continue;
+        }
+        // A window that ends before it starts is not a night shift here — the
+        // business day is a day, and the slot maths reads it as negative.
+        if ($start >= $end) {
+            $errors[$field] = 'The end time must be after the start time.';
+            continue;
+        }
+        $clean[] = ['weekday' => $day, 'start' => $start, 'end' => $end];
+    }
+
+    // Overlaps within a day. Two windows that overlap do not break the slot
+    // maths — apptWithinAvailability() only needs one match — but they are
+    // always a mistake, and they make the schedule unreadable to the tenant and
+    // to the model, which is handed this list verbatim.
+    foreach (apptGroupByWeekday($clean) as $day => $dayWindows) {
+        usort($dayWindows, fn($a, $b) => strcmp($a['start'], $b['start']));
+        for ($i = 1; $i < count($dayWindows); $i++) {
+            if ($dayWindows[$i]['start'] < $dayWindows[$i - 1]['end']) {
+                $errors['day[' . $day . '][start][]'] = 'These times overlap another window on the same day.';
+                break;
+            }
+        }
+    }
+
+    return [$clean, $errors];
+}
+
+function apptGroupByWeekday(array $windows) {
+    $byDay = [];
+    foreach ($windows as $w) {
+        $byDay[(int)($w['weekday'] ?? 0)][] = $w;
+    }
+    return $byDay;
+}
+
+// Monday to Friday, 09:00–17:00, weekends closed (#25).
+//
+// Shown as the pre-filled state of a tenant who has never saved a schedule —
+// *not* written to the database on their behalf. Seeding rows would mean a tenant
+// who deliberately wants Saturdays only has to first delete a week they never
+// asked for, and it would make "no schedule configured" indistinguishable from
+// "the default schedule", which the booking prompt has to tell apart.
+function apptDefaultAvailability() {
+    $week = [];
+    foreach ([1, 2, 3, 4, 5] as $weekday) {
+        $week[$weekday] = [['start_time' => '09:00', 'end_time' => '17:00']];
+    }
+    return $week;
 }
 
 function apptWeekdayNames() {
@@ -141,6 +220,75 @@ function apptWithinAvailability(array $availability, DateTime $localStart, $dura
         if ($startMin >= $wsH * 60 + $wsM && $endMin <= $weH * 60 + $weM) return true;
     }
     return false;
+}
+
+// The first moment the business is open and free, at or after $fromLocal (#25).
+//
+// "We are not open then" is true but unhelpful — the customer has to guess again,
+// and a bot that makes someone guess three times is a bot they stop using. This
+// walks forward a day at a time to the horizon, so the suggestion is always a
+// real slot: inside a window, long enough for the service to finish before
+// closing, not already booked, and past the minimum notice.
+//
+// Returns a DateTime in the tenant's timezone, or null when there is genuinely
+// nothing — no schedule at all, or a fully booked horizon.
+function apptNextAvailable(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, $timezone) {
+    $availability = apptAvailability($conn, $userId);
+    if (!$availability) return null;
+
+    $duration = max(5, (int)$service['duration_minutes']);
+    $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
+    $byDay = [];
+    foreach ($availability as $w) $byDay[(int)$w['weekday']][] = $w;
+
+    $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
+    $earliestUtc = (new DateTime('now', new DateTimeZone('UTC')))->modify('+' . $lead . ' minutes');
+
+    // Candidate starts are on a 15-minute grid: it is what people actually say
+    // ("half two", "quarter past"), and stepping by the service duration would
+    // miss a free slot that starts between two notional ones.
+    $step = 15;
+    $cursor = (clone $fromLocal);
+
+    for ($dayOffset = 0; $dayOffset <= $horizon; $dayOffset++) {
+        $day = (clone $cursor)->modify('+' . $dayOffset . ' days');
+        $weekday = (int)$day->format('w');
+        if (empty($byDay[$weekday])) continue;
+
+        $windows = $byDay[$weekday];
+        usort($windows, fn($a, $b) => strcmp($a['start_time'], $b['start_time']));
+
+        foreach ($windows as $w) {
+            [$sH, $sM] = array_map('intval', explode(':', $w['start_time']));
+            [$eH, $eM] = array_map('intval', explode(':', $w['end_time']));
+            $lastStart = ($eH * 60 + $eM) - $duration;
+
+            for ($minute = $sH * 60 + $sM; $minute <= $lastStart; $minute += $step) {
+                $candidate = (clone $day)->setTime(intdiv($minute, 60), $minute % 60, 0);
+                // Only the very first day can be partly in the past.
+                if ($dayOffset === 0 && $candidate < $fromLocal) continue;
+
+                $utc = (clone $candidate)->setTimezone(new DateTimeZone('UTC'));
+                if ($utc < $earliestUtc) continue;
+                if (apptConflicts($conn, $userId, $utc, $duration)) continue;
+
+                return $candidate;
+            }
+        }
+    }
+    return null;
+}
+
+// "We are closed on Sunday." / "We are open Monday 09:00–17:00."
+// The schedule in the tenant's own words, for the refusal message.
+function apptDayScheduleLabel(array $availability, $weekday) {
+    $names = apptWeekdayNames();
+    $windows = array_values(array_filter($availability, fn($w) => (int)$w['weekday'] === (int)$weekday));
+    if (!$windows) return 'We are closed on ' . $names[(int)$weekday] . 's.';
+
+    usort($windows, fn($a, $b) => strcmp($a['start_time'], $b['start_time']));
+    $parts = array_map(fn($w) => $w['start_time'] . '–' . $w['end_time'], $windows);
+    return 'On ' . $names[(int)$weekday] . 's we are open ' . implode(' and ', $parts) . '.';
 }
 
 // --- Booking ----------------------------------------------------------------
@@ -201,16 +349,45 @@ function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, 
         return [null, 'That is further ahead than we take bookings (' . $horizon . ' days).'];
     }
 
+    // #25: a refusal now says *why* and offers the next real opening. The
+    // suggestion is computed here, against the calendar, for the same reason the
+    // booking itself is: the model cannot see the schedule, so anything it
+    // offered on its own would be a guess it presented as fact.
     $availability = apptAvailability($conn, $userId);
     if (!apptWithinAvailability($availability, $local, (int)$service['duration_minutes'])) {
-        return [null, 'We are not open then.'];
+        return [null, apptDayScheduleLabel($availability, (int)$local->format('w'))
+            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
     }
 
     if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'], $excludeId)) {
-        return [null, 'That slot is already taken.'];
+        return [null, 'That slot is already taken.'
+            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
     }
 
     return [$utc, null];
+}
+
+// ' The next time we could fit you in is Tue 9 Sep, 09:00 — would that suit?'
+// or '' when there is nothing to offer.
+//
+// A leading space so callers can concatenate it onto a sentence, and empty
+// rather than an apology when the diary is genuinely full — the caller's own
+// message already covers that. Ending in a question is what lets the reply path
+// tell a refusal that already asks something from one that still needs the
+// "could you suggest another time?" prompt appended.
+function apptSuggestionSuffix(mysqli $conn, $userId, array $config, array $service, DateTime $local, $timezone) {
+    $next = apptNextAvailable($conn, $userId, $config, $service, $local, $timezone);
+    return $next === null
+        ? ''
+        : ' The next time we could fit you in is ' . $next->format('D j M, H:i') . ' — would that suit?';
+}
+
+// A refusal, with the follow-up prompt only when it does not already ask
+// something. Without the test the customer got "…would that suit? Could you
+// suggest another time?", which reads as the bot arguing with itself.
+function apptRefusalLine($why) {
+    $why = trim((string)$why);
+    return str_ends_with($why, '?') ? $why : $why . ' Could you suggest another time?';
 }
 
 function apptHumanMinutes($minutes) {

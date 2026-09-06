@@ -1,8 +1,18 @@
-<?php $currentPage = $currentPage ?? currentPage(); ?>
+<?php
+$currentPage = $currentPage ?? currentPage();
+// #23. A logo replaces both the icon and the name: an operator who uploaded
+// their own mark does not want ours next to it.
+$brandName = $brandName ?? brandName($conn ?? null);
+$brandLogo = brandLogoUrl($conn ?? null);
+?>
 <aside class="app-sidebar" id="appSidebar">
     <div class="sidebar-brand">
-        <i class="bi bi-whatsapp"></i>
-        <span><?= APP_NAME ?></span>
+        <?php if ($brandLogo !== ''): ?>
+            <img src="<?= sanitize($brandLogo) ?>" alt="<?= sanitize($brandName) ?>" class="sidebar-brand-logo">
+        <?php else: ?>
+            <i class="bi bi-whatsapp"></i>
+            <span><?= sanitize($brandName) ?></span>
+        <?php endif; ?>
     </div>
     <nav class="sidebar-nav">
         <div class="nav-section">

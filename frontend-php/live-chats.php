@@ -14,35 +14,39 @@ $hasHandoff = planHasFeature($plan, 'chatbot') && planHasFeature($plan, 'handoff
 $config = chatbotConfig($conn, $userId);
 $tz = getUserTimezone($conn, $userId);
 
+$self = APP_URL . '/live-chats.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/live-chats.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? '';
     $id = (int)($_POST['id'] ?? 0);
     $handoff = $id ? handoffById($conn, $userId, $id) : null;
+
+    // Where a plain submit goes afterwards: the same view, with the same
+    // conversation open. Every handler below ends at formRespond(), which answers
+    // JSON to the page's own fetch() and flashes-and-redirects here otherwise —
+    // one code path, two audiences (see includes/ajax.php).
+    $backTo = $self . '?' . http_build_query(array_filter(['view' => $_GET['view'] ?? null, 'open' => $id]));
 
     if ($handoff) {
         if ($action === 'claim') {
             // Two agents can click at the same moment; exactly one wins.
             if (handoffClaim($conn, $userId, $id, $userId)) {
                 logAudit($conn, 'handoff.claimed', 'chat_handoff', (string)$id);
-                flash('success', 'You are handling this conversation.');
-            } else {
-                flash('error', 'Someone else claimed it first.');
+                formRespond(true, 'You are handling this conversation.', $backTo);
             }
+            formRespond(false, 'Someone else claimed it first.', $backTo);
         }
 
         if ($action === 'release') {
             handoffRelease($conn, $userId, $id);
-            flash('success', 'Put back in the queue.');
+            formRespond(true, 'Put back in the queue.', $backTo);
         }
 
         if ($action === 'notes') {
             handoffSaveNotes($conn, $userId, $id, $_POST['notes'] ?? '');
-            flash('success', 'Note saved.');
+            formRespond(true, 'Note saved.', $backTo);
         }
 
         if ($action === 'resolve' || $action === 'abandon') {
@@ -62,8 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $handoff['chat_id'], $resume);
                     }
                 }
-                flash('success', $status === 'resolved' ? 'Resolved — the bot will answer again.' : 'Marked abandoned.');
+                formRespond(true, $status === 'resolved' ? 'Resolved — the bot will answer again.' : 'Marked abandoned.', $backTo);
             }
+            // handoffClose() only reports false when the row was already closed
+            // by someone else, which used to redirect silently.
+            formRespond(false, 'That conversation was already closed.', $backTo);
         }
 
         if ($action === 'reply') {
@@ -71,26 +78,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $account = $handoff['account_id'] ? handoffAccountById($conn, $userId, (int)$handoff['account_id']) : null;
 
             if ($text === '') {
-                flash('error', 'Nothing to send.');
-            } elseif (!$account) {
-                flash('error', 'The WhatsApp account for this conversation is no longer linked.');
-            } else {
-                // An agent reply is a message and is metered like every other.
-                [$quotaOk, , $limit] = checkMessageQuota($conn, $userId);
-                if (!$quotaOk) {
-                    flash('error', 'Monthly message limit reached (' . number_format($limit) . ').');
-                } elseif (chatbotSendReply($conn, $userId, 't' . $userId, $account['session_id'], $handoff['chat_id'], $text)) {
-                    // Replying implies you are handling it.
-                    if ($handoff['status'] === 'waiting') handoffClaim($conn, $userId, $id, $userId);
-                    flash('success', 'Sent.');
-                } else {
-                    flash('error', 'The message could not be sent.');
-                }
+                formRespond(false, 'Nothing to send.', $backTo, ['text' => 'Type a message first.']);
             }
+            if (!$account) {
+                formRespond(false, 'The WhatsApp account for this conversation is no longer linked.', $backTo);
+            }
+
+            // An agent reply is a message and is metered like every other.
+            [$quotaOk, , $limit] = checkMessageQuota($conn, $userId);
+            if (!$quotaOk) {
+                formRespond(false, 'Monthly message limit reached (' . number_format($limit) . ').', $backTo);
+            }
+            if (chatbotSendReply($conn, $userId, 't' . $userId, $account['session_id'], $handoff['chat_id'], $text)) {
+                // Replying implies you are handling it.
+                if ($handoff['status'] === 'waiting') handoffClaim($conn, $userId, $id, $userId);
+                formRespond(true, 'Sent.', $backTo);
+            }
+            formRespond(false, 'The message could not be sent.', $backTo);
         }
     }
 
-    redirect(APP_URL . '/live-chats.php?' . http_build_query(array_filter(['view' => $_GET['view'] ?? null, 'open' => $id])));
+    // Only reachable now for an id that is not this tenant's, or an action this
+    // page does not have: every handler above exits. It has to end at
+    // formRespond() too, because a fetch() cannot follow the redirect that used
+    // to be here — it would read the next page's HTML as JSON and fail.
+    formRespond(false, 'That conversation could not be found.', $backTo);
 }
 
 $view = $_GET['view'] ?? 'open';
@@ -189,7 +201,12 @@ require_once __DIR__ . '/includes/header.php';
                             <a class="btn btn-outline-primary btn-sm"
                                href="<?= APP_URL ?>/live-chats.php?view=<?= sanitize($view) ?>&open=<?= (int)$h['id'] ?>">Open</a>
                             <?php if ($h['status'] === 'waiting'): ?>
-                                <form method="post" class="d-inline">
+                                <?php // Claiming changes the queue for everyone, so this one
+                                      // reloads after the AJAX submit — the badge, the
+                                      // counters and the buttons all move. No data-confirm:
+                                      // taking a conversation destroys nothing, and it can be
+                                      // put straight back with "Put back in the queue". ?>
+                                <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="claim">
                                     <input type="hidden" name="id" value="<?= (int)$h['id'] ?>">
@@ -226,7 +243,13 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <?php if (in_array($open['status'], ['waiting', 'claimed'], true)): ?>
-                        <form method="post" class="mb-3">
+                        <?php // Reloads after the AJAX submit rather than leaving the page
+                              // alone. The thread below is redrawn by its own poll every
+                              // eight seconds, so the sent message would appear on its own —
+                              // but the box would still hold the text that was just sent,
+                              // which is how the same message gets sent twice. Sending can
+                              // also claim the conversation, and that changes the buttons. ?>
+                        <form method="post" class="mb-3" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="reply">
                             <input type="hidden" name="id" value="<?= (int)$open['id'] ?>">
@@ -242,7 +265,10 @@ require_once __DIR__ . '/includes/header.php';
                     <?php endif; ?>
                 <?php endif; ?>
 
-                <form method="post" class="mb-3">
+                <?php // data-ajax-reload="off": nothing else on the page depends on a
+                      // note, and reloading would throw away the thread the agent has
+                      // scrolled through and restart its poll for no reason. ?>
+                <form method="post" class="mb-3" data-ajax data-ajax-reload="off">
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="notes">
                     <input type="hidden" name="id" value="<?= (int)$open['id'] ?>">
@@ -253,7 +279,11 @@ require_once __DIR__ . '/includes/header.php';
 
                 <?php if (in_array($open['status'], ['waiting', 'claimed'], true)): ?>
                     <div class="d-flex gap-2 border-top pt-3">
-                        <form method="post">
+                        <?php // Resolving is the intended ending, not a destructive one — it
+                              // is what gives the conversation back to the bot — so it gets no
+                              // dialog. All three reload, because each one moves the row
+                              // between the queue's views and changes the counters. ?>
+                        <form method="post" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="resolve">
                             <input type="hidden" name="id" value="<?= (int)$open['id'] ?>">
@@ -262,18 +292,22 @@ require_once __DIR__ . '/includes/header.php';
                             </button>
                         </form>
                         <?php if ($open['status'] === 'claimed'): ?>
-                            <form method="post">
+                            <form method="post" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="action" value="release">
                                 <input type="hidden" name="id" value="<?= (int)$open['id'] ?>">
                                 <button class="btn btn-outline-secondary btn-sm" type="submit">Put back in the queue</button>
                             </form>
                         <?php endif; ?>
-                        <form method="post">
+                        <form method="post" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="abandon">
                             <input type="hidden" name="id" value="<?= (int)$open['id'] ?>">
-                            <button class="btn btn-outline-danger btn-sm" type="submit">Abandon</button>
+                            <?php // Confirmed, because it is the one ending that leaves a real
+                                  // customer unanswered: the conversation is closed, the bot
+                                  // starts replying again, and nothing is sent to say so. ?>
+                            <button class="btn btn-outline-danger btn-sm" type="submit"
+                                    data-confirm="Give up on this conversation? It is closed without a reply and the bot takes it over again.">Abandon</button>
                         </form>
                     </div>
                 <?php endif; ?>

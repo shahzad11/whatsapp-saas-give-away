@@ -28,7 +28,10 @@ function smtpSettings(mysqli $conn = null) {
         'username'   => $get('smtp_username'),
         'password'   => decryptSecret($get('smtp_password_enc')),
         'from_email' => $get('smtp_from_email') ?: MAIL_FROM,
-        'from_name'  => $get('smtp_from_name') ?: MAIL_FROM_NAME,
+        // brandName() before MAIL_FROM_NAME, which is itself APP_NAME by
+        // default (#23): a rebranded instance must not still put the
+        // deployment's name in the From header of every message it sends.
+        'from_name'  => $get('smtp_from_name') ?: ($db ? brandName($db) : MAIL_FROM_NAME),
     ];
 }
 

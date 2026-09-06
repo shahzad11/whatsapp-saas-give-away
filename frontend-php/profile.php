@@ -5,11 +5,13 @@ requireLogin();
 $user = getCurrentUser();
 $userId = (int)$user['id'];
 
-$error = '';
-$success = '';
-$passwordError = '';
-$passwordSuccess = '';
 $fieldErrors = [];
+
+// Both handlers below end at formRespond()/formErrors(), so a fetch() submit gets
+// JSON and a plain submit behaves as it always did — see includes/ajax.php. The
+// page-level message is a flash now rather than a local variable: the success
+// path redirects, and a local variable does not survive a redirect.
+$self = APP_URL . '/profile.php';
 
 $profile = getUserProfile($conn, $userId);
 $timezone = getUserSetting($conn, $userId, 'timezone', appTimezone($conn));
@@ -21,107 +23,115 @@ $timezone = getUserSetting($conn, $userId, 'timezone', appTimezone($conn));
 $whatsappInput = formatPhone($profile['whatsapp_number'] ?? '') ?? '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if (!verifyCsrf()) {
-        $error = 'Invalid request.';
-    } else {
-        if ($_POST['action'] === 'update_profile') {
-            $name = trim($_POST['name'] ?? '');
-            $email = trim($_POST['email'] ?? '');
+    formRequireCsrf($self);
 
-            [$clean, $fieldErrors] = validateProfileInput($_POST);
+    if ($_POST['action'] === 'update_profile') {
+        $name = trim($_POST['name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
 
-            // Only name and email are required — everything else is optional, so
-            // registration can stay a two-field form.
-            if ($name === '' || $email === '') {
-                $error = 'Name and email are required.';
-            } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $fieldErrors['email'] = 'Enter a valid email address.';
-            } else {
-                $stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
-                $stmt->bind_param('si', $email, $userId);
-                $stmt->execute();
-                if ($stmt->get_result()->num_rows > 0) {
-                    $fieldErrors['email'] = 'This email is already in use.';
-                }
-                $stmt->close();
+        [$clean, $fieldErrors] = validateProfileInput($_POST);
+
+        // Only name and email are required — everything else is optional, so
+        // registration can stay a two-field form. Both are named as field
+        // errors rather than as one page-level sentence, because "name and
+        // email are required" left the tenant to work out which of the two
+        // they had actually missed.
+        if ($name === '') $fieldErrors['name'] = 'Enter your name.';
+        if ($email === '') {
+            $fieldErrors['email'] = 'Enter your email address.';
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $fieldErrors['email'] = 'Enter a valid email address.';
+        } else {
+            $stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $stmt->bind_param('si', $email, $userId);
+            $stmt->execute();
+            if ($stmt->get_result()->num_rows > 0) {
+                $fieldErrors['email'] = 'This email is already in use.';
             }
-
-            $submittedTz = trim($_POST['timezone'] ?? '');
-            if ($submittedTz !== '' && !isValidTimezone($submittedTz)) {
-                $fieldErrors['timezone'] = 'Select a timezone from the list.';
-            }
-
-            if (!$error && !$fieldErrors) {
-                $stmt = $conn->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
-                $stmt->bind_param('ssi', $name, $email, $userId);
-                $stmt->execute();
-                $stmt->close();
-
-                saveUserProfile($conn, $userId, $clean);
-                if ($submittedTz !== '') {
-                    setUserSetting($conn, $userId, 'timezone', $submittedTz);
-                }
-
-                $_SESSION['user_name'] = $name;
-                $_SESSION['user_email'] = $email;
-
-                logAudit($conn, 'profile.update', 'user', $userId);
-
-                $success = 'Profile updated successfully.';
-                $profile = getUserProfile($conn, $userId);
-                $timezone = getUserSetting($conn, $userId, 'timezone', appTimezone($conn));
-                $whatsappInput = formatPhone($profile['whatsapp_number'] ?? '') ?? '';
-                $user['name'] = $name;
-                $user['email'] = $email;
-            } else {
-                if (!$error) $error = 'Please correct the highlighted fields.';
-
-                // Redisplay exactly what was typed, taken from the raw POST
-                // rather than from $clean — validation nulls the offending
-                // field, so using $clean would blank the one input the user
-                // needs to correct.
-                foreach (profileFields() as $field) {
-                    if (in_array($field, ['contact_email', 'contact_whatsapp'], true)) {
-                        continue; // no longer rendered, so nothing to redisplay
-                    } elseif ($field === 'whatsapp_number') {
-                        continue; // rendered from $whatsappInput, see above
-                    } elseif (array_key_exists($field, $_POST)) {
-                        $profile[$field] = trim((string)$_POST[$field]);
-                    }
-                }
-                $whatsappInput = trim((string)($_POST['whatsapp_number'] ?? ''));
-                if ($submittedTz !== '') $timezone = $submittedTz;
-                $user['name'] = $name;
-                $user['email'] = $email;
-            }
+            $stmt->close();
         }
 
-        if ($_POST['action'] === 'change_password') {
-            $currentPassword = $_POST['current_password'] ?? '';
-            $newPassword = $_POST['new_password'] ?? '';
-            $confirmPassword = $_POST['confirm_password'] ?? '';
+        $submittedTz = trim($_POST['timezone'] ?? '');
+        if ($submittedTz !== '' && !isValidTimezone($submittedTz)) {
+            $fieldErrors['timezone'] = 'Select a timezone from the list.';
+        }
 
-            $stmt = $conn->prepare("SELECT password FROM users WHERE id = ?");
-            $stmt->bind_param('i', $userId);
+        if (!$fieldErrors) {
+            $stmt = $conn->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
+            $stmt->bind_param('ssi', $name, $email, $userId);
             $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
             $stmt->close();
 
-            if (!password_verify($currentPassword, $row['password'])) {
-                $passwordError = 'Current password is incorrect.';
-            } elseif (strlen($newPassword) < 8) {
-                $passwordError = 'New password must be at least 8 characters.';
-            } elseif ($newPassword !== $confirmPassword) {
-                $passwordError = 'Passwords do not match.';
-            } else {
-                $hashed = password_hash($newPassword, PASSWORD_DEFAULT);
-                $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
-                $stmt->bind_param('si', $hashed, $userId);
-                $stmt->execute();
-                $stmt->close();
-                logAudit($conn, 'profile.password_change', 'user', $userId);
-                $passwordSuccess = 'Password changed successfully.';
+            saveUserProfile($conn, $userId, $clean);
+            if ($submittedTz !== '') {
+                setUserSetting($conn, $userId, 'timezone', $submittedTz);
             }
+
+            $_SESSION['user_name'] = $name;
+            $_SESSION['user_email'] = $email;
+
+            logAudit($conn, 'profile.update', 'user', $userId);
+
+            formRespond(true, 'Profile updated successfully.', $self);
+        }
+
+        // formErrors(), not formRespond(): the plain-form path has to fall
+        // through to the render below, and a redirect would throw away
+        // everything the tenant typed — which is what the redisplay block
+        // underneath exists to prevent.
+        formErrors('Please correct the highlighted fields.', $fieldErrors);
+
+        // Redisplay exactly what was typed, taken from the raw POST
+        // rather than from $clean — validation nulls the offending
+        // field, so using $clean would blank the one input the user
+        // needs to correct.
+        foreach (profileFields() as $field) {
+            if (in_array($field, ['contact_email', 'contact_whatsapp'], true)) {
+                continue; // no longer rendered, so nothing to redisplay
+            } elseif ($field === 'whatsapp_number') {
+                continue; // rendered from $whatsappInput, see above
+            } elseif (array_key_exists($field, $_POST)) {
+                $profile[$field] = trim((string)$_POST[$field]);
+            }
+        }
+        $whatsappInput = trim((string)($_POST['whatsapp_number'] ?? ''));
+        if ($submittedTz !== '') $timezone = $submittedTz;
+        $user['name'] = $name;
+        $user['email'] = $email;
+    }
+
+    if ($_POST['action'] === 'change_password') {
+        $currentPassword = $_POST['current_password'] ?? '';
+        $newPassword = $_POST['new_password'] ?? '';
+        $confirmPassword = $_POST['confirm_password'] ?? '';
+
+        $stmt = $conn->prepare("SELECT password FROM users WHERE id = ?");
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        // formErrors() again, for the same reason as above: a password form has
+        // nothing worth keeping, but the three checks below are written as a
+        // chain that ends in the save, and a redirect from the middle of it
+        // would be a different control flow to the one that is tested here.
+        if (!password_verify($currentPassword, $row['password'])) {
+            $fieldErrors = ['current_password' => 'This is not your current password.'];
+            formErrors('Current password is incorrect.', $fieldErrors);
+        } elseif (strlen($newPassword) < 8) {
+            $fieldErrors = ['new_password' => 'At least 8 characters.'];
+            formErrors('New password must be at least 8 characters.', $fieldErrors);
+        } elseif ($newPassword !== $confirmPassword) {
+            $fieldErrors = ['confirm_password' => 'This does not match the new password.'];
+            formErrors('Passwords do not match.', $fieldErrors);
+        } else {
+            $hashed = password_hash($newPassword, PASSWORD_DEFAULT);
+            $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
+            $stmt->bind_param('si', $hashed, $userId);
+            $stmt->execute();
+            $stmt->close();
+            logAudit($conn, 'profile.password_change', 'user', $userId);
+            formRespond(true, 'Password changed successfully.', $self);
         }
     }
 }
@@ -140,6 +150,16 @@ function fieldClass($key) {
 $pageTitle = 'Profile';
 require_once __DIR__ . '/includes/header.php';
 ?>
+
+<?php // One place for the page-level message, because both cards post to the
+      // same page and either one of them can be the sender. The per-field
+      // messages below say which input is at fault. ?>
+<?php if ($msg = flash('success')): ?>
+    <div class="alert alert-success"><?= sanitize($msg) ?></div>
+<?php endif; ?>
+<?php if ($msg = flash('error')): ?>
+    <div class="alert alert-danger"><?= sanitize($msg) ?></div>
+<?php endif; ?>
 
 <div class="row g-4">
     <div class="col-lg-4">
@@ -184,14 +204,7 @@ require_once __DIR__ . '/includes/header.php';
         <div class="card mb-4">
             <div class="card-header">Profile Information</div>
             <div class="card-body">
-                <?php if ($error): ?>
-                    <div class="alert alert-danger"><?= sanitize($error) ?></div>
-                <?php endif; ?>
-                <?php if ($success): ?>
-                    <div class="alert alert-success"><?= sanitize($success) ?></div>
-                <?php endif; ?>
-
-                <form method="POST" novalidate>
+                <form method="POST" data-ajax novalidate>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="update_profile">
 
@@ -306,28 +319,28 @@ require_once __DIR__ . '/includes/header.php';
         <div class="card">
             <div class="card-header">Change Password</div>
             <div class="card-body">
-                <?php if ($passwordError): ?>
-                    <div class="alert alert-danger"><?= sanitize($passwordError) ?></div>
-                <?php endif; ?>
-                <?php if ($passwordSuccess): ?>
-                    <div class="alert alert-success"><?= sanitize($passwordSuccess) ?></div>
-                <?php endif; ?>
-
-                <form method="POST">
+                <form method="POST" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="change_password">
                     <div class="mb-3">
                         <label class="form-label">Current Password</label>
-                        <input type="password" name="current_password" class="form-control" required>
+                        <input type="password" name="current_password" class="form-control<?= fieldClass('current_password') ?>" required>
+                        <?= fieldError('current_password') ?>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">New Password</label>
-                        <input type="password" name="new_password" class="form-control" placeholder="Min. 8 characters" required>
+                        <input type="password" name="new_password" class="form-control<?= fieldClass('new_password') ?>" placeholder="Min. 8 characters" required>
+                        <?= fieldError('new_password') ?>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Confirm New Password</label>
-                        <input type="password" name="confirm_password" class="form-control" required>
+                        <input type="password" name="confirm_password" class="form-control<?= fieldClass('confirm_password') ?>" required>
+                        <?= fieldError('confirm_password') ?>
                     </div>
+                    <?php // No data-confirm on either form on this page. Nothing here
+                          // destroys anything: a profile save is an edit the tenant can
+                          // simply make again, and a password change already requires the
+                          // current password, which is a stronger check than a dialog. ?>
                     <button type="submit" class="btn btn-primary">Change Password</button>
                 </form>
             </div>

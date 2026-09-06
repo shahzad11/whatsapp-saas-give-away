@@ -203,25 +203,109 @@ function handoffWaitLabel($requestedAt) {
     return intdiv($seconds, 86400) . 'd';
 }
 
+// --- The notification number (#26) ------------------------------------------
+//
+// A separate phone that staff watch, deliberately *not* the linked account: the
+// linked account is the one running the bot, so alerting it would mean the
+// tenant's own bot messaging itself.
+
+// E.164 in the only form worth storing: digits, no punctuation, a country code
+// first. The leading '+' is presentation — it is added back on the way out —
+// because a stored '+' would then have to be stripped again at every use site
+// (a JID has no plus), and one of those sites would eventually forget.
+//
+// 8 is the shortest real international number (a few small countries); 15 is
+// E.164's own maximum. A number outside that range is a typo, and a typo here
+// means every handover alert is silently sent to nobody.
+function handoffNormaliseNumber($raw) {
+    $digits = preg_replace('/\D+/', '', (string)$raw);
+    if ($digits === '') return '';
+    // A local number written with a trunk prefix ("03001234567") is the single
+    // most likely mistake, and it is not something we can correct without
+    // knowing the country — so it is rejected rather than guessed at.
+    if ($digits[0] === '0') return false;
+    return (strlen($digits) >= 8 && strlen($digits) <= 15) ? $digits : false;
+}
+
+function handoffValidNumber($raw) {
+    return handoffNormaliseNumber($raw) !== false;
+}
+
+// The number an alert actually goes to: the tenant's, or the instance-wide
+// fallback an admin set, or nothing.
+//
+// The tenant's value wins whenever they have one. The admin fallback exists so a
+// tenant who never filled the field in still gets a person told — on a
+// single-operator instance the admin and the staff watching the phone are the
+// same people.
+function handoffNotifyNumber(?mysqli $conn, array $config) {
+    $own = handoffNormaliseNumber($config['handoff_notify_number'] ?? '');
+    if (is_string($own) && $own !== '') return $own;
+
+    $fallback = handoffNormaliseNumber(overrideSetting($conn, 'handoff_notify_number') ?? '');
+    return is_string($fallback) ? $fallback : '';
+}
+
 // Tells the tenant a customer is waiting. Best effort by design: a failed
 // notification must never stop the handoff being recorded, because the queue is
 // the real mechanism and the notification is only a nudge.
+//
+// Every attempt is audited (#26). A tenant asking "why was I not told?" needs an
+// answer, and "no number was configured" and "the send was refused" are very
+// different answers — neither of which is visible from the queue alone.
 function handoffNotify(mysqli $conn, $userId, array $config, array $handoff, $sessionId, $tenantId) {
     $who = $handoff['customer_name'] ?: ($handoff['customer_phone'] ? '+' . $handoff['customer_phone'] : 'A customer');
     $topic = trim((string)($handoff['topic'] ?? ''));
+
+    // The wait is ~0 at the moment a handoff opens, so it is only worth stating
+    // when this is a re-notification of something already queued.
+    $waited = handoffWaitLabel($handoff['requested_at'] ?? gmdate('Y-m-d H:i:s'));
+
     $body = "{$who} has asked to speak to a person on WhatsApp."
         . ($topic !== '' ? "\n\nThey said: \"{$topic}\"" : '')
-        . "\n\nOpen Live chats to reply.";
+        . "\n\nWaiting: {$waited}."
+        // The link is the actionable part and was missing: a nudge that does not
+        // say where to go is a nudge you have to remember how to act on.
+        . "\n\nOpen Live chats to reply:\n" . APP_URL . '/live-chats.php';
 
-    $number = preg_replace('/\D+/', '', (string)($config['handoff_notify_number'] ?? ''));
+    $number = handoffNotifyNumber($conn, $config);
+    $numberIsTenants = handoffNormaliseNumber($config['handoff_notify_number'] ?? '') === $number && $number !== '';
+    $sent = false;
+
     if ($number !== '' && $sessionId) {
         // Sent as a normal message, so it is metered like one — a notification
         // that quietly bypassed the meter would be free messaging.
-        chatbotSendReply($conn, $userId, $tenantId, $sessionId, $number . '@s.whatsapp.net', $body);
+        $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $number . '@s.whatsapp.net', $body);
     }
 
     $email = trim((string)($config['handoff_notify_email'] ?? ''));
+    $emailed = false;
     if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        sendEmail($email, 'A customer is waiting on WhatsApp', nl2br(sanitize($body)), $body);
+        $emailed = sendEmail($email, 'A customer is waiting on WhatsApp', nl2br(sanitize($body)), $body);
     }
+
+    // The number itself is the tenant's own staff contact detail, so only
+    // whether one was used is recorded, never its digits.
+    logAudit($conn, 'handoff.notified', 'chat_handoff', (string)($handoff['id'] ?? ''), [
+        'whatsapp' => $number === '' ? 'no number configured' : ($sent ? 'sent' : 'send failed'),
+        'number_source' => $number === '' ? 'none' : ($numberIsTenants ? 'tenant' : 'admin fallback'),
+        'email' => $email === '' ? 'no address configured' : ($emailed ? 'sent' : 'send failed'),
+    ], $userId);
+}
+
+// What the customer is told, when the tenant has chosen to share the number.
+//
+// Returns '' unless they have opted in *and* there is a number to give — an
+// invitation to "contact our team at " with nothing after it is worse than
+// saying nothing.
+function handoffShareLine(?mysqli $conn, array $config) {
+    if (empty($config['handoff_share_number'])) return '';
+
+    $number = handoffNotifyNumber($conn, $config);
+    if ($number === '') return '';
+
+    $template = trim((string)($config['handoff_share_message'] ?? ''));
+    if ($template === '') $template = 'You can also reach our team directly on {number}.';
+
+    return str_replace('{number}', '+' . $number, $template);
 }

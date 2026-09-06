@@ -16,46 +16,58 @@ $hasAppointments = $hasChatbot && planHasFeature($plan, 'appointments');
 $tz = getUserTimezone($conn, $userId);
 $config = chatbotConfig($conn, $userId);
 
+// Every handler below ends at formRespond(): JSON to the page's own fetch(), and
+// the same flash-and-redirect as before to a plain form post — one code path, two
+// audiences (see includes/ajax.php).
+$self = APP_URL . '/appointments.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/appointments.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? '';
     $id = (int)($_POST['id'] ?? 0);
 
     if (in_array($action, ['completed', 'cancelled', 'no_show', 'booked'], true) && $id) {
+        // A status change keeps the filters it was made under, or the tenant is
+        // sent from "Booked" back to a list they were not looking at.
+        $backTo = $self . '?' . http_build_query($_GET);
         if (apptSetStatus($conn, $userId, $id, $action)) {
             logAudit($conn, 'appointment.status_changed', 'appointment', (string)$id, ['status' => $action]);
-            flash('success', 'Appointment updated.');
+            formRespond(true, 'Appointment updated.', $backTo);
         }
-        redirect(APP_URL . '/appointments.php?' . http_build_query($_GET));
+        // apptSetStatus() only reports false for an id that is not this tenant's
+        // or a status it does not know, and both used to redirect in silence.
+        formRespond(false, 'That appointment could not be updated.', $backTo);
     }
 
     if ($action === 'reschedule' && $id) {
         $appt = apptById($conn, $userId, $id);
         $when = trim((string)($_POST['scheduled_local'] ?? ''));
-        if ($appt && $when !== '') {
-            // The tenant is moving it by hand, so availability and lead time are
-            // advisory — but a clash is still a clash, and double-booking a room
-            // is the one thing the calendar exists to prevent.
-            try {
-                $local = new DateTime($when, new DateTimeZone($tz));
-                $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
-                $clash = apptConflicts($conn, $userId, $utc, (int)$appt['duration_minutes'], $id);
-                if ($clash) {
-                    flash('error', 'That clashes with another booking.');
-                } else {
-                    apptReschedule($conn, $userId, $id, $utc);
-                    logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$id, ['via' => 'dashboard']);
-                    flash('success', 'Appointment moved.');
-                }
-            } catch (Exception $e) {
-                flash('error', 'That date and time could not be read.');
-            }
+        if (!$appt) {
+            formRespond(false, 'That appointment could not be found.', $self, ['id' => 'Pick an appointment to move.']);
         }
-        redirect(APP_URL . '/appointments.php');
+        if ($when === '') {
+            formRespond(false, 'Pick the new date and time.', $self, ['scheduled_local' => 'Required.']);
+        }
+
+        // The tenant is moving it by hand, so availability and lead time are
+        // advisory — but a clash is still a clash, and double-booking a room
+        // is the one thing the calendar exists to prevent.
+        try {
+            $local = new DateTime($when, new DateTimeZone($tz));
+        } catch (Exception $e) {
+            formRespond(false, 'That date and time could not be read.', $self,
+                ['scheduled_local' => 'Use the date and time picker.']);
+        }
+        $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
+        if (apptConflicts($conn, $userId, $utc, (int)$appt['duration_minutes'], $id)) {
+            formRespond(false, 'That clashes with another booking.', $self,
+                ['scheduled_local' => 'Something else is already booked then.']);
+        }
+
+        apptReschedule($conn, $userId, $id, $utc);
+        logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$id, ['via' => 'dashboard']);
+        formRespond(true, 'Appointment moved.', $self);
     }
 
     if ($action === 'create') {
@@ -65,20 +77,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($services as $s) if ((int)$s['id'] === $serviceId) $service = $s;
 
         $when = trim((string)($_POST['scheduled_local'] ?? ''));
-        if (!$service || $when === '') {
-            flash('error', 'Pick a service and a time.');
-            redirect(APP_URL . '/appointments.php');
+        // Named separately now. "Pick a service and a time" left the tenant to
+        // work out which of the two the page was complaining about, and with the
+        // form in a modal there is no highlighted field to look at unless the
+        // reply says which one.
+        if (!$service) {
+            formRespond(false, 'Pick a service.', $self, ['service_id' => 'Choose one of your services.']);
+        }
+        if ($when === '') {
+            formRespond(false, 'Pick a date and time.', $self, ['scheduled_local' => 'Required.']);
         }
         try {
             $local = new DateTime($when, new DateTimeZone($tz));
         } catch (Exception $e) {
-            flash('error', 'That date and time could not be read.');
-            redirect(APP_URL . '/appointments.php');
+            formRespond(false, 'That date and time could not be read.', $self,
+                ['scheduled_local' => 'Use the date and time picker.']);
         }
         $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
         if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'])) {
-            flash('error', 'That clashes with another booking.');
-            redirect(APP_URL . '/appointments.php');
+            formRespond(false, 'That clashes with another booking.', $self,
+                ['scheduled_local' => 'Something else is already booked then.']);
         }
 
         $phone = preg_replace('/\D+/', '', (string)($_POST['customer_phone'] ?? ''));
@@ -98,8 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'source' => 'manual',
         ]);
         logAudit($conn, 'appointment.booked', 'appointment', (string)$newId, ['via' => 'dashboard']);
-        flash('success', 'Appointment added.');
-        redirect(APP_URL . '/appointments.php');
+        formRespond(true, 'Appointment added.', $self);
     }
 }
 
@@ -116,6 +133,12 @@ $filters = [
 $appointments = apptList($conn, $userId, $filters);
 $counts = apptCounts($conn, $userId);
 $services = apptServices($conn, $userId, true);
+
+// The Move form's picker offers the bookings on screen that can still be moved.
+// Built from the list already fetched rather than from a second query, so the
+// picker and the table can never disagree about what exists — and a row with a
+// Move button is always one the picker can select.
+$movable = array_values(array_filter($appointments, fn($a) => $a['status'] === 'booked'));
 
 $pageTitle = 'Appointments';
 require_once __DIR__ . '/includes/header.php';
@@ -198,9 +221,24 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span><?= count($appointments) ?> appointment<?= count($appointments) === 1 ? '' : 's' ?></span>
-        <span class="text-muted small">Times shown in <?= sanitize($tz) ?></span>
+        <div class="d-flex align-items-center gap-3">
+            <span class="text-muted small">Times shown in <?= sanitize($tz) ?></span>
+            <?php // The href is the anchor of the real form at the bottom of the page,
+                  // so with JavaScript off this is a link that still gets the tenant to
+                  // a working form rather than a button that does nothing. Withheld
+                  // entirely when there is no service to book: the card below then holds
+                  // the explanation instead of a form, and a link to an explanation
+                  // dressed up as "Add by hand" is a dead end. ?>
+            <?php if ($services): ?>
+                <a href="#apptForm" class="btn btn-sm btn-primary"
+                   data-modal-target="#apptCreateModal" data-modal-reset="on"
+                   data-modal-title="Add an appointment">
+                    <i class="bi bi-plus-lg me-1"></i>Add by hand
+                </a>
+            <?php endif; ?>
+        </div>
     </div>
     <div class="table-responsive">
         <table class="table table-sm align-middle mb-0">
@@ -236,16 +274,39 @@ require_once __DIR__ . '/includes/header.php';
                     </td>
                     <td class="text-end">
                         <?php if ($a['status'] === 'booked'): ?>
-                            <?php foreach ([['completed', 'Done', 'success'], ['no_show', 'No-show', 'warning'], ['cancelled', 'Cancel', 'danger']] as [$act, $label, $colour]): ?>
-                                <form method="post" class="d-inline">
+                            <?php // Moving one was possible on the server from the day the
+                                  // reschedule handler was written, and impossible from the
+                                  // page — nothing ever sent it an id or a time, so a booking
+                                  // in the wrong slot had to be cancelled and re-entered,
+                                  // which loses the note and the audit trail. The href is the
+                                  // anchor of the real form below, so this is still a working
+                                  // link with JavaScript off. ?>
+                            <a href="#apptMoveForm" class="btn btn-outline-primary btn-sm"
+                               data-modal-target="#apptMoveModal" data-modal-title="Move appointment"
+                               data-field-id="<?= (int)$a['id'] ?>"
+                               data-field-scheduled-local="<?= sanitize(date('Y-m-d\TH:i', strtotime($localWhen))) ?>">Move</a>
+                            <?php // Only the two endings a customer would notice are confirmed.
+                                  // "Done" is the ordinary outcome and reversible with Reopen,
+                                  // so a dialog on it would only teach people to dismiss
+                                  // dialogs. data-confirm replaces an inline confirm() rather
+                                  // than joining one — both would ask twice. ?>
+                            <?php foreach ([
+                                ['completed', 'Done', 'success', ''],
+                                ['no_show', 'No-show', 'warning', 'Mark this customer as a no-show? Their reminders stop and the slot is freed.'],
+                                ['cancelled', 'Cancel', 'danger', 'Cancel this appointment? The customer is not told automatically, and their reminders stop.'],
+                            ] as [$act, $label, $colour, $confirm]): ?>
+                                <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="<?= $act ?>">
                                     <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
-                                    <button class="btn btn-outline-<?= $colour ?> btn-sm" type="submit"><?= $label ?></button>
+                                    <button class="btn btn-outline-<?= $colour ?> btn-sm" type="submit"
+                                        <?= $confirm === '' ? '' : 'data-confirm="' . sanitize($confirm) . '"' ?>><?= $label ?></button>
                                 </form>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <form method="post" class="d-inline">
+                            <?php // Not confirmed: reopening puts a booking back the way it
+                                  // was, and the clash check runs on the next move anyway. ?>
+                            <form method="post" class="d-inline" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="action" value="booked">
                                 <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
@@ -263,7 +324,19 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<div class="card">
+<?php // Rendered once, as an ordinary card, and moved into a Bootstrap modal by
+      // forms.js (data-modal-shell). Two things this avoids: rendering the form
+      // twice — a modal copy plus a <noscript> copy — puts every field id in the
+      // document twice and silently breaks the <label for> pairs of whichever copy
+      // comes second; and a form written directly inside a .modal is a form a
+      // browser with JavaScript off cannot reach at all, because Bootstrap's CSS
+      // hides it and nothing is left to show it. One render, moved, leaves the
+      // no-JS case as the plain card at the bottom of the page it always was.
+      //
+      // Only promoted when it holds a form: with no service defined this card holds
+      // the note that says so, and moving that into a modal nothing opens would
+      // delete the explanation from the page. ?>
+<div class="card" <?= $services ? 'data-modal-shell="apptCreateModal" data-modal-title="Add an appointment"' : '' ?>>
     <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Add by hand</div>
     <div class="card-body">
         <?php if (!$services): ?>
@@ -283,35 +356,87 @@ require_once __DIR__ . '/includes/header.php';
             Booked by hand, so your opening hours, minimum notice and booking horizon
             do not apply — only a clash with an existing appointment is refused.
         </div>
-        <form method="post" class="row g-2 align-items-end">
+        <form method="post" id="apptForm" class="row g-2 align-items-end" data-ajax>
             <?= csrfField() ?>
             <input type="hidden" name="action" value="create">
             <div class="col-md-3">
-                <label class="form-label small">Service</label>
-                <select name="service_id" class="form-select form-select-sm" required>
+                <label class="form-label small" for="apptService">Service</label>
+                <select name="service_id" id="apptService" class="form-select form-select-sm" required>
                     <?php foreach ($services as $s): ?>
                         <option value="<?= (int)$s['id'] ?>"><?= sanitize($s['name']) ?> (<?= (int)$s['duration_minutes'] ?> min)</option>
                     <?php endforeach; ?>
                 </select>
             </div>
             <div class="col-md-3">
-                <label class="form-label small">When (<?= sanitize($tz) ?>)</label>
-                <input type="datetime-local" name="scheduled_local" class="form-control form-control-sm" required>
+                <label class="form-label small" for="apptWhen">When (<?= sanitize($tz) ?>)</label>
+                <input type="datetime-local" name="scheduled_local" id="apptWhen" class="form-control form-control-sm" required>
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Customer</label>
-                <input type="text" name="customer_name" class="form-control form-control-sm">
+            <div class="col-md-3">
+                <label class="form-label small" for="apptCustomer">Customer</label>
+                <input type="text" name="customer_name" id="apptCustomer" class="form-control form-control-sm" maxlength="120">
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Phone</label>
-                <input type="text" name="customer_phone" class="form-control form-control-sm" placeholder="923001234567">
+            <div class="col-md-3">
+                <label class="form-label small" for="apptPhone">Phone</label>
+                <input type="text" name="customer_phone" id="apptPhone" class="form-control form-control-sm" placeholder="923001234567">
             </div>
-            <div class="col-md-2">
+            <?php // The note the handler has always stored and the form never offered,
+                  // so a booking taken over the phone had nowhere to record what it was
+                  // about. It shows under the row in the table. ?>
+            <div class="col-md-9">
+                <label class="form-label small" for="apptNotes">Note <span class="text-muted">(internal)</span></label>
+                <input type="text" name="notes" id="apptNotes" class="form-control form-control-sm" maxlength="500">
+            </div>
+            <div class="col-md-3">
+                <?php // No data-confirm: adding a booking is additive, and a clash is
+                      // refused by the server rather than argued about in a dialog. ?>
                 <button class="btn btn-primary btn-sm w-100" type="submit">Add</button>
             </div>
         </form>
         <?php endif; ?>
     </div>
 </div>
+
+<?php if ($movable): ?>
+<?php // The same one-render-then-promote arrangement as the card above. The
+      // appointment is chosen from a real <select> rather than from a hidden id,
+      // which is what lets the form work on its own: a tenant with JavaScript off
+      // follows the Move link to this card, picks the booking and the new time.
+      // With JavaScript, the Move button on a row fills both fields in. ?>
+<div class="card mt-3" data-modal-shell="apptMoveModal" data-modal-title="Move appointment">
+    <div class="card-header"><i class="bi bi-arrow-left-right me-2"></i>Move an appointment</div>
+    <div class="card-body">
+        <div class="alert alert-light border small py-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Moving one by hand is held to the same single rule as adding one: only a clash
+            with another booking is refused. Its reminders are rescheduled with it.
+        </div>
+        <form method="post" id="apptMoveForm" class="row g-2 align-items-end" data-ajax>
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="reschedule">
+            <div class="col-md-6">
+                <label class="form-label small" for="apptMoveId">Appointment</label>
+                <select name="id" id="apptMoveId" class="form-select form-select-sm" required>
+                    <?php foreach ($movable as $m):
+                        $moveWhen = convertToUserTz($m['scheduled_at'], $tz); ?>
+                        <option value="<?= (int)$m['id'] ?>">
+                            <?= sanitize(date('D j M H:i', strtotime($moveWhen))) ?>
+                            — <?= sanitize($m['service_name']) ?><?= $m['customer_name'] ? ' · ' . sanitize($m['customer_name']) : '' ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small" for="apptMoveWhen">New time (<?= sanitize($tz) ?>)</label>
+                <input type="datetime-local" name="scheduled_local" id="apptMoveWhen" class="form-control form-control-sm" required>
+            </div>
+            <div class="col-md-2">
+                <?php // Not confirmed: a move is an edit, the old slot is not lost, and
+                      // the clash check is what protects the calendar. ?>
+                <button class="btn btn-primary btn-sm w-100" type="submit">Move</button>
+            </div>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

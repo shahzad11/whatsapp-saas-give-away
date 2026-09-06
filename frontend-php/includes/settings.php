@@ -182,7 +182,10 @@ function instanceSetupSteps(mysqli $conn) {
     return [
         [
             'label' => 'Configure outgoing email',
-            'why'   => 'Activation, password reset and reminder emails are silently undeliverable without it.',
+            // Named as the only transport on purpose (#15): there is deliberately
+            // no local MTA in the frontend container, so an admin who skips this
+            // step is not falling back to something that half-works.
+            'why'   => 'The only mail transport there is — without SMTP, activation, password reset and reminder emails are silently undeliverable.',
             'url'   => APP_URL . '/admin/email.php',
             'done'  => smtpConfigured($conn),
         ],

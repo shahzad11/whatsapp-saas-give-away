@@ -227,6 +227,24 @@ CREATE TABLE IF NOT EXISTS app_settings (
     FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- White-label logo and favicon bytes (issue #23).
+--
+-- In the database rather than on disk because the frontend container has no
+-- writable volume: a file written under the document root is lost on the next
+-- image build, and every deploy here builds from source. The database survives a
+-- release and is dumped before each one. Only two rows are ever expected, keyed
+-- by what the image is for, so replacing a logo cannot accumulate orphans.
+--
+-- MEDIUMBLOB rather than BLOB for headroom; includes/branding.php caps an upload
+-- at 512 KB, which is the limit that actually applies.
+CREATE TABLE IF NOT EXISTS brand_assets (
+    kind VARCHAR(16) NOT NULL PRIMARY KEY,      -- logo | favicon
+    mime_type VARCHAR(64) NOT NULL,
+    content MEDIUMBLOB NOT NULL,
+    byte_size INT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
 -- Feature flags for the seeded plans.
 --
 -- Two problems are fixed here. First, `features` was never seeded at all, so a
@@ -693,3 +711,23 @@ SET @add_handoff := (
 PREPARE stmt_add_handoff FROM @add_handoff;
 EXECUTE stmt_add_handoff;
 DEALLOCATE PREPARE stmt_add_handoff;
+
+-- Sharing the notification number with the customer (issue #26).
+--
+-- Two columns and both default to off. The notification number is staff contact
+-- detail: it is only ever put in front of a customer when the tenant has
+-- explicitly said so, which is what handoff_share_number is. The wording is
+-- theirs too, because "call us" reads very differently for a clinic and a
+-- takeaway.
+SET @add_share := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs
+            ADD COLUMN handoff_share_number TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN handoff_share_message VARCHAR(500) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'handoff_share_number'
+);
+PREPARE stmt_add_share FROM @add_share;
+EXECUTE stmt_add_share;
+DEALLOCATE PREPARE stmt_add_share;

@@ -19,11 +19,10 @@ $stored = [
 ];
 $hasPassword = (string)appSetting($conn, 'smtp_password_enc', '') !== '';
 
+$self = APP_URL . '/admin/email.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/admin/email.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? 'save';
 
@@ -78,8 +77,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($password !== '') {
             $enc = encryptSecret($password);
             if ($enc === null) {
-                flash('error', 'The password could not be encrypted and was not saved.');
-                redirect(APP_URL . '/admin/email.php');
+                formRespond(false, 'The password could not be encrypted and was not saved.', $self,
+                    ['smtp_password' => 'This instance cannot encrypt secrets — see the note above.']);
             }
             setAppSetting($conn, 'smtp_password_enc', $enc);
             $hasPassword = true;
@@ -99,21 +98,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'test') {
             $to = trim($_POST['test_to'] ?? '');
             if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
-                flash('error', 'Settings saved, but the test address is not a valid email.');
-                redirect(APP_URL . '/admin/email.php');
+                formRespond(false, 'Settings saved, but the test address is not a valid email.', $self,
+                    ['test_to' => 'Enter a valid email address to send the test to.']);
             }
             [$html, $text] = mailTest();
-            [$ok, $message] = sendMailNow($to, 'Test message from ' . APP_NAME, $html, $text, $conn);
+            [$ok, $message] = sendMailNow($to, 'Test message from ' . brandName($conn), $html, $text, $conn);
             logAudit($conn, 'admin.smtp.test', 'app_settings', null, ['to' => $to, 'ok' => $ok]);
+            // The full result panel (including the SPF note) is rendered on the
+            // page, so the AJAX path reloads to show it rather than shrinking a
+            // diagnostic into a toast.
             $_SESSION['smtp_test'] = ['ok' => $ok, 'message' => $message, 'to' => $to];
-        } else {
-            flash('success', 'Email settings saved.');
+            formRespond(true, $ok ? 'Test message accepted by the server.' : 'Test message failed — see the details on the page.',
+                $self, [], ['redirect' => $self]);
         }
 
-        redirect(APP_URL . '/admin/email.php');
+        formRespond(true, 'Email settings saved.', $self);
     }
 
-    flash('error', 'Please correct the highlighted fields.');
+    formErrors('Please correct the highlighted fields.', $errors);
     $stored = [
         'smtp_host' => $host, 'smtp_port' => (string)$port, 'smtp_encryption' => $encryption,
         'smtp_username' => $username, 'smtp_from_email' => $fromEmail, 'smtp_from_name' => $fromName,
@@ -168,16 +170,33 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         Re-enter the password below to fix it. Email will not send until you do.
     </div>
 <?php elseif (!$configured): ?>
-    <div class="alert alert-info">
-        <strong>Email is not configured yet.</strong>
-        Until it is, account activation, password resets and renewal reminders cannot be delivered.
-        <?php // Worth stating plainly: this container has no local MTA, so there
-              // is no silent fallback that happens to work. ?>
-        There is no local mail server to fall back to.
+    <div class="alert alert-warning">
+        <strong>Email is not configured, so this instance cannot send any.</strong>
+        Account activation, password resets, renewal reminders and human-handover alerts are all
+        silently undeliverable until the fields below are filled in.
+        <?php // #15 asked for a local EXIM relay so a fresh deployment could send
+              // mail before an admin configured SMTP. It was declined, and this is
+              // where that decision has to be visible — otherwise the absence of a
+              // fallback looks like something that has not been built yet.
+              //
+              // The reasoning: a self-hosted MTA on a VPS with no SPF record, no
+              // DKIM signing and generic reverse DNS does not reach inboxes, it
+              // reaches spam folders. Mail that is silently filtered is strictly
+              // worse than mail that visibly fails, because nobody investigates a
+              // password reset that "was sent". An SMTP relay the operator already
+              // owns has the reputation these messages need. ?>
+        <div class="small mt-2">
+            There is <strong>deliberately</strong> no local mail server to fall back to. A mail server
+            running on this VPS would have no SPF record, no DKIM signature and generic reverse DNS,
+            so most providers would filter its mail into spam — and mail that is silently filtered is
+            worse than mail that visibly fails, because nobody investigates a reset link that "was
+            sent". Use an SMTP relay whose domain reputation you already own: your own mail provider,
+            or a transactional service. Any of them works here.
+        </div>
     </div>
 <?php endif; ?>
 
-<form method="POST">
+<form method="POST" data-ajax>
     <?= csrfField() ?>
 
     <div class="card mb-4">
@@ -260,7 +279,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <div class="col-md-6">
                     <label class="form-label">From name</label>
                     <input type="text" name="smtp_from_name" class="form-control<?= eCls('smtp_from_name') ?>"
-                           value="<?= sanitize($stored['smtp_from_name'] ?: APP_NAME) ?>" maxlength="100">
+                           value="<?= sanitize($stored['smtp_from_name'] ?: brandName($conn)) ?>" maxlength="100">
                     <?= eErr('smtp_from_name') ?>
                 </div>
             </div>

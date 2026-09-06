@@ -11,24 +11,24 @@ require_once dirname(__DIR__) . '/includes/admin-init.php';
 $catalogue = llmProviderCatalogue();
 $testResult = null;
 
+$self = APP_URL . '/admin/llm.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrf()) {
-        flash('error', 'Invalid request.');
-        redirect(APP_URL . '/admin/llm.php');
-    }
+    formRequireCsrf($self);
 
     $action = $_POST['action'] ?? '';
 
     if ($action === 'save_provider') {
         $code = (string)($_POST['code'] ?? '');
         if (!llmIsKnownProvider($code)) {
-            flash('error', 'Unknown provider.');
-            redirect(APP_URL . '/admin/llm.php');
+            formRespond(false, 'Unknown provider.', $self);
         }
         $key = (string)($_POST['api_key'] ?? '');
         if ($key !== '' && !cryptoSecretAvailable()) {
-            flash('error', cryptoSecretMissingMessage());
-            redirect(APP_URL . '/admin/llm.php');
+            // Attached to the field that was refused, so the AJAX path highlights
+            // the key box rather than only explaining the instance's problem.
+            formRespond(false, cryptoSecretMissingMessage(), $self,
+                ['api_key' => 'This instance cannot encrypt secrets, so the key was not stored.']);
         }
 
         [$ok, $err] = llmSaveProvider(
@@ -39,8 +39,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             !empty($_POST['is_enabled'])
         );
         if (!$ok) {
-            flash('error', $err);
-            redirect(APP_URL . '/admin/llm.php');
+            // llmSaveProvider() only ever fails on encrypting the key, so that is
+            // the field to mark; the returned message is the one to show.
+            formRespond(false, $err, $self, ['api_key' => 'The key was not saved.']);
         }
 
         // Seed the vendor's known models the first time a provider is saved, so
@@ -75,23 +76,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         // A provider saved as enabled with no key is inert: no Test button
         // appears and tenants see no models, with nothing on screen saying why.
+        //
+        // Deliberately still a flash() rather than part of the formRespond()
+        // message: the save did succeed, and this is a second, differently
+        // coloured warning that formRespond() has no room for. flash() keeps
+        // 'error' and 'success' under separate keys, so it survives to be shown
+        // by the redirect a plain submit follows and by the reload forms.js does
+        // after a successful AJAX save — the admin sees it either way.
         if (!empty($_POST['is_enabled']) && !llmProviderHasKey(llmProviderByCode($conn, $code))) {
             flash('error', 'This provider is enabled but has no API key — tenants cannot use it until you add one.');
         }
-        flash('success', $message);
-        redirect(APP_URL . '/admin/llm.php');
+        formRespond(true, $message, $self);
     }
 
     if ($action === 'test_provider') {
         $code = (string)($_POST['code'] ?? '');
-        if (llmIsKnownProvider($code)) {
-            // Pass the form's own values so the test reports on what the admin is
-            // looking at, not on the stored row.
-            [$ok, $message] = llmTestProvider($conn, $code, $_POST['api_key'] ?? null, $_POST['base_url'] ?? null);
-            logAudit($conn, 'llm.provider_tested', 'llm_provider', $code, ['ok' => $ok]);
-            flash($ok ? 'success' : 'error', $catalogue[$code]['label'] . ': ' . $message);
+        if (!llmIsKnownProvider($code)) {
+            formRespond(false, 'Unknown provider.', $self);
         }
-        redirect(APP_URL . '/admin/llm.php');
+        // Pass the form's own values so the test reports on what the admin is
+        // looking at, not on the stored row.
+        [$ok, $message] = llmTestProvider($conn, $code, $_POST['api_key'] ?? null, $_POST['base_url'] ?? null);
+        logAudit($conn, 'llm.provider_tested', 'llm_provider', $code, ['ok' => $ok]);
+        // The message carries the whole diagnostic — llmScrubSecret() has already
+        // run over it — so a failure needs no page reload to be readable. A pass
+        // reloads anyway, which is what refreshes the stored "Test passed" badge.
+        formRespond($ok, $catalogue[$code]['label'] . ': ' . $message, $self);
     }
 
     if ($action === 'add_model') {
@@ -103,11 +113,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($providerId > 0 && $modelCode !== '' && strlen($modelCode) <= 100) {
             llmAddModel($conn, $providerId, $modelCode, $label, $kind);
             logAudit($conn, 'llm.model_added', 'llm_model', $modelCode, ['kind' => $kind]);
-            flash('success', 'Model added.');
-        } else {
-            flash('error', 'Enter the model id exactly as the vendor documents it.');
+            formRespond(true, 'Model added.', $self);
         }
-        redirect(APP_URL . '/admin/llm.php');
+        // One condition, two possible culprits, so the field error is chosen from
+        // which of them failed — marking the model id when a provider was never
+        // selected would point at the wrong box.
+        formRespond(false, 'Enter the model id exactly as the vendor documents it.', $self,
+            $providerId > 0
+                ? ['model_code' => 'Required, max 100 characters.']
+                : ['provider_id' => 'Choose the provider this model belongs to.']);
     }
 
     if ($action === 'toggle_model') {
@@ -118,7 +132,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // tenants can select and what the reply path will accept, so it belongs
         // in the audit trail just as much as adding or deleting one.
         logAudit($conn, 'llm.model_toggled', 'llm_model', (string)$modelId, ['enabled' => $enable]);
-        redirect(APP_URL . '/admin/llm.php');
+        // This action used to redirect silently, which was survivable when the
+        // whole page redrew and the row visibly changed. An AJAX submit has only
+        // the message to show for itself, so it now says what it did.
+        formRespond(true, $enable ? 'Model enabled.' : 'Model disabled.', $self);
     }
 
     if ($action === 'delete_model') {
@@ -127,8 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // configured" rather than to someone else's model.
         llmDeleteModel($conn, (int)($_POST['model_id'] ?? 0));
         logAudit($conn, 'llm.model_deleted', 'llm_model', (string)($_POST['model_id'] ?? ''));
-        flash('success', 'Model removed. Tenants using it will need to pick another.');
-        redirect(APP_URL . '/admin/llm.php');
+        formRespond(true, 'Model removed. Tenants using it will need to pick another.', $self);
     }
 
     if ($action === 'save_access') {
@@ -137,8 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             llmSetPlanModels($conn, (int)$plan['id'], is_array($selected) ? $selected : []);
         }
         logAudit($conn, 'llm.plan_access_saved', 'plan_llm_models', null);
-        flash('success', 'Plan access updated.');
-        redirect(APP_URL . '/admin/llm.php');
+        formRespond(true, 'Plan access updated.', $self);
     }
 
     if ($action === 'save_toggles') {
@@ -152,10 +167,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($wantAudio) {
             $valid = in_array($transcribeId, array_map('intval', array_column(llmModels($conn, 'transcribe', true), 'id')), true);
             if (!$valid) {
-                flash('error', $transcribeId > 0
+                formRespond(false, $transcribeId > 0
                     ? 'That transcription model is not available — pick an enabled one, or add a transcription model first.'
-                    : 'Choose a transcription model before switching voice notes on — without one, voice notes are silently ignored.');
-                redirect(APP_URL . '/admin/llm.php');
+                    : 'Choose a transcription model before switching voice notes on — without one, voice notes are silently ignored.',
+                    $self,
+                    ['llm_transcribe_model_id' => 'Pick an enabled transcription model.']);
             }
         }
 
@@ -166,9 +182,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'byo' => !empty($_POST['llm_allow_byo_keys']),
             'audio' => !empty($_POST['llm_enable_audio']),
         ]);
-        flash('success', 'Instance toggles updated.');
-        redirect(APP_URL . '/admin/llm.php');
+        formRespond(true, 'Instance toggles updated.', $self);
     }
+
+    // Only reached by a POST naming an action that does not exist: every branch
+    // above exits. It answers through formRespond() rather than redirect()
+    // because a 302 to an HTML page comes back to fetch() as something it cannot
+    // parse, and the submit would then look like a network failure.
+    formRespond(false, 'Unknown action.', $self);
 }
 
 $providers = [];
@@ -231,8 +252,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     key cannot be selected by any tenant. You only need one provider for the chatbot to work.
                 </p>
 
+                <?php // One form per provider, each saving in place (#24). Not a modal:
+                      // this is an edit-in-place row whose surrounding help text — where
+                      // to get a key, what a base URL is for — is the reason an admin can
+                      // fill it in at all, and a dialog would hide it. ?>
                 <?php foreach ($providers as $code => $p): ?>
-                <form method="post" class="border rounded p-3 mb-3">
+                <form method="post" class="border rounded p-3 mb-3" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_provider">
                     <input type="hidden" name="code" value="<?= sanitize($code) ?>">
@@ -334,21 +359,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             </td>
                             <td><span class="badge bg-light text-dark"><?= sanitize($m['kind']) ?></span></td>
                             <td class="text-end">
-                                <form method="post" class="d-inline">
+                                <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="toggle_model">
                                     <input type="hidden" name="model_id" value="<?= (int)$m['id'] ?>">
                                     <input type="hidden" name="enable" value="<?= $m['is_enabled'] ? '0' : '1' ?>">
-                                    <button class="btn btn-outline-secondary btn-sm" type="submit">
+                                    <?php // Only disabling is confirmed: it takes the model away from
+                                          // every tenant currently using it. Enabling is additive, and a
+                                          // dialog on a harmless action teaches people to dismiss dialogs. ?>
+                                    <button class="btn btn-outline-secondary btn-sm" type="submit"
+                                        <?= $m['is_enabled'] ? 'data-confirm="Disable this model? Tenants using it will have to pick another."' : '' ?>>
                                         <?= $m['is_enabled'] ? 'Disable' : 'Enable' ?>
                                     </button>
                                 </form>
-                                <form method="post" class="d-inline"
-                                      onsubmit="return confirm('Remove this model? Tenants using it will have to pick another.')">
+                                <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="delete_model">
                                     <input type="hidden" name="model_id" value="<?= (int)$m['id'] ?>">
-                                    <button class="btn btn-outline-danger btn-sm" type="submit">Remove</button>
+                                    <button class="btn btn-outline-danger btn-sm" type="submit"
+                                            data-confirm="Remove this model? Tenants using it will have to pick another.">Remove</button>
                                 </form>
                             </td>
                         </tr>
@@ -361,7 +390,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     </tbody>
                 </table>
 
-                <form method="post" class="row g-2 align-items-end border-top pt-3">
+                <?php // Left inline rather than moved into a modal: it is a four-field
+                      // create form sitting directly under the table it adds a row to, and
+                      // the paragraph above it is what tells an admin what a model id even
+                      // looks like. With data-ajax it no longer costs a page load (#24). ?>
+                <form method="post" class="row g-2 align-items-end border-top pt-3" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="add_model">
                     <div class="col-md-3">
@@ -400,7 +433,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <div class="card mb-3">
             <div class="card-header"><i class="bi bi-toggles me-2"></i>Instance toggles</div>
             <div class="card-body">
-                <form method="post">
+                <form method="post" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_toggles">
 
@@ -465,7 +498,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     No row means no access. A model a plan has not been granted cannot be selected —
                     and is re-checked when a reply is generated, so a downgrade takes effect at once.
                 </p>
-                <form method="post">
+                <form method="post" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_access">
                     <?php foreach ($plans as $plan): ?>
