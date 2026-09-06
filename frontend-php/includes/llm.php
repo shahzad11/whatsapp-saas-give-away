@@ -17,12 +17,18 @@ const LLM_CONTEXT = 'llm-key-v1';
 // The vendors this instance knows how to speak to. Adding one means adding a
 // case to llmChatRequest() — the catalogue is not a lookup table of URLs
 // because the request and response shapes genuinely differ.
+//
+// console_url is where an admin actually gets a key. The admin page asked for an
+// "API key" and left finding one as an exercise; an admin who has never used a
+// model vendor cannot proceed from that, and guessing is how people end up
+// pasting the wrong credential.
 function llmProviderCatalogue() {
     return [
         'openai' => [
             'label'      => 'OpenAI',
             'base_url'   => 'https://api.openai.com/v1',
             'key_hint'   => 'sk-…',
+            'console_url' => 'https://platform.openai.com/api-keys',
             'transcribe' => true,
             'models'     => [
                 ['gpt-4o-mini', 'GPT-4o mini', 'chat'],
@@ -34,6 +40,7 @@ function llmProviderCatalogue() {
             'label'      => 'Anthropic',
             'base_url'   => 'https://api.anthropic.com/v1',
             'key_hint'   => 'sk-ant-…',
+            'console_url' => 'https://console.anthropic.com/settings/keys',
             'transcribe' => false,
             'models'     => [
                 ['claude-3-5-haiku-latest', 'Claude 3.5 Haiku', 'chat'],
@@ -44,6 +51,7 @@ function llmProviderCatalogue() {
             'label'      => 'Google Gemini',
             'base_url'   => 'https://generativelanguage.googleapis.com/v1beta',
             'key_hint'   => 'AIza…',
+            'console_url' => 'https://aistudio.google.com/app/apikey',
             'transcribe' => false,
             'models'     => [
                 ['gemini-2.0-flash', 'Gemini 2.0 Flash', 'chat'],

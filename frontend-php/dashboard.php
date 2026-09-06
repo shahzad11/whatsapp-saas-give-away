@@ -42,6 +42,31 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 <?php endif; ?>
 
+<?php
+// For admins on a not-yet-configured instance only. This dashboard is the page
+// you land on after logging in, and on a fresh deployment it shows all zeros and
+// invites you to link a WhatsApp account — which is step five of six. The other
+// five live in the admin console, and this is the only place that says so.
+//
+// Not shown to tenants (they cannot act on any of it) and not shown once the
+// instance is set up or the checklist has been dismissed.
+$adminSetupOutstanding = 0;
+if (isAdmin() && !instanceSetupDismissed($conn)) {
+    $adminSetupOutstanding = count(array_filter(instanceSetupSteps($conn), fn($s) => !$s['done']));
+}
+?>
+<?php if ($adminSetupOutstanding > 0): ?>
+    <div class="alert alert-info d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <i class="bi bi-rocket-takeoff me-1"></i>
+            <strong>This instance is not finished being set up.</strong>
+            <?= (int)$adminSetupOutstanding ?> step(s) still need an administrator — outgoing email, AI keys,
+            plans. Tenants will hit dead ends until they are done.
+        </div>
+        <a href="<?= APP_URL ?>/admin/index.php" class="btn btn-sm btn-primary">Open admin console</a>
+    </div>
+<?php endif; ?>
+
 <div class="row g-4 mb-4">
     <div class="col-sm-6 col-xl-3">
         <div class="stat-card">
@@ -131,7 +156,7 @@ require_once __DIR__ . '/includes/header.php';
                         <tr>
                             <td class="fw-500"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
                             <td><?= sanitize($acc['phone_number'] ?: '-') ?></td>
-                            <td><span class="badge-status badge-<?= $acc['status'] ?>"><?= $acc['status'] ?></span></td>
+                            <td><span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span></td>
                             <td class="text-muted small"><?= $acc['connected_at'] ? timeAgo($acc['connected_at']) : '-' ?></td>
                             <td>
                                 <a href="<?= APP_URL ?>/whatsapp/chats.php?account=<?= $acc['id'] ?>" class="btn btn-sm btn-outline-primary">

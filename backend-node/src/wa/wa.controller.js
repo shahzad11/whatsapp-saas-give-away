@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
+import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -72,6 +72,22 @@ export async function logoutSession(req, res, next) {
     }
 
     return res.json({ ok: true })
+  } catch (e) {
+    next(e)
+  }
+}
+
+// Re-pair an existing session. Same sessionId, same history, new QR — see
+// relinkSession() for why that matters.
+export async function relinkSession(req, res, next) {
+  try {
+    const { sessionId } = req.params
+    const ok = await relinkSessionState(req.tenantId, sessionId)
+    if (!ok) {
+      return res.status(404).json({ ok: false, error: 'Session not found' })
+    }
+
+    return res.json({ ok: true, status: 'qr_required' })
   } catch (e) {
     next(e)
   }

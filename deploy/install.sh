@@ -178,11 +178,29 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${APP_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD}"
 ADMIN_NAME="Administrator"
 
+# Public sign-up. Off by default: there is no payment wall in front of it, so an
+# open instance is a liability. The admin dashboard can turn it on, and that
+# setting wins over this value — this is the floor a fresh install starts from.
 ALLOW_REGISTRATION="false"
+
+# Marks the session cookie Secure, so it is never sent over plain HTTP. Correct
+# for every real deployment (this stack is HTTPS-only behind Traefik). Setting it
+# to false is for local HTTP development only: on a public host it would let a
+# session cookie travel in the clear.
 SESSION_SECURE="true"
+
 DEV_MODE="false"
+
+# Plan code assigned to every new tenant. Must match a `code` in the plans table
+# — the seeded plans are free / starter / business. The admin dashboard can
+# change it; a code that matches nothing leaves new tenants with no plan.
 DEFAULT_PLAN_CODE="free"
+
 LOG_LEVEL="info"
+
+# The From address on every email the instance sends, and the address shown to
+# tenants when something needs a human. It is not a mailbox this stack reads —
+# outgoing mail goes through the SMTP server configured in Admin → Email.
 MAIL_FROM="noreply@${APP_DOMAIN}"
 EOF
   chmod 600 .env
@@ -192,6 +210,46 @@ EOF
   echo "    Admin login:    ${ADMIN_EMAIL:-admin@${APP_DOMAIN}}"
   echo "    Admin password: ${ADMIN_PASSWORD}"
   echo "    (also stored in .env — save it now, it is not shown again)"
+  echo
+fi
+
+# --- Traefik preflight ------------------------------------------------------
+#
+# The stack publishes no ports: the only route in is a Traefik already running on
+# this host, with a `websecure` entrypoint and a `letsencrypt` cert resolver (see
+# the frontend labels in docker-compose.yml). Without it the containers come up
+# healthy and the site is simply unreachable — which looks like a broken install
+# and is the single most confusing way for this to fail.
+#
+# A warning, not a fatal: an operator may be putting their own proxy in front, or
+# starting Traefik afterwards. Both are legitimate, so this says what is missing
+# and continues.
+TRAEFIK_WARNINGS=()
+if ! docker ps --format '{{.Image}} {{.Names}}' | grep -qi traefik; then
+  TRAEFIK_WARNINGS+=("No running Traefik container was found on this host.")
+else
+  TRAEFIK_CID="$(docker ps --filter 'name=traefik' --format '{{.ID}}' | head -n1)"
+  [[ -z "$TRAEFIK_CID" ]] && TRAEFIK_CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i traefik | head -n1 | cut -d' ' -f1)"
+  if [[ -n "$TRAEFIK_CID" ]]; then
+    # Its command line is where the entrypoint and resolver names are declared.
+    # Static-file configuration would not show up here, hence "could not confirm"
+    # rather than "is missing".
+    TRAEFIK_CMD="$(docker inspect --format '{{join .Args " "}}' "$TRAEFIK_CID" 2>/dev/null || true)"
+    if [[ -n "$TRAEFIK_CMD" ]]; then
+      grep -q 'websecure' <<<"$TRAEFIK_CMD" || TRAEFIK_WARNINGS+=("Could not confirm a 'websecure' entrypoint on the running Traefik.")
+      grep -q 'letsencrypt' <<<"$TRAEFIK_CMD" || TRAEFIK_WARNINGS+=("Could not confirm a 'letsencrypt' certificate resolver on the running Traefik.")
+    fi
+  fi
+fi
+
+if (( ${#TRAEFIK_WARNINGS[@]} )); then
+  echo
+  echo "!!! Reverse proxy check"
+  for w in "${TRAEFIK_WARNINGS[@]}"; do echo "    - $w"; done
+  echo "    This stack publishes no ports of its own, so https://${APP_HOST}/ will not"
+  echo "    respond until a Traefik with those names is running on this host, or you"
+  echo "    put your own proxy in front of the frontend container."
+  echo "    Continuing anyway."
   echo
 fi
 
@@ -223,3 +281,34 @@ echo
 echo "==> Done. https://${APP_HOST}/"
 echo "    Deployment directory: $(pwd)"
 docker compose "${COMPOSE_ARGS[@]}" ps
+
+# A running stack is not a working product. Nothing that needs an outside
+# account — email, AI — can be configured by this script, and a deployer with no
+# idea that those steps exist reads "Done" as "finished". The admin console shows
+# the same list as a checklist that ticks itself off; this is the version you get
+# before you have logged in.
+cat <<'NEXT'
+
+=== Next steps ===
+The stack is up, but it is not usable yet. In the app, as the admin:
+
+  1. Log in at the URL above with the credentials shown earlier.
+  2. Admin > Email / SMTP    — outgoing email. Until this is set, activation and
+                               password-reset emails cannot be delivered at all.
+  3. Admin > AI / LLM        — add an API key from OpenAI, Anthropic or Google.
+                               The chatbot cannot answer anything without one.
+  4. Admin > Plans           — switch the AI chatbot feature on for a plan and
+                               grant it a model. A plan with the feature and no
+                               model shows tenants "no models available".
+  5. Admin > Settings        — currency, timezone, whether sign-ups are open.
+  6. Link Account            — pair a WhatsApp number by scanning a QR code.
+  7. Chatbot                 — knowledge base, model, then switch the bot on.
+
+Also worth knowing:
+  - DNS for the host above must already point at this server, and a Traefik with
+    a 'websecure' entrypoint and a 'letsencrypt' resolver must be running, or
+    HTTPS will not work.
+  - Every secret is in .env (mode 0600) next to docker-compose.yml. Do not rotate
+    APP_SECRET_KEY or BACKEND_API_KEY on a live instance: everything already
+    stored encrypted with them becomes unreadable.
+NEXT

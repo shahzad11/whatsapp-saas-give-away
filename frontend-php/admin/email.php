@@ -64,7 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if ($password !== '' && !cryptoSecretAvailable()) {
         // Refuse rather than store a secret in the clear.
-        $errors['smtp_password'] = 'Cannot encrypt the password: no instance secret is available. Set APP_SECRET_KEY.';
+        $errors['smtp_password'] = cryptoSecretMissingMessage();
     }
 
     if (!$errors) {
@@ -150,7 +150,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <div class="small mt-1"><?= sanitize($testResult['message']) ?></div>
         <?php if ($testResult['ok']): ?>
             <div class="small mt-1 text-muted">
-                If it does not arrive, check the spam folder and the sender domain's SPF record.
+                The server accepted it, which is as far as this test can see — delivery is up to the
+                recipient's provider. If it does not arrive, check the spam folder first. Landing in spam
+                usually means the sending domain has no <strong>SPF record</strong>: a line in the domain's
+                DNS naming the servers allowed to send mail for it. Whoever manages your DNS adds it, and
+                your email provider documents the exact value to use.
             </div>
         <?php endif; ?>
     </div>
@@ -199,6 +203,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <option value="<?= $v ?>" <?= $stored['smtp_encryption'] === $v ? 'selected' : '' ?>><?= $l ?></option>
                         <?php endforeach; ?>
                     </select>
+                    <?php // Two acronyms and two port numbers, with nothing saying which to pick.
+                          // Your provider's own setup page is the authority, so the guidance is
+                          // "use the common one unless told otherwise" rather than a lecture. ?>
+                    <div class="form-text">
+                        Almost always <strong>STARTTLS on port 587</strong>. Use SSL/TLS (465) only if your
+                        provider's instructions say so. Never use None over the public internet — the
+                        password and the message would travel unencrypted.
+                    </div>
                     <?= eErr('smtp_encryption') ?>
                 </div>
 
@@ -206,16 +218,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <label class="form-label">Username</label>
                     <input type="text" name="smtp_username" class="form-control<?= eCls('smtp_username') ?>"
                            value="<?= sanitize($stored['smtp_username']) ?>" autocomplete="off">
-                    <div class="form-text">Leave blank for an unauthenticated relay.</div>
+                    <div class="form-text">
+                        Usually the same as the From address below, or the one your provider gave you.
+                        Leave it blank only if your mail server accepts mail from this machine without a
+                        login (an "unauthenticated relay" — typically a server on your own network).
+                    </div>
                     <?= eErr('smtp_username') ?>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Password</label>
+                    <?php // The placeholder used to claim "stored — leave blank to keep" on a first
+                          // visit with nothing stored, which reads as "a password already exists"
+                          // and invites leaving it blank. It now only says that when it is true. ?>
                     <input type="password" name="smtp_password" class="form-control<?= eCls('smtp_password') ?>"
                            autocomplete="new-password"
-                           placeholder="<?= $hasPassword ? '•••••••• (stored — leave blank to keep)' : '' ?>">
+                           placeholder="<?= $hasPassword ? '•••••••• (stored — leave blank to keep)' : 'Enter your SMTP password' ?>">
                     <div class="form-text">
                         Encrypted at rest. It is never displayed again after saving.
+                        Gmail, Outlook and most providers with two-factor authentication need an
+                        app-specific password here, not your normal account password.
                     </div>
                     <?= eErr('smtp_password') ?>
                 </div>
@@ -274,6 +295,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Plan expiry / renewal reminder
                     <span class="text-muted">— sent from
                     <a href="<?= APP_URL ?>/admin/payments.php">Payments</a></span></li>
+                <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Human handover alerts
+                    <span class="text-muted">— when a tenant asks for one on their Chatbot page.
+                    That field stays disabled for tenants until email works here.</span></li>
             </ul>
         </div>
     </div>

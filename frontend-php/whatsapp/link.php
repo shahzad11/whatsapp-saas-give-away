@@ -5,13 +5,54 @@ requireLogin();
 $userId = (int)$_SESSION['user_id'];
 $error = '';
 $sessionId = '';
+// A re-link reuses an existing session, so the QR panel has to say so — the
+// instructions are the same but the outcome is not: this is repairing an account
+// that already has history, not adding a new one.
+$relinking = false;
 
 $plan = getUserPlan($conn, $userId);
 [$quotaOk, $quotaUsed, $quotaLimit] = checkWaAccountQuota($conn, $userId);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? 'create';
+
     if (!verifyCsrf()) {
         $error = 'Invalid request.';
+    } elseif ($action === 'relink') {
+        // Deliberately not quota-checked: this account is already linked and
+        // already counted. Refusing to repair it because the plan is full would
+        // strand a tenant at their limit with a broken account and no way back.
+        $accountId = (int)($_POST['account_id'] ?? 0);
+        $stmt = $conn->prepare("SELECT session_id, label FROM wa_accounts WHERE id = ? AND user_id = ?");
+        $stmt->bind_param('ii', $accountId, $userId);
+        $stmt->execute();
+        $acc = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$acc) {
+            $error = 'That account could not be found.';
+        } else {
+            $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/relink');
+
+            if ($resp && ($resp['ok'] ?? false)) {
+                $sessionId = $acc['session_id'];
+                $relinking = true;
+
+                $stmt = $conn->prepare("UPDATE wa_accounts SET status = 'qr_required', connected_at = NULL WHERE id = ? AND user_id = ?");
+                $stmt->bind_param('ii', $accountId, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logAudit($conn, 'wa_account.relink', 'wa_account', $acc['session_id']);
+            } elseif ((int)($resp['httpCode'] ?? 0) === 404) {
+                // The backend has no directory for this session — its history is
+                // already gone, so a QR would pair a session with nothing behind
+                // it. Removing and linking again is the honest instruction.
+                $error = 'This account can no longer be repaired. Remove it and link the number again.';
+            } else {
+                $error = waBackendErrorMessage($resp, 'relink');
+            }
+        }
     } elseif (!$quotaOk) {
         // Re-checked here rather than trusting the page render: the form could
         // have been loaded while under quota and submitted after hitting it.
@@ -32,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             logAudit($conn, 'wa_account.link', 'wa_account', $sessionId, ['label' => $label]);
         } else {
-            $error = $resp['error'] ?? 'Failed to create session. Is the backend running?';
+            $error = waBackendErrorMessage($resp, 'create session');
         }
     }
 }
@@ -88,10 +129,16 @@ require_once dirname(__DIR__) . '/includes/header.php';
     <div class="col-lg-6">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Scan QR Code</span>
+                <span><?= $relinking ? 'Re-link — Scan QR Code' : 'Scan QR Code' ?></span>
                 <span class="badge bg-warning text-dark" id="connectionBadge">Waiting...</span>
             </div>
             <div class="card-body">
+                <?php if ($relinking): ?>
+                    <div class="alert alert-info small">
+                        Scan this code with the <strong>same phone number</strong> as before.
+                        Your chats and messages are kept — only the connection is being re-made.
+                    </div>
+                <?php endif; ?>
                 <div class="qr-container" id="qrContainer">
                     <img id="qrImage" src="" alt="QR Code" style="display:none;">
                     <div id="qrStatus" class="qr-status text-muted">

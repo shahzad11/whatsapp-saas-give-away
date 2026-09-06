@@ -135,6 +135,96 @@ function appTimezone(?mysqli $conn = null) {
     return isValidTimezone($tz) ? $tz : appSettingDefaults()['timezone'];
 }
 
+// --- First-run setup checklist ----------------------------------------------
+//
+// A fresh instance needs six things done before anything works, in roughly this
+// order, and none of them was surfaced anywhere: the admin console opened on an
+// all-zero metrics page and the tenant dashboard on "link an account", which is
+// step five. An admin was expected to discover the other five by exploring a
+// sidebar.
+//
+// Each step reports its own completion from the real state rather than from a
+// "wizard finished" flag, so a step that is later undone (SMTP cleared, the only
+// provider disabled) shows as outstanding again. `done` is therefore always
+// truthful, which is why the card can be dismissed without lying: dismissing
+// hides the reminder, it does not mark anything complete.
+//
+// Every query is wrapped: this runs on the first page an admin sees, possibly on
+// a database mid-upgrade, and a missing table must not fatal the overview page.
+function instanceSetupSteps(mysqli $conn) {
+    $count = function ($sql) use ($conn) {
+        try {
+            $row = $conn->query($sql)->fetch_row();
+            return (int)($row[0] ?? 0);
+        } catch (Throwable $e) {
+            error_log('setup checklist query failed: ' . $e->getMessage());
+            return 0;
+        }
+    };
+
+    $providerWithKey = $count(
+        "SELECT COUNT(*) FROM llm_providers WHERE is_enabled = 1 AND api_key_encrypted IS NOT NULL AND api_key_encrypted <> ''"
+    );
+
+    // A plan with the chatbot feature but no granted model is the trap this step
+    // exists to catch, so both halves are required to call it done.
+    $planReady = 0;
+    try {
+        $rows = $conn->query("SELECT id, features FROM plans WHERE is_active = 1")->fetch_all(MYSQLI_ASSOC);
+        foreach ($rows as $p) {
+            if (!planHasFeature($p, 'chatbot')) continue;
+            if (llmPlanModelIds($conn, (int)$p['id'])) { $planReady = 1; break; }
+        }
+    } catch (Throwable $e) {
+        error_log('setup checklist plan check failed: ' . $e->getMessage());
+    }
+
+    return [
+        [
+            'label' => 'Configure outgoing email',
+            'why'   => 'Activation, password reset and reminder emails are silently undeliverable without it.',
+            'url'   => APP_URL . '/admin/email.php',
+            'done'  => smtpConfigured($conn),
+        ],
+        [
+            'label' => 'Add an AI provider key',
+            'why'   => 'The chatbot cannot write a reply without an account at an AI provider.',
+            'url'   => APP_URL . '/admin/llm.php',
+            'done'  => $providerWithKey > 0,
+        ],
+        [
+            'label' => 'Turn the chatbot on for a plan and grant it a model',
+            'why'   => 'A plan with the feature but no granted model shows tenants "no models available".',
+            'url'   => APP_URL . '/admin/plans.php',
+            'done'  => $planReady > 0,
+        ],
+        [
+            'label' => 'Check currency, timezone and sign-up policy',
+            'why'   => 'Prices, every timestamp and whether strangers may register all come from here.',
+            'url'   => APP_URL . '/admin/settings.php',
+            // Saving the page once writes both rows; until then the instance is
+            // running on the built-in defaults, which may be the wrong country.
+            'done'  => overrideSetting($conn, 'currency') !== null && overrideSetting($conn, 'timezone') !== null,
+        ],
+        [
+            'label' => 'Link a WhatsApp account',
+            'why'   => 'Nothing can be sent or received until a phone is paired.',
+            'url'   => APP_URL . '/whatsapp/link.php',
+            'done'  => $count("SELECT COUNT(*) FROM wa_accounts WHERE status = 'connected'") > 0,
+        ],
+        [
+            'label' => 'Set up a chatbot',
+            'why'   => 'Give the bot a knowledge base, pick a model, and switch it on.',
+            'url'   => APP_URL . '/chatbot.php',
+            'done'  => $count("SELECT COUNT(*) FROM chatbot_configs WHERE is_enabled = 1") > 0,
+        ],
+    ];
+}
+
+function instanceSetupDismissed(mysqli $conn) {
+    return (string)appSetting($conn, 'setup_checklist_dismissed', '') === '1';
+}
+
 // --- Per-tenant settings ----------------------------------------------------
 // Moved here from settings.php so profile.php can reach them too. Two pages
 // defining their own copies would drift.

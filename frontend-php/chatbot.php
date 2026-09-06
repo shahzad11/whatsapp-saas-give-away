@@ -21,6 +21,12 @@ $audioAvailable = planHasFeature($plan, 'voice_transcription')
 $config = chatbotConfig($conn, $userId);
 $availableModels = llmModelsForPlan($conn, (int)$plan['id']);
 
+// Handover email is delivered by the instance's SMTP, which only an admin can
+// configure. Read before the POST handler because the handler needs it too: the
+// field is disabled when mail cannot be sent, and a disabled field submits
+// nothing, which chatbotSaveConfig() would store as NULL.
+$smtpReady = smtpConfigured($conn);
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     if (!verifyCsrf()) {
         flash('error', 'Invalid request.');
@@ -87,6 +93,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     if (!$audioAvailable) {
         $input['transcribe_audio'] = 0;
     }
+    // The handover email field is disabled while the instance cannot send mail,
+    // and a disabled field submits nothing — which every absent field in
+    // chatbotSaveConfig() writes as NULL. Carrying the stored value forward keeps
+    // an address the tenant entered while mail was working from being erased by a
+    // save they made for an unrelated reason.
+    if (!$smtpReady) {
+        $input['handoff_notify_email'] = $config['handoff_notify_email'];
+    }
     // Same treatment for the two new levers: a crafted POST cannot switch on a
     // capability the plan withholds. Silently dropped rather than rejected, so a
     // tenant saving the rest of the form is not blocked by a field they cannot
@@ -100,9 +114,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
 
     // Turning the bot on without something to answer with would produce a
     // silent bot and a confused tenant.
+    //
+    // The message distinguishes the two causes, because they need different
+    // people: "you have not picked one" is the tenant's job and the Model tab is
+    // where they do it, while "there are none to pick" is the administrator's.
+    // One message for both sent tenants looking for a control that was not there.
     $usingByo = $canByo && !empty($input['byo_provider_code']);
     if (!empty($input['is_enabled']) && $chosen === null && !$usingByo) {
-        flash('error', 'Choose a model before switching the chatbot on.');
+        if (!$availableModels) {
+            flash('error', isAdmin()
+                ? 'No AI models are assigned to your plan yet. Set one up under Admin → AI / LLM, then come back.'
+                : 'Your administrator has not set up any AI models yet, so the chatbot cannot be switched on. Please contact them.');
+        } else {
+            flash('error', 'Go to the Model tab and choose an AI model first — the bot needs one to write replies.');
+        }
+        redirect(APP_URL . '/chatbot.php');
+    }
+
+    // Appointments with nothing bookable is the same class of mistake: the toggle
+    // saves, the tenant believes booking is live, and the bot can never take one
+    // because there is no service to book. Refused rather than warned — the note
+    // under the services list was already there and was missed.
+    //
+    // Only the off→on transition is refused. A tenant whose services were all
+    // deactivated *after* enabling booking would otherwise be unable to save this
+    // form at all, including the change that fixes it. That state gets a warning
+    // next to the toggle instead.
+    if (!empty($input['appointments_enabled']) && empty($config['appointments_enabled'])
+        && !apptServices($conn, $userId, true)) {
+        flash('error', 'Add at least one active service before switching appointment booking on — the bot has nothing to book without one.');
         redirect(APP_URL . '/chatbot.php');
     }
 
@@ -144,6 +184,19 @@ $replyQuotaExhausted = !$replyQuotaOk;
 $usingOwnKey = !empty($config['byo_provider_code']) && !empty($config['byo_api_key_encrypted']) && $canByo;
 $tz = getUserTimezone($conn, $userId);
 
+// The prerequisites this page used to be silent about. A tenant could configure
+// every tab, switch the bot on, and get nothing — because there was no WhatsApp
+// account for it to listen to, or none of them was connected. The page has to
+// say so where the work happens, not leave it to be discovered.
+$accountsLinked = countWaAccounts($conn, $userId);
+$stmt = $conn->prepare("SELECT COUNT(*) AS c FROM wa_accounts WHERE user_id = ? AND status = 'connected'");
+$stmt->bind_param('i', $userId);
+$stmt->execute();
+$accountsConnected = (int)($stmt->get_result()->fetch_assoc()['c'] ?? 0);
+$stmt->close();
+
+$activeServiceCount = count(array_filter($services, fn($s) => (int)$s['is_active'] === 1));
+
 $pageTitle = 'Chatbot';
 require_once __DIR__ . '/includes/header.php';
 ?>
@@ -167,6 +220,28 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 <?php else: ?>
+
+<?php // Stated once, at the top, before any of the settings below matter. ?>
+<?php if ($accountsLinked === 0): ?>
+    <div class="alert alert-warning d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            <strong>No WhatsApp account is linked.</strong>
+            The chatbot answers messages that arrive on a linked account — until you link one,
+            nothing here has any effect.
+        </div>
+        <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-sm btn-warning">Link an account</a>
+    </div>
+<?php elseif ($accountsConnected === 0): ?>
+    <div class="alert alert-warning d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            <strong>None of your WhatsApp accounts is connected.</strong>
+            The bot can only reply while an account is connected. Check its status and re-link it if needed.
+        </div>
+        <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="btn btn-sm btn-warning">Check accounts</a>
+    </div>
+<?php endif; ?>
 
 <div class="row g-3">
     <div class="col-lg-8">
@@ -338,16 +413,38 @@ require_once __DIR__ . '/includes/header.php';
                                    placeholder="Leave blank to stay silent outside hours">
                         </div>
 
-                        <?php if ($audioAvailable): ?>
+                        <?php // Shown even when unavailable, greyed out with the reason. Hiding
+                              // it entirely meant a tenant could not tell the feature existed,
+                              // let alone that someone else controls it — and the control
+                              // appearing and disappearing between visits looked like a bug.
+                              // The two reasons need different people, so they are named. ?>
                         <div class="col-12">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" name="transcribe_audio" value="1"
-                                       id="transcribe" <?= $config['transcribe_audio'] ? 'checked' : '' ?>>
-                                <label class="form-check-label" for="transcribe">Understand voice notes</label>
+                                       id="transcribe" <?= $config['transcribe_audio'] ? 'checked' : '' ?>
+                                       <?= $audioAvailable ? '' : 'disabled' ?>>
+                                <label class="form-check-label <?= $audioAvailable ? '' : 'text-muted' ?>" for="transcribe">
+                                    Understand voice notes
+                                </label>
                             </div>
-                            <div class="form-text">Incoming voice notes are transcribed, then answered as text.</div>
+                            <?php if ($audioAvailable): ?>
+                                <div class="form-text">Incoming voice notes are transcribed, then answered as text.</div>
+                            <?php elseif (!planHasFeature($plan, 'voice_transcription')): ?>
+                                <div class="form-text">
+                                    <i class="bi bi-lock me-1"></i>Not part of your plan.
+                                    <a href="<?= APP_URL ?>/billing.php">See plans</a>.
+                                </div>
+                            <?php else: ?>
+                                <div class="form-text">
+                                    <i class="bi bi-lock me-1"></i>Voice note transcription is not switched on for this instance.
+                                    <?php if (isAdmin()): ?>
+                                        <a href="<?= APP_URL ?>/admin/llm.php">Enable it and pick a transcription model</a>.
+                                    <?php else: ?>
+                                        Contact the administrator.
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
                         </div>
-                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -358,6 +455,22 @@ require_once __DIR__ . '/includes/header.php';
                             Appointment booking is not part of your plan. The settings below are
                             disabled, and the bot will not offer to book anything.
                             <a href="<?= APP_URL ?>/billing.php">See plans</a>.
+                        </div>
+                    <?php endif; ?>
+                    <?php // Next to the toggle, not only under the services table at the
+                          // bottom of the page: that note existed and was still missed,
+                          // because by then the switch had already been flipped. Saving is
+                          // refused in the handler above — this says so before they try. ?>
+                    <?php if ($canAppointments && $activeServiceCount === 0): ?>
+                        <div class="alert alert-warning small">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <?php if (!empty($config['appointments_enabled'])): ?>
+                                Booking is on, but you have <strong>no active services</strong> — so the bot
+                                cannot actually book anything.
+                            <?php else: ?>
+                                You have no active services yet, so booking cannot be switched on.
+                            <?php endif; ?>
+                            Add one under <strong>Services</strong> further down this page.
                         </div>
                     <?php endif; ?>
                     <div class="form-check form-switch mb-3">
@@ -465,10 +578,28 @@ require_once __DIR__ . '/includes/header.php';
                             <div class="form-text">Counts as a message.</div>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Notify this email</label>
+                            <label class="form-label small <?= $smtpReady ? '' : 'text-muted' ?>">Notify this email</label>
+                            <?php // Disabled, not merely footnoted, when the instance cannot send
+                                  // mail. A tenant who types an address into a live-looking field
+                                  // reasonably believes they will be emailed; the eight-word note
+                                  // that used to sit under it did not stop that. ?>
                             <input type="email" name="handoff_notify_email" class="form-control form-control-sm"
-                                   value="<?= sanitize($config['handoff_notify_email'] ?? '') ?>">
-                            <div class="form-text">Needs SMTP configured by the administrator.</div>
+                                   value="<?= sanitize($config['handoff_notify_email'] ?? '') ?>"
+                                   <?= $smtpReady ? '' : 'disabled' ?>>
+                            <?php if ($smtpReady): ?>
+                                <div class="form-text">Emailed as soon as someone asks for a person.</div>
+                            <?php else: ?>
+                                <div class="form-text text-warning">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>
+                                    This instance cannot send email yet, so no notification would arrive.
+                                    <?php if (isAdmin()): ?>
+                                        <a href="<?= APP_URL ?>/admin/email.php">Configure outgoing email</a>.
+                                    <?php else: ?>
+                                        Ask your administrator to configure outgoing email.
+                                    <?php endif; ?>
+                                    Use the WhatsApp number above in the meantime.
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -639,14 +770,18 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="p-3 text-muted small">Nothing yet.</div>
                 <?php else: ?>
                     <ul class="list-group list-group-flush">
-                        <?php foreach ($events as $e): ?>
-                            <li class="list-group-item py-2">
+                        <?php // The raw `detail` is internal text, so it moves to the row's
+                              // tooltip and the hint takes its place — same information density,
+                              // but the visible line now says what to do about it. ?>
+                        <?php foreach ($events as $e):
+                            $hint = chatbotOutcomeHint($e['outcome']); ?>
+                            <li class="list-group-item py-2" <?= !empty($e['detail']) ? 'title="' . sanitize($e['detail']) . '"' : '' ?>>
                                 <div class="d-flex justify-content-between align-items-start">
                                     <span class="small"><?= sanitize(chatbotOutcomeLabel($e['outcome'])) ?></span>
                                     <span class="x-small text-muted"><?= sanitize(convertToUserTz($e['created_at'], $tz)) ?></span>
                                 </div>
-                                <?php if (!empty($e['detail'])): ?>
-                                    <div class="x-small text-muted"><?= sanitize($e['detail']) ?></div>
+                                <?php if ($hint !== ''): ?>
+                                    <div class="x-small text-muted"><?= sanitize($hint) ?></div>
                                 <?php endif; ?>
                             </li>
                         <?php endforeach; ?>
@@ -677,12 +812,21 @@ require_once __DIR__ . '/includes/header.php';
                     out.innerHTML = '<div class="alert alert-danger py-2 small mb-0">' + escapeHtml(data.error || 'Test failed') + '</div>';
                     return;
                 }
+                // "1,300 tokens" means nothing to a business owner testing their
+                // own bot, and it was the most prominent thing under the reply.
+                // The plain reading — how long it took — is shown; the numbers a
+                // developer or support needs are one click away, not gone.
+                const ms = Number(data.latency_ms || 0);
+                const speed = ms < 2000 ? 'quick' : (ms < 6000 ? 'normal' : 'slow');
                 out.innerHTML =
                     '<div class="chat-bubble incoming d-inline-block p-2 mb-2"><div class="bubble-content">'
                     + formatMessageText(data.reply) + '</div></div>'
-                    + '<div class="x-small text-muted">' + escapeHtml(data.model || '') + ' · '
-                    + escapeHtml(String(data.latency_ms || 0)) + ' ms · '
-                    + escapeHtml(String(data.tokens || 0)) + ' tokens</div>';
+                    + '<div class="x-small text-muted">Answered in ' + (ms / 1000).toFixed(1)
+                    + 's (' + speed + ').</div>'
+                    + '<details class="x-small text-muted mt-1"><summary>Technical details</summary>'
+                    + escapeHtml(data.model || '') + ' · '
+                    + escapeHtml(String(ms)) + ' ms · '
+                    + escapeHtml(String(data.tokens || 0)) + ' tokens</details>';
             })
             .catch(() => {
                 out.innerHTML = '<div class="alert alert-danger py-2 small mb-0">Test failed</div>';

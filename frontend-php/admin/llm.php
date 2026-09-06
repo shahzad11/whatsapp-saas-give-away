@@ -27,7 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $key = (string)($_POST['api_key'] ?? '');
         if ($key !== '' && !cryptoSecretAvailable()) {
-            flash('error', 'Cannot encrypt the API key: no instance secret is available. Set APP_SECRET_KEY.');
+            flash('error', cryptoSecretMissingMessage());
             redirect(APP_URL . '/admin/llm.php');
         }
 
@@ -142,8 +142,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_toggles') {
+        // Voice-note transcription with no transcription model selected is a
+        // switch that does nothing: every voice note silently goes unanswered,
+        // and both the admin and the tenant see a feature that is "on". Refused,
+        // not warned — there is exactly one field to fill in and it is right
+        // under the toggle.
+        $wantAudio = !empty($_POST['llm_enable_audio']);
+        $transcribeId = (int)($_POST['llm_transcribe_model_id'] ?? 0);
+        if ($wantAudio) {
+            $valid = in_array($transcribeId, array_map('intval', array_column(llmModels($conn, 'transcribe', true), 'id')), true);
+            if (!$valid) {
+                flash('error', $transcribeId > 0
+                    ? 'That transcription model is not available — pick an enabled one, or add a transcription model first.'
+                    : 'Choose a transcription model before switching voice notes on — without one, voice notes are silently ignored.');
+                redirect(APP_URL . '/admin/llm.php');
+            }
+        }
+
         setAppSetting($conn, 'llm_allow_byo_keys', !empty($_POST['llm_allow_byo_keys']) ? '1' : '0');
-        setAppSetting($conn, 'llm_enable_audio', !empty($_POST['llm_enable_audio']) ? '1' : '0');
+        setAppSetting($conn, 'llm_enable_audio', $wantAudio ? '1' : '0');
         setAppSetting($conn, 'llm_transcribe_model_id', (string)(int)($_POST['llm_transcribe_model_id'] ?? 0) ?: '');
         logAudit($conn, 'llm.toggles_saved', 'app_settings', null, [
             'byo' => !empty($_POST['llm_allow_byo_keys']),
@@ -186,10 +203,21 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <?php if (!cryptoSecretAvailable()): ?>
     <div class="alert alert-warning">
         <i class="bi bi-exclamation-triangle me-1"></i>
-        No instance secret is available, so API keys cannot be encrypted and therefore cannot be
-        saved. Set <code>APP_SECRET_KEY</code> in the environment first.
+        <?= sanitize(cryptoSecretMissingMessage()) ?>
     </div>
 <?php endif; ?>
+
+<?php // What this page is for, in one paragraph, before any of the jargon below.
+      // An admin arriving here for the first time was expected to already know
+      // what a provider, a model id and a base URL are. ?>
+<div class="alert alert-light border small">
+    <strong>What this page does.</strong>
+    The chatbot cannot write a reply on its own — it asks an AI company (a <em>provider</em>) to do it,
+    over the internet, using an account you hold with them. So there are three steps:
+    add a provider's <em>API key</em> below, decide which <em>models</em> may be used, and choose which
+    <a href="<?= APP_URL ?>/admin/plans.php">plans</a> may use which model. Tenants then pick from what
+    their plan allows, on their own Chatbot page. You pay the provider directly for what is used.
+</div>
 
 <div class="row g-3">
     <div class="col-lg-7">
@@ -197,8 +225,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="card-header"><i class="bi bi-plug me-2"></i>Providers</div>
             <div class="card-body">
                 <p class="text-muted small">
-                    Keys are encrypted at rest and never displayed again. Leave the key field blank to
-                    keep the stored one. A provider with no key cannot be selected by any tenant.
+                    An <strong>API key</strong> is the password for your account with that company —
+                    it is how they know the usage is yours to pay for. Keys are encrypted at rest and never
+                    displayed again. Leave the key field blank to keep the stored one. A provider with no
+                    key cannot be selected by any tenant. You only need one provider for the chatbot to work.
                 </p>
 
                 <?php foreach ($providers as $code => $p): ?>
@@ -230,12 +260,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <input type="password" name="api_key" class="form-control form-control-sm"
                                    autocomplete="new-password"
                                    placeholder="<?= $p['has_key'] ? 'Stored — leave blank to keep' : sanitize($p['meta']['key_hint']) ?>">
+                            <?php if (!empty($p['meta']['console_url'])): ?>
+                                <div class="form-text">
+                                    Don't have one? Create a key at
+                                    <a href="<?= sanitize($p['meta']['console_url']) ?>" target="_blank" rel="noopener noreferrer">
+                                        <?= sanitize(parse_url($p['meta']['console_url'], PHP_URL_HOST)) ?>
+                                    </a>
+                                    (you will need billing set up with them).
+                                </div>
+                            <?php endif; ?>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small">Base URL <span class="text-muted">(optional)</span></label>
                             <input type="text" name="base_url" class="form-control form-control-sm"
                                    value="<?= sanitize($p['row']['base_url'] ?? '') ?>"
                                    placeholder="<?= sanitize($p['meta']['base_url']) ?>">
+                            <div class="form-text">
+                                Leave blank. Only change this if you route through a proxy or a
+                                compatible service instead of the vendor itself.
+                            </div>
                         </div>
                     </div>
 
@@ -243,11 +286,23 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="small text-danger mt-2"><?= sanitize($p['row']['last_test_error']) ?></div>
                     <?php endif; ?>
 
-                    <div class="d-flex gap-2 mt-3">
+                    <div class="d-flex gap-2 mt-3 align-items-center flex-wrap">
                         <button class="btn btn-primary btn-sm" type="submit">Save</button>
-                        <?php if ($p['has_key']): ?>
+                        <?php // Shown whenever the provider row exists, not only when a key is
+                              // already stored: an admin pasting a first key needs to be able to
+                              // check it before committing to it. A test needs a model to call,
+                              // and models are seeded when the provider is first saved, which is
+                              // why a never-saved provider still has no Test button. ?>
+                        <?php if ($p['row']): ?>
                             <button class="btn btn-outline-secondary btn-sm" type="submit"
                                     name="action" value="test_provider">Test connection</button>
+                            <?php // Test sends whatever is typed above, falling back to the stored
+                                  // key when the field is blank. Saying so removes the doubt about
+                                  // whether a pasted key has to be saved before it can be tested. ?>
+                            <span class="form-text mb-0">
+                                Tests the key typed above, or the stored one if you leave it blank.
+                                Testing does not save.
+                            </span>
                         <?php endif; ?>
                     </div>
                 </form>
@@ -259,8 +314,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="card-header"><i class="bi bi-cpu me-2"></i>Models</div>
             <div class="card-body">
                 <p class="text-muted small">
-                    Models are listed explicitly, never fetched from the vendor: a new and expensive
-                    model must never become selectable on its own.
+                    A <strong>model</strong> is the particular AI a provider offers — they differ in
+                    quality and in price per message. A <strong>model id</strong> is the exact name the
+                    vendor uses for one, like <code>gpt-4o-mini</code>. Saving a provider above adds its
+                    well-known models here automatically; you only need this form for a model
+                    the vendor released later. Models are listed explicitly, never fetched from the vendor:
+                    a new and expensive model must never become selectable on its own.
                 </p>
 
                 <table class="table table-sm align-middle">
@@ -295,7 +354,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$chatModels && !$transcribeModels): ?>
-                        <tr><td colspan="4" class="text-muted small">Save a provider above to seed its known models.</td></tr>
+                        <tr><td colspan="4" class="text-muted small">
+                            No models yet. Add a provider above and press Save — its known models appear here.
+                        </td></tr>
                     <?php endif; ?>
                     </tbody>
                 </table>
@@ -348,7 +409,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                id="byo" <?= llmAllowByoKeys($conn) ? 'checked' : '' ?>>
                         <label class="form-check-label" for="byo">Allow tenants to use their own API key</label>
                         <div class="form-text">
-                            A tenant still needs the <strong>Bring your own LLM key</strong> plan feature.
+                            Also called "BYO keys": the tenant pays the AI provider directly instead of you.
+                            A tenant still needs the <strong>Bring your own LLM key</strong> feature switched on
+                            for their plan, over on <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
                             Their key is encrypted and never shown back to them either.
                         </div>
                     </div>
@@ -359,7 +422,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <label class="form-check-label" for="audio">Transcribe incoming voice notes</label>
                         <div class="form-text">
                             Off by default: every voice note becomes a paid transcription request.
-                            Tenants must also switch it on for their own bot.
+                            Needs a transcription model below — saving without one is refused, because
+                            the switch would otherwise be on while voice notes were silently ignored.
+                            Tenants must also switch it on for their own bot, and their plan needs the
+                            <strong>Voice note understanding</strong> feature on
+                            <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
                         </div>
                     </div>
 
@@ -368,13 +435,22 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <select name="llm_transcribe_model_id" class="form-select form-select-sm">
                             <option value="">— none —</option>
                             <?php foreach ($transcribeModels as $m): ?>
+                                <?php // A disabled model cannot be used, and picking one here used to
+                                      // look identical to picking a working one. ?>
                                 <option value="<?= (int)$m['id'] ?>"
                                     <?= llmTranscribeModelId($conn) === (int)$m['id'] ? 'selected' : '' ?>>
-                                    <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?>
+                                    <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?><?= $m['is_enabled'] && $m['provider_enabled'] ? '' : ' (disabled)' ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
-                        <div class="form-text">Paid for by the platform, so it is one instance-wide choice.</div>
+                        <div class="form-text">
+                            Paid for by the platform, so it is one instance-wide choice.
+                            <?php if (!$transcribeModels): ?>
+                                <span class="text-warning">No transcription model exists yet — add one with kind
+                                <code>transcribe</code> under Models (OpenAI's <code>whisper-1</code> is seeded
+                                automatically when you save OpenAI).</span>
+                            <?php endif; ?>
+                        </div>
                     </div>
 
                     <button class="btn btn-primary btn-sm" type="submit">Save toggles</button>
@@ -396,8 +472,13 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="mb-3">
                             <div class="fw-500 small mb-1">
                                 <?= sanitize($plan['name']) ?>
+                                <?php // The badge stated a fact and left the admin to find where it
+                                      // is changed. It is changed on the Plans page, so it links there. ?>
                                 <?php if (!planHasFeature($plan, 'chatbot')): ?>
-                                    <span class="badge bg-warning text-dark ms-1">chatbot feature off</span>
+                                    <a href="<?= APP_URL ?>/admin/plans.php" class="badge bg-warning text-dark ms-1 text-decoration-none"
+                                       title="Granting models here has no effect until the AI chatbot feature is on for this plan. Click to change it.">
+                                        AI chatbot off for this plan — fix on Plans
+                                    </a>
                                 <?php endif; ?>
                             </div>
                             <?php foreach ($chatModels as $m): ?>

@@ -111,6 +111,16 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php endif; ?>
                     </div>
                     <div class="x-small text-muted"><?= sanitize(BACKEND_URL) ?>/health</div>
+                    <?php // A red cross and a curl error is a diagnosis with no prescription. The
+                          // backend is a container in this stack, so the next step is always the
+                          // same two commands, and no tenant WhatsApp session works until it runs. ?>
+                    <?php if (!$health['ok']): ?>
+                        <div class="x-small text-danger mt-1">
+                            <strong>What to do:</strong> no WhatsApp account can send or receive while this is down.
+                            On the server, run <code>docker compose ps</code> and <code>docker compose logs backend --since 10m</code>
+                            in the deployment directory; <code>docker compose up -d backend</code> restarts it.
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -122,6 +132,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <div>
                     <div class="fw-600">MySQL</div>
                     <div class="small text-muted"><?= $dbOk ? 'Connected — ' . sanitize($dbVersion) : 'Unavailable' ?></div>
+                    <?php if (!$dbOk): ?>
+                        <div class="x-small text-danger mt-1">
+                            <strong>What to do:</strong> check <code>docker compose logs mysql --since 10m</code> on the server.
+                            You are seeing this page at all, so the connection failed after login.
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -134,10 +150,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="card-header">Accounts Needing Attention</div>
             <div class="table-responsive">
                 <table class="table align-middle mb-0">
-                    <thead><tr><th>Tenant</th><th>Account</th><th>Status</th><th>Since</th></tr></thead>
+                    <thead><tr><th>Tenant</th><th>Account</th><th>Status</th><th>Since</th><th></th></tr></thead>
                     <tbody>
                     <?php if (!$needsAttention): ?>
-                        <tr><td colspan="4" class="text-muted small">Every linked account is connected.</td></tr>
+                        <tr><td colspan="5" class="text-muted small">Every linked account is connected.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($needsAttention as $a): ?>
                         <tr>
@@ -153,11 +169,33 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <span class="badge bg-<?= $a['status'] === 'logged_out' || $a['status'] === 'failed' ? 'danger' : 'warning' ?>">
-                                    <?= sanitize($a['status']) ?>
+                                <span class="badge-status <?= waStatusClass($a['status']) ?>" title="<?= sanitize($a['status']) ?>">
+                                    <?= sanitize(waStatusLabel($a['status'])) ?>
                                 </span>
+                                <?php if ($hint = waStatusHint($a['status'])): ?>
+                                    <div class="x-small text-muted"><?= sanitize($hint) ?></div>
+                                <?php endif; ?>
                             </td>
                             <td class="small text-muted"><?= sanitize(timeAgo($a['updated_at'])) ?></td>
+                            <td class="text-end">
+                                <?php // Re-linking means scanning a QR code with the phone that owns
+                                      // the number, so an admin genuinely cannot do it for someone
+                                      // else — offering them a button would be a lie. The action is
+                                      // offered only for the admin's own accounts (on a fresh
+                                      // instance the admin usually *is* the first tenant), and the
+                                      // rest get the tenant page, which is where you contact them. ?>
+                                <?php if ((int)$a['user_id'] === (int)($_SESSION['user_id'] ?? 0) && waStatusNeedsRelink($a['status'])): ?>
+                                    <form method="POST" action="<?= APP_URL ?>/whatsapp/link.php" class="d-inline">
+                                        <?= csrfField() ?>
+                                        <input type="hidden" name="action" value="relink">
+                                        <input type="hidden" name="account_id" value="<?= (int)$a['id'] ?>">
+                                        <button class="btn btn-sm btn-outline-warning" type="submit">Re-link</button>
+                                    </form>
+                                <?php else: ?>
+                                    <a class="btn btn-sm btn-outline-secondary"
+                                       href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$a['user_id'] ?>">Tenant</a>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -165,8 +203,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="card-body border-top">
                 <p class="text-muted x-small mb-0">
-                    <code>logged_out</code> and <code>failed</code> cannot recover on their own —
-                    they need the tenant to rescan a QR code.
+                    <strong>What to do:</strong> "Logged out" and "Connection failed" cannot recover on their
+                    own. The tenant has to open <em>WhatsApp accounts</em> and press <strong>Re-link</strong>,
+                    then scan the QR code with that phone — their chats and messages are kept.
+                    "Disconnected" is retried automatically and usually needs nothing.
                 </p>
             </div>
         </div>
@@ -200,11 +240,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span>Audit Log</span>
         <form method="GET" class="d-flex gap-2 flex-wrap">
-            <select name="action" class="form-select form-select-sm" style="width:190px">
+            <select name="action" class="form-select form-select-sm" style="width:240px">
                 <option value="">All actions</option>
                 <?php foreach ($actions as $a): ?>
-                    <option value="<?= sanitize($a['action']) ?>" <?= $fAction === $a['action'] ? 'selected' : '' ?>>
-                        <?= sanitize($a['action']) ?> (<?= (int)$a['c'] ?>)
+                    <option value="<?= sanitize($a['action']) ?>" <?= $fAction === $a['action'] ? 'selected' : '' ?>
+                            title="<?= sanitize($a['action']) ?>">
+                        <?= sanitize(auditActionLabel($a['action'])) ?> (<?= (int)$a['c'] ?>)
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -233,7 +274,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <tr>
                     <td class="small text-muted" title="<?= sanitize($row['created_at']) ?>"><?= sanitize(timeAgo($row['created_at'])) ?></td>
                     <td class="small"><?= sanitize($row['actor_name'] ?? 'system') ?></td>
-                    <td class="small"><code><?= sanitize($row['action']) ?></code></td>
+                    <?php // The identifier is what you filter and grep by, so it stays — as the
+                          // tooltip. The column itself now reads as a sentence. ?>
+                    <td class="small" title="<?= sanitize($row['action']) ?>"><?= sanitize(auditActionLabel($row['action'])) ?></td>
                     <td class="small text-muted"><?= sanitize(trim(($row['entity'] ?? '') . ' ' . ($row['entity_id'] ?? ''))) ?: '—' ?></td>
                     <td class="small text-muted"><?= sanitize($row['ip_address'] ?? '—') ?></td>
                     <td class="x-small text-muted" style="max-width:280px">

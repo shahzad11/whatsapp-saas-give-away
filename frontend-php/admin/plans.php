@@ -443,6 +443,19 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </div>
                 <?php endforeach; ?>
             </div>
+            <?php else: ?>
+            <?php // The section is hidden when there is nothing to grant, which left the
+                  // AI chatbot toggle above looking complete on its own. It is not: a plan
+                  // with the feature on and no model gives every tenant on it "no models
+                  // available on your plan". Say so, and link to where models come from. ?>
+            <hr class="my-4">
+            <h6 class="fw-600 mb-1">AI models</h6>
+            <p class="text-muted small mb-0">
+                No AI models exist on this instance yet, so switching <strong>AI chatbot</strong> on above
+                will not give tenants a working bot — they will see "no models available on your plan".
+                Add a provider on <a href="<?= APP_URL ?>/admin/llm.php">AI / LLM</a> first; its models then
+                appear here to grant.
+            </p>
             <?php endif; ?>
 
             <hr class="my-4">

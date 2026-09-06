@@ -51,10 +51,21 @@
                 <i class="bi bi-gear"></i><span>Settings</span>
             </a>
         </div>
-        <?php // No Administration section here by design. Platform management is
-              // its own console under /admin/* with its own layout and nav, not a
-              // tab in the tenant menu. Admins reach it from the user dropdown in
-              // includes/header.php. ?>
+        <?php // Still no Administration *section* here: platform management is its
+              // own console under /admin/* with its own layout and nav, not a set of
+              // tabs in the tenant menu. But the single door into it was hidden in
+              // the top-right user dropdown, which a first-time admin has no reason
+              // to open — so this is one link out, mirroring the console's own
+              // "Exit to app", and it is only rendered for admins. Visibility is
+              // never the control: requireAdmin() runs on every /admin/ request. ?>
+        <?php if (isAdmin()): ?>
+        <div class="nav-section">
+            <span class="nav-section-title">Platform</span>
+            <a href="<?= APP_URL ?>/admin/index.php" class="nav-link-item">
+                <i class="bi bi-shield-lock"></i><span>Admin console</span>
+            </a>
+        </div>
+        <?php endif; ?>
     </nav>
     <div class="sidebar-footer">
         <div class="d-flex align-items-center gap-2">

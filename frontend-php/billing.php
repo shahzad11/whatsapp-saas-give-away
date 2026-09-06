@@ -148,9 +148,17 @@ require_once __DIR__ . '/includes/header.php';
                         <span class="fw-500"><?= sanitize($label) ?></span>
                         <span class="text-muted"><?= number_format($used) ?> / <?= sanitize(formatLimit($limit)) ?></span>
                     </div>
-                    <div class="progress" style="height:8px;">
-                        <div class="progress-bar <?= usageBarClass($pct) ?>" style="width: <?= $limit === null ? 4 : $pct ?>%"></div>
-                    </div>
+                    <?php // An unlimited allowance has no denominator, so it gets no bar.
+                          // The old code drew one at a hard-coded 4% width, which reads as
+                          // "almost nothing used out of something" — the opposite of what
+                          // unlimited means, and it moved for no reason anyone could act on. ?>
+                    <?php if ($limit === null): ?>
+                        <div class="x-small text-muted">No limit on your plan.</div>
+                    <?php else: ?>
+                        <div class="progress" style="height:8px;">
+                            <div class="progress-bar <?= usageBarClass($pct) ?>" style="width: <?= $pct ?>%"></div>
+                        </div>
+                    <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
             </div>

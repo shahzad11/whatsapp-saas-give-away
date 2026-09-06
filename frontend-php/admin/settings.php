@@ -111,6 +111,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', 'Settings saved.');
         }
 
+        // An inactive plan as the signup default is accepted — a deliberately
+        // hidden "internal" plan is a legitimate use — but it is never silent.
+        // Every new tenant would land on a plan that is not offered anywhere and
+        // may have no features, and nothing else on the instance would say why.
+        foreach ($plans as $p) {
+            if ($p['code'] === $planCode && !$p['is_active']) {
+                flash('error', 'Careful: "' . $p['name'] . '" is an inactive plan. New sign-ups will be put on it, '
+                    . 'and it is not shown to tenants as an option. Activate it on Plans if that is not intended.');
+                break;
+            }
+        }
+
         redirect(APP_URL . '/admin/settings.php');
     }
 
@@ -231,6 +243,27 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php endforeach; ?>
                 </select>
                 <?= sErr('default_plan_code') ?>
+                <?php
+                // Named here rather than only on save: an instance can already be
+                // in this state from an earlier save or from DEFAULT_PLAN_CODE in
+                // the env pointing at a plan since deactivated.
+                $defaultPlanRow = null;
+                foreach ($plans as $p) {
+                    if ($p['code'] === $current['default_plan_code']) { $defaultPlanRow = $p; break; }
+                }
+                ?>
+                <div class="form-text">
+                    <?php if ($defaultPlanRow && !$defaultPlanRow['is_active']): ?>
+                        <span class="text-danger">
+                            This plan is <strong>inactive</strong>, so new sign-ups get a plan tenants are never
+                            offered — and possibly one with no features.
+                            <a href="<?= APP_URL ?>/admin/plans.php">Review plans</a>.
+                        </span>
+                    <?php else: ?>
+                        Applied to every new sign-up. Manage what each plan includes on
+                        <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>

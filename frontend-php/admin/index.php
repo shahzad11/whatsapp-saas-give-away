@@ -5,6 +5,24 @@
 // and that boundary must survive every future addition to this page.
 require_once dirname(__DIR__) . '/includes/admin-init.php';
 
+// Dismissing the getting-started card. Stored instance-wide rather than per
+// admin: the checklist describes the instance, not a person, and a second admin
+// does not need to dismiss it again.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'dismiss_setup') {
+    if (!verifyCsrf()) {
+        redirect(APP_URL . '/admin/index.php');
+    }
+    setAppSetting($conn, 'setup_checklist_dismissed', '1');
+    logAudit($conn, 'admin.setup.dismissed', 'app_settings', null);
+    redirect(APP_URL . '/admin/index.php');
+}
+
+$setupSteps = instanceSetupSteps($conn);
+$setupOutstanding = count(array_filter($setupSteps, fn($s) => !$s['done']));
+// Hidden once everything is done, whether or not it was ever dismissed — a
+// checklist with nothing left on it is clutter.
+$showSetup = $setupOutstanding > 0 && !instanceSetupDismissed($conn);
+
 // One round trip for the counters. These are all indexed lookups or small
 // aggregates; the tenant table is the only one that grows with signups.
 $stats = $conn->query(
@@ -53,6 +71,42 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     <?php endif; ?>
 <?php endforeach; ?>
+
+<?php if ($showSetup): ?>
+<div class="card mb-4 border-primary">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-rocket-takeoff me-2"></i>Getting started —
+            <?= (int)$setupOutstanding ?> of <?= count($setupSteps) ?> steps left</span>
+        <form method="POST" class="d-inline">
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="dismiss_setup">
+            <button class="btn btn-sm btn-link text-muted text-decoration-none" type="submit"
+                    title="Hides this card. Nothing is marked as done.">Hide this</button>
+        </form>
+    </div>
+    <div class="card-body">
+        <p class="text-muted small">
+            A new instance needs these before tenants can use it. Each one ticks itself off once it is
+            genuinely done — this is read from the live configuration, not from a wizard you clicked through.
+        </p>
+        <ol class="list-unstyled mb-0">
+            <?php foreach ($setupSteps as $step): ?>
+            <li class="d-flex align-items-start gap-2 mb-2">
+                <i class="bi <?= $step['done'] ? 'bi-check-circle-fill text-success' : 'bi-circle text-muted' ?> mt-1"></i>
+                <div>
+                    <?php if ($step['done']): ?>
+                        <span class="text-muted"><s><?= sanitize($step['label']) ?></s></span>
+                    <?php else: ?>
+                        <a href="<?= sanitize($step['url']) ?>" class="fw-500"><?= sanitize($step['label']) ?></a>
+                        <div class="x-small text-muted"><?= sanitize($step['why']) ?></div>
+                    <?php endif; ?>
+                </div>
+            </li>
+            <?php endforeach; ?>
+        </ol>
+    </div>
+</div>
+<?php endif; ?>
 
 <?php if ($lapsing): ?>
 <div class="alert alert-warning d-flex justify-content-between align-items-center">

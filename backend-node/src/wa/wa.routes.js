@@ -1,5 +1,5 @@
 import express from 'express'
-import { createSession, listSessions, getQr, getStatus, logoutSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia } from './wa.controller.js'
+import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia } from './wa.controller.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
 export const waRouter = express.Router()
@@ -38,6 +38,9 @@ waRouter.post('/sessions', createLimit, createSession)
 waRouter.get('/sessions/:sessionId/status', poll, getStatus)
 waRouter.get('/sessions/:sessionId/qr', poll, getQr)
 waRouter.post('/sessions/:sessionId/logout', general, logoutSession)
+// Relink spawns a socket exactly like create does, so it shares create's tight
+// bucket rather than the general one.
+waRouter.post('/sessions/:sessionId/relink', createLimit, relinkSession)
 waRouter.get('/sessions/:sessionId/chats', poll, getChats)
 waRouter.get('/sessions/:sessionId/chats/:chatId/messages', poll, getMessages)
 waRouter.get('/sessions/:sessionId/messages/:messageId/media', general, downloadMedia)

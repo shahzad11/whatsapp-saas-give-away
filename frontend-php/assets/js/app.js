@@ -65,9 +65,12 @@ function startQrPolling(sessionId) {
                 }
             })
             .catch(() => {
-                qrStatus.textContent = 'Error connecting to backend';
+                // Not "backend": the person looking at this screen is trying to
+                // link a phone and has no model of the services behind the page.
+                // The poll keeps running, so this is a transient notice.
+                qrStatus.textContent = 'Still trying to reach WhatsApp — leave this page open.';
                 qrStatus.className = 'qr-status text-danger';
-                setBadge('Error', 'bg-danger');
+                setBadge('Reconnecting', 'bg-danger');
             });
     }
 
@@ -80,20 +83,6 @@ function stopQrPolling() {
         clearInterval(qrPollInterval);
         qrPollInterval = null;
     }
-}
-
-function syncAccountStatus(sessionId, row) {
-    fetch(`ajax/get-status.php?session_id=${sessionId}`)
-        .then(r => r.json())
-        .then(data => {
-            if (data.ok && row) {
-                const badge = row.querySelector('.badge-status');
-                if (badge) {
-                    badge.textContent = data.status;
-                    badge.className = `badge-status badge-${data.status}`;
-                }
-            }
-        });
 }
 
 let chatPollInterval = null;

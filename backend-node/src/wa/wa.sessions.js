@@ -1471,6 +1471,145 @@ export async function logoutAndDeleteSession(tenantId, sessionId) {
   return true
 }
 
+// Re-authenticate an existing session without losing its history.
+//
+// A session that WhatsApp logged out, or that gave up after MAX_QR_RETRIES, is
+// unusable and cannot recover on its own: the creds on disk are dead and no QR
+// is being produced. The only previous way out was Remove + Link again, which
+// mints a *new* sessionId — orphaning every chat, message and media file the old
+// one owned, and every DB row keyed by it.
+//
+// So this keeps the sessionId and the history and throws away only the auth
+// state, which is what is actually broken. The socket is rebuilt from an empty
+// keystore, so Baileys emits a fresh QR and the same session pairs to a phone
+// again.
+//
+// Only files are removed, never directories: messages/ and media/ are the
+// history. Two files inside the session dir are also not auth state — meta.json
+// (tenant, label) and chats.json — so they are kept by name. Everything else at
+// the top level belongs to useMultiFileAuthState (creds.json, pre-key-*,
+// session-*, sender-key-*, app-state-sync-*), and that set is open-ended enough
+// that a keep-list is safer than a delete-list.
+const NON_AUTH_FILES = new Set([META_FILE, CHATS_FILE])
+
+async function clearAuthState(dir) {
+  let entries = []
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    if (NON_AUTH_FILES.has(entry.name)) continue
+    await fs.rm(path.join(dir, entry.name), { force: true }).catch(() => {})
+  }
+}
+
+export async function relinkSession(tenantId, sessionId) {
+  if (!isValidTenantId(tenantId)) return false
+  if (!isValidSessionId(sessionId)) return false
+
+  const dir = sessionPathFor(tenantId, sessionId)
+  if (!existsSync(dir)) return false
+
+  const key = sessionKey(tenantId, sessionId)
+  const existing = sessions.get(key)
+
+  // Pending history writes are flushed rather than cancelled — unlike logout,
+  // this session's chats and messages are being kept, so discarding up to 5s of
+  // them here would lose data the tenant still owns.
+  const chatTimer = chatSaveTimers.get(key)
+  if (chatTimer) {
+    clearTimeout(chatTimer)
+    chatSaveTimers.delete(key)
+  }
+  const msgTimer = msgSaveTimers.get(key)
+  if (msgTimer) {
+    clearTimeout(msgTimer)
+    msgSaveTimers.delete(key)
+  }
+
+  if (existing) {
+    // Cancel the reconnect/sync timers first. A pending reconnectSession would
+    // otherwise fire against the keystore we are about to empty.
+    for (const t of existing.timers) clearTimeout(t)
+    existing.timers.clear()
+    if (existing.syncTimeout) clearTimeout(existing.syncTimeout)
+    existing.syncTimeout = null
+
+    try {
+      await writeChats(dir, existing.chats)
+      await writeDirtyMessages(dir, existing.messages, existing.dirtyChats)
+    } catch (err) {
+      console.error(`Relink flush failed for session ${sessionId}:`, err.message)
+    }
+
+    // No sock.logout() here: on a logged-out or failed session the reply never
+    // comes, and telling WhatsApp to unlink a device it already unlinked buys
+    // nothing. Detaching the listeners is what matters — a live creds.update
+    // handler would rewrite creds.json straight after we delete it.
+    try {
+      existing.sock?.ev?.removeAllListeners?.()
+      existing.sock?.end?.(undefined)
+    } catch (_) {
+      // ignore — the socket is going away either way
+    }
+    existing.sock = null
+  }
+
+  await clearAuthState(dir)
+
+  const meta = await readMeta(dir)
+  // Drop the paired identity from meta: it belongs to the phone that just went
+  // away. Leaving it would make a backend restart mid-relink report a user and a
+  // connectedAt for a session that has never paired.
+  await writeMeta(dir, { tenantId, label: meta.label || null })
+
+  const { state, saveCreds } = await useMultiFileAuthState(dir)
+
+  const sessionState = existing || {
+    tenantId,
+    sessionId,
+    label: meta.label || null,
+    chats: await readChats(dir),
+    messages: await readMessages(dir),
+    dirtyChats: new Set(),
+    phoneNumbers: new Map(),
+    contactNames: new Map(),
+    timers: new Set()
+  }
+
+  sessionState.status = 'qr_required'
+  sessionState.qr = null
+  sessionState.user = null
+  sessionState.connectedAt = null
+  sessionState.lastDisconnectAt = null
+  sessionState.lastDisconnectReason = null
+  sessionState.retries = 0
+
+  const version = await getWaVersion()
+  const sock = makeWASocket({
+    auth: state,
+    version,
+    browser: Browsers.macOS('Safari'),
+    logger,
+    syncFullHistory: true,
+    // See the note in reconnectSession: keeps phone push notifications alive.
+    markOnlineOnConnect: false,
+    generateHighQualityLinkPreview: false,
+    connectTimeoutMs: 30000
+  })
+
+  sessionState.sock = sock
+  sessions.set(key, sessionState)
+
+  attachSocketEvents(sessionState, sock, saveCreds)
+
+  console.log(`Relinked session ${sessionId} for tenant ${tenantId} — auth state cleared, history kept`)
+  return true
+}
+
 // Flush all pending debounced writes. Called on SIGTERM/SIGINT so a restart
 // does not silently discard up to 5s of chat/message state.
 export async function flushAllPendingWrites() {

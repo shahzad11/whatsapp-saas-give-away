@@ -187,6 +187,88 @@ function chatDisplayName($name, $phone, $jid, $isGroup = false) {
     return 'Unknown contact';
 }
 
+// Turns a failed backend call into something a tenant can act on.
+//
+// The backend's own error strings are written for whoever reads the logs —
+// "Backend unreachable", "Invalid backend response", "Failed to create session".
+// A tenant does not know what a backend is, and none of those say what to do
+// next. Exactly one backend error is genuinely useful to them, the rate
+// limiter's "Try again in Ns", so that one is passed through and everything else
+// becomes one sentence. The real reason still goes to the error log, which is
+// where it was always meant to be read.
+function waBackendErrorMessage($resp, $context = 'wa') {
+    $code = (int)($resp['httpCode'] ?? 0);
+    $raw = (string)($resp['error'] ?? '');
+
+    if ($code === 429 && $raw !== '') {
+        return $raw;
+    }
+
+    error_log("Backend failure shown to tenant as a generic message [$context]: HTTP $code $raw");
+
+    return $code === 0
+        ? 'Could not reach WhatsApp right now. Please try again in a few minutes — if it keeps happening, contact support.'
+        : 'Something went wrong on our side. Please try again in a few minutes — if it keeps happening, contact support.';
+}
+
+// The backend's session status is an internal state name — 'qr_required',
+// 'logged_out', 'failed'. Those are the names the code reasons about; they are
+// not sentences, and a tenant reading "logged_out" learns nothing about what to
+// do next. Every place that renders a status goes through these three functions
+// so the vocabulary is defined once: a label, a badge class, and (for the admin
+// health view) what the operator is supposed to do about it.
+//
+// An unrecognised status still renders: a new backend state must degrade to
+// something readable rather than to a blank badge.
+const WA_STATUS_LABELS = [
+    'qr_required'  => 'Scan QR code',
+    'connected'    => 'Connected',
+    'authenticated'=> 'Connecting…',
+    'reconnecting' => 'Reconnecting…',
+    'disconnected' => 'Disconnected',
+    'logged_out'   => 'Logged out — re-link needed',
+    'failed'       => 'Connection failed — re-link needed',
+];
+
+function waStatusLabel($status) {
+    $status = (string)$status;
+    return WA_STATUS_LABELS[$status] ?? ucfirst(str_replace('_', ' ', $status ?: 'unknown'));
+}
+
+function waStatusClass($status) {
+    switch ((string)$status) {
+        case 'connected':    return 'badge-connected';
+        case 'authenticated':
+        case 'reconnecting': return 'badge-reconnecting';
+        case 'qr_required':  return 'badge-qr_required';
+        case 'logged_out':
+        case 'failed':       return 'badge-failed';
+        default:             return 'badge-disconnected';
+    }
+}
+
+// 'disconnected' is deliberately absent: the backend retries it on a backoff and
+// it usually recovers on its own, so offering a re-link there would send tenants
+// through a QR scan they did not need.
+function waStatusNeedsRelink($status) {
+    return in_array((string)$status, ['qr_required', 'logged_out', 'failed'], true);
+}
+
+function waStatusHint($status) {
+    switch ((string)$status) {
+        case 'qr_required':
+            return 'Waiting for someone to scan the QR code.';
+        case 'logged_out':
+            return 'The phone unlinked this device. The tenant has to re-link and scan a new QR code.';
+        case 'failed':
+            return 'Connecting failed repeatedly. The tenant has to re-link and scan a new QR code.';
+        case 'disconnected':
+            return 'Reconnecting automatically. If it stays here, the tenant should re-link.';
+        default:
+            return '';
+    }
+}
+
 function timeAgo($datetime) {
     $now = new DateTime();
     $ago = new DateTime($datetime);

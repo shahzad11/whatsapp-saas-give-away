@@ -95,3 +95,64 @@ function logAudit(mysqli $conn, $action, $entity = null, $entityId = null, array
         error_log('audit_log write failed: ' . $e->getMessage());
     }
 }
+
+// A readable name for an audit action.
+//
+// The stored strings are dotted identifiers — `admin.smtp.update`,
+// `llm.provider_saved` — which are the right thing to *store*: they are stable,
+// filterable, and never change under a translation. They are the wrong thing to
+// read a log in, which is what the admin console does with them.
+//
+// Unknown actions degrade to a de-punctuated version of the identifier rather
+// than to nothing, so an action added later is still legible here before anyone
+// remembers to add it to the map. The raw string stays visible as a tooltip on
+// the page, because it is what you filter and grep by.
+function auditActionLabel($action) {
+    $map = [
+        'login'                        => 'Signed in',
+        'register'                     => 'Account registered',
+        'register.auto_activated'       => 'Account auto-activated (no email configured)',
+        'register.activation_resent'    => 'Activation email resent',
+        'profile.update'                => 'Profile updated',
+        'profile.password_change'       => 'Password changed',
+        'wa_account.link'               => 'WhatsApp account linked',
+        'wa_account.relink'             => 'WhatsApp account re-linked',
+        'wa_account.unlink'             => 'WhatsApp account removed',
+        'chatbot.config_saved'          => 'Chatbot settings saved',
+        'handoff.requested'             => 'Handover requested',
+        'handoff.claimed'               => 'Handover claimed by an agent',
+        'handoff.resolved'              => 'Handover resolved',
+        'handoff.abandoned'             => 'Handover abandoned',
+        'appointment.booked'            => 'Appointment booked',
+        'appointment.cancelled'         => 'Appointment cancelled',
+        'appointment.rescheduled'       => 'Appointment rescheduled',
+        'appointment.reminded'          => 'Appointment reminder sent',
+        'appointment.status_changed'    => 'Appointment status changed',
+        'admin.settings.update'         => 'Instance settings updated',
+        'admin.plans.relabel_currency'  => 'Plan prices relabelled to a new currency',
+        'admin.plan.create'             => 'Plan created',
+        'admin.plan.update'             => 'Plan updated',
+        'admin.plan.toggle_active'      => 'Plan activated / deactivated',
+        'admin.setup.dismissed'         => 'Getting-started checklist hidden',
+        'admin.smtp.update'             => 'Email settings updated',
+        'admin.smtp.test'               => 'Test email sent',
+        'admin.user.suspend'            => 'Tenant suspended',
+        'admin.user.activate'           => 'Tenant reactivated',
+        'admin.user.change_plan'        => "Tenant's plan changed",
+        'admin.user.toggle_admin'       => 'Admin rights granted / revoked',
+        'admin.payment.record'          => 'Payment recorded',
+        'admin.payment.apply_plan'      => 'Plan applied after payment',
+        'admin.payment.reminder_sent'   => 'Renewal reminder sent',
+        'llm.provider_saved'            => 'AI provider saved',
+        'llm.provider_tested'           => 'AI provider connection tested',
+        'llm.model_added'               => 'AI model added',
+        'llm.model_toggled'             => 'AI model enabled / disabled',
+        'llm.model_deleted'             => 'AI model removed',
+        'llm.plan_access_saved'         => 'Which plans may use which model',
+        'llm.toggles_saved'             => 'AI instance toggles saved',
+    ];
+
+    $action = (string)$action;
+    if (isset($map[$action])) return $map[$action];
+    return ucfirst(str_replace(['.', '_'], [' — ', ' '], $action));
+}

@@ -285,8 +285,11 @@ body {
     color: #065f46;
 }
 
+/* badge-failed had no rule at all, so the one status that always needs a human
+   rendered as unstyled text — the least visible badge on the page. */
 .badge-disconnected,
-.badge-logged_out {
+.badge-logged_out,
+.badge-failed {
     background: var(--danger-light);
     color: #991b1b;
 }

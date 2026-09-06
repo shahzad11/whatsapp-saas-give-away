@@ -148,15 +148,30 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         <td class="fw-500"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
                         <td><?= sanitize($acc['phone_number'] ?: '-') ?></td>
                         <td><?= sanitize($acc['push_name'] ?: '-') ?></td>
-                        <td><span class="badge-status badge-<?= $acc['status'] ?>"><?= $acc['status'] ?></span></td>
+                        <td><span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span></td>
                         <td class="text-muted small"><?= $acc['connected_at'] ? timeAgo($acc['connected_at']) : '-' ?></td>
                         <td class="text-muted small"><?= timeAgo($acc['created_at']) ?></td>
                         <td>
                             <div class="d-flex gap-1">
+                                <?php // An account WhatsApp logged out, or one that gave up
+                                      // retrying, cannot recover on its own. Before this the
+                                      // only way back was Remove + Link again, which mints a
+                                      // new session id and orphans the whole chat history.
+                                      // Re-link keeps the id and re-pairs the phone. ?>
+                                <?php if (waStatusNeedsRelink($acc['status'])): ?>
+                                <form method="POST" action="<?= APP_URL ?>/whatsapp/link.php" class="d-inline">
+                                    <?= csrfField() ?>
+                                    <input type="hidden" name="action" value="relink">
+                                    <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">
+                                    <button type="submit" class="btn btn-sm btn-outline-warning" title="Re-link this account">
+                                        <i class="bi bi-qr-code me-1"></i>Re-link
+                                    </button>
+                                </form>
+                                <?php endif; ?>
                                 <a href="<?= APP_URL ?>/whatsapp/chats.php?account=<?= $acc['id'] ?>" class="btn btn-sm btn-outline-primary" title="Chats">
                                     <i class="bi bi-chat-dots"></i>
                                 </a>
-                                <form method="POST" class="d-inline" onsubmit="return confirm('Remove this account?')">
+                                <form method="POST" class="d-inline" onsubmit="return confirm('Remove this account? Its chats and messages will be deleted from this dashboard. If you only need to reconnect it, use Re-link instead.')">
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="delete">
                                     <input type="hidden" name="account_id" value="<?= $acc['id'] ?>">

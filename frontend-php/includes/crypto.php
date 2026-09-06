@@ -16,6 +16,28 @@ function cryptoSecretAvailable() {
     return extension_loaded('sodium') && cryptoInstanceSecret() !== null;
 }
 
+// The one message every page shows when a secret cannot be stored.
+//
+// "Set APP_SECRET_KEY." was a dead end: it names a variable without saying where
+// it lives, that a fallback exists, or that this is a server-side file an admin
+// may not be able to reach from the browser they are reading the message in. The
+// two causes are also genuinely different — a missing variable is fixable by
+// editing a file, a missing PHP extension needs a rebuilt image — so they are
+// distinguished rather than collapsed into one sentence.
+function cryptoSecretMissingMessage() {
+    if (!extension_loaded('sodium')) {
+        return 'Secrets cannot be encrypted on this server: PHP is missing the sodium extension. '
+             . 'The frontend container image normally includes it — this instance needs to be rebuilt or repaired '
+             . 'before API keys or SMTP passwords can be saved.';
+    }
+    return 'Secrets cannot be encrypted because this instance has no secret key. '
+         . 'APP_SECRET_KEY is set in the .env file next to docker-compose.yml on the server, and BACKEND_API_KEY '
+         . 'is used as a fallback when it is absent — so both being missing or shorter than 16 characters is what '
+         . 'produces this. Contact whoever administers the server if you cannot edit that file; once it is set, '
+         . 'the containers have to be restarted. Do not change either value on a working instance: '
+         . 'everything already stored was encrypted with the old one and would become unreadable.';
+}
+
 // APP_SECRET_KEY if set, otherwise BACKEND_API_KEY.
 //
 // Falling back avoids forcing a new required variable onto every existing

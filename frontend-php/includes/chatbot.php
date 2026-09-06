@@ -1014,3 +1014,29 @@ function chatbotOutcomeLabel($outcome) {
         'send_error'           => 'Could not send the reply',
     ][$outcome] ?? $outcome;
 }
+
+// What to do about it, in the tenant's terms.
+//
+// The activity list used to print the label and then the raw `detail` string
+// underneath — internal text written for whoever debugs the reply path ("audio:
+// no transcript", "limit 500", "test console: Choose a model for your own API
+// key"). It told a business owner that something went wrong and nothing about
+// what to change. The label says what happened; this says what to do, and an
+// outcome that needs nothing returns ''.
+//
+// Detail is not dropped: chatbot.php keeps it as the row's tooltip, so support
+// can still read it.
+function chatbotOutcomeHint($outcome) {
+    return [
+        'config_error'      => 'The bot was not usable as configured. Check the Model tab — and your own API key if you use one.',
+        'llm_error'         => 'The AI provider failed to answer. Your fallback message was sent instead, if you have one.',
+        'send_error'        => 'The reply was written but WhatsApp would not take it. Check the account is still connected.',
+        'quota'             => 'Your monthly message allowance is used up. It resets next month, or you can upgrade your plan.',
+        'quota_replies'     => 'Your monthly AI reply allowance is used up. It resets next month, or you can upgrade your plan.',
+        'skipped_hours'     => 'This came in outside your active hours.',
+        'skipped_empty'     => 'There was nothing the bot could read — an attachment with no text, or a voice note it could not transcribe.',
+        'skipped_handoff'   => 'A person is handling that conversation, so the bot stayed silent.',
+        'handoff'           => 'Someone asked for a person. Open Live chats to reply.',
+        'skipped_disabled'  => 'The chatbot was switched off when this arrived.',
+    ][$outcome] ?? '';
+}
