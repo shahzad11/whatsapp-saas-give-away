@@ -107,14 +107,6 @@ $pageTitle = 'App Branding';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php foreach (['success' => 'success', 'error' => 'danger'] as $key => $cls): ?>
-    <?php if ($msg = flash($key)): ?>
-        <div class="alert alert-<?= $cls ?> alert-dismissible fade show">
-            <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    <?php endif; ?>
-<?php endforeach; ?>
-
 <?php // enctype is required for the file inputs; the AJAX path sends the same
       // FormData, so one form serves both. ?>
 <form method="POST" enctype="multipart/form-data" data-ajax>

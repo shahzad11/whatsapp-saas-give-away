@@ -21,15 +21,20 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
     <link href="<?= APP_URL ?>/assets/css/style.css" rel="stylesheet">
 </head>
 <body>
+<?php // #33 §17. The first tab stop on the page, so a keyboard or screen-reader
+      // user is not walked through eleven navigation links to reach the content
+      // on every single page. Hidden off-screen until it takes focus. ?>
+<a class="skip-link" href="#mainContent">Skip to main content</a>
 <div class="app-wrapper">
     <?php require_once dirname(__DIR__) . '/includes/sidebar.php'; ?>
     <div class="app-main">
-        <nav class="app-topbar">
+        <nav class="app-topbar" aria-label="Page header">
             <div class="d-flex align-items-center">
-                <button class="btn btn-link sidebar-toggle d-lg-none me-2" onclick="toggleSidebar()">
+                <button class="btn btn-link sidebar-toggle d-lg-none me-2" onclick="toggleSidebar()"
+                        aria-label="Toggle navigation" aria-controls="appSidebar">
                     <i class="bi bi-list fs-4"></i>
                 </button>
-                <h5 class="mb-0 fw-600"><?= sanitize($pageTitle) ?></h5>
+                <h5 class="mb-0"><?= sanitize($pageTitle) ?></h5>
             </div>
             <div class="d-flex align-items-center gap-3">
                 <div class="dropdown">
@@ -56,4 +61,8 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 </div>
             </div>
         </nav>
-        <div class="app-content">
+        <main class="app-content" id="mainContent">
+        <?php // Drained here rather than per page (#33): every page gets every
+              // severity, and a redirect-and-flash save produces the same toast
+              // an AJAX save does. ?>
+        <?php renderFlash(); ?>

@@ -251,6 +251,184 @@ function setUserSetting(mysqli $conn, $userId, $key, $value) {
     $stmt->close();
 }
 
+// --- The tenant's own getting-started checklist (#33) -----------------------
+//
+// The admin console has had one of these since Phase 12. A *tenant* landing on
+// the dashboard for the first time has had nothing: four counters reading zero
+// and a "Link Account" button, which is step one of four and says nothing about
+// the other three.
+//
+// Same rules as instanceSetupSteps(), for the same reason: every step reports
+// from live state rather than from a "wizard finished" flag, so a step that is
+// later undone shows as outstanding again. That is what makes the card
+// dismissible without lying — dismissing hides a reminder, it does not claim
+// anything is done.
+//
+// Steps whose feature the plan does not include are *omitted*, not shown as
+// unreachable: a checklist that cannot be completed is not a checklist. The
+// plan-gated features have their own upgrade prompts on their own pages.
+function tenantSetupSteps(mysqli $conn, $userId) {
+    $userId = (int)$userId;
+    $plan = getUserPlan($conn, $userId);
+
+    $connected = 0;
+    try {
+        $stmt = $conn->prepare("SELECT COUNT(*) FROM wa_accounts WHERE user_id = ? AND status = 'connected'");
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $connected = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+    } catch (Throwable $e) {
+        error_log('tenant checklist account count failed: ' . $e->getMessage());
+    }
+
+    $config = chatbotConfig($conn, $userId);
+
+    $steps = [
+        [
+            'label' => 'Link a WhatsApp account',
+            'why'   => 'Scan a QR code with your phone. Nothing can be sent or received until one is paired.',
+            'url'   => APP_URL . '/whatsapp/link.php',
+            'done'  => $connected > 0,
+        ],
+        [
+            'label' => 'Send your first message',
+            'why'   => 'Open a conversation and reply to it, to confirm the link really works end to end.',
+            'url'   => APP_URL . '/whatsapp/chats.php',
+            // Usage is the only honest signal here. A chat row appears from an
+            // incoming sync the tenant had no part in, so counting chats would
+            // tick this off for someone who has never sent anything.
+            'done'  => usageCount($conn, $userId, 'messages_sent') > 0,
+        ],
+    ];
+
+    if (planHasFeature($plan, 'chatbot')) {
+        $steps[] = [
+            'label' => 'Set up the AI chatbot',
+            'why'   => 'Give it a knowledge base, pick a model, and switch it on.',
+            'url'   => APP_URL . '/chatbot.php',
+            // Both halves: an enabled bot with no model answers nothing, and is
+            // the single most common way this ends up looking broken.
+            'done'  => !empty($config['is_enabled'])
+                       && (!empty($config['model_id']) || !empty($config['byo_model_code'])),
+        ];
+    }
+
+    if (planHasFeature($plan, 'appointments') && planHasFeature($plan, 'chatbot')) {
+        $steps[] = [
+            'label' => 'Add a bookable service',
+            'why'   => 'Appointment booking needs at least one service and its opening hours.',
+            'url'   => APP_URL . '/chatbot.php#appointments',
+            'done'  => countServices($conn, $userId) > 0,
+        ];
+    }
+
+    $steps[] = [
+        'label' => 'Complete your billing details',
+        'why'   => 'Your name and address as they should appear on a receipt.',
+        'url'   => APP_URL . '/profile.php',
+        'done'  => (bool)addressLines(getUserProfile($conn, $userId)),
+    ];
+
+    return $steps;
+}
+
+// Per tenant, unlike the instance checklist: this one describes one person's
+// account, so one tenant hiding it must not hide it for everyone.
+function tenantSetupDismissed(mysqli $conn, $userId) {
+    return getUserSetting($conn, (int)$userId, 'setup_checklist_dismissed', '') === '1';
+}
+
+// --- Account health (#33 §10) -----------------------------------------------
+//
+// Things that are wrong *now* and that the tenant can only currently find out
+// by visiting the one page that shows them. An account that needs a QR rescan is
+// the important one: messages stop arriving and nothing anywhere says so — the
+// dashboard's "Disconnected" counter is a number, not a sentence, and it does
+// not distinguish "reconnecting on its own" from "needs a human with a phone".
+//
+// Deliberately not a generic notification system. Each entry is a live check
+// with a link to the page that fixes it, and an empty list means there is
+// nothing to say — which is the normal case and must render as nothing at all.
+//
+// Returns [['severity' => 'warning'|'danger', 'message' => ..., 'action' => ...,
+//           'url' => ...], ...]
+function tenantHealthWarnings(mysqli $conn, $userId) {
+    $userId = (int)$userId;
+    $out = [];
+
+    // Only the statuses a tenant has to act on. 'disconnected' is excluded on
+    // purpose — the backend retries it on a backoff and it usually recovers, so
+    // warning about it would send people through a QR scan they did not need.
+    // This is the same rule as waStatusNeedsRelink(), asked of the database.
+    try {
+        $stmt = $conn->prepare(
+            "SELECT COUNT(*) FROM wa_accounts
+             WHERE user_id = ? AND status IN ('qr_required', 'logged_out', 'failed')"
+        );
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $needsRelink = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+
+        if ($needsRelink > 0) {
+            $out[] = [
+                'severity' => 'danger',
+                'message'  => $needsRelink === 1
+                    ? '1 WhatsApp account is not connected and needs a QR rescan. It is not sending or receiving anything.'
+                    : "$needsRelink WhatsApp accounts are not connected and need a QR rescan. They are not sending or receiving anything.",
+                'action'   => 'Fix it',
+                'url'      => APP_URL . '/whatsapp/accounts.php',
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('tenant health account check failed: ' . $e->getMessage());
+    }
+
+    $plan = getUserPlan($conn, $userId);
+
+    // An enabled bot with no model is the failure that looks like nothing:
+    // every message gets the fallback line, and the tenant believes the bot is
+    // answering.
+    if (planHasFeature($plan, 'chatbot')) {
+        $config = chatbotConfig($conn, $userId);
+        if (!empty($config['is_enabled'])
+            && empty($config['model_id']) && empty($config['byo_model_code'])) {
+            $out[] = [
+                'severity' => 'warning',
+                'message'  => 'The chatbot is switched on but has no model selected, so every message gets the fallback reply.',
+                'action'   => 'Pick a model',
+                'url'      => APP_URL . '/chatbot.php',
+            ];
+        }
+    }
+
+    // The allowance warning fires at 90%, not at 100%: at 100% the sends have
+    // already started failing, and the tenant needs to hear about it while
+    // there is still something they can do.
+    foreach ([
+        ['messages_sent',   'max_messages_per_month', 'monthly message allowance'],
+        ['chatbot_replies', 'max_chatbot_replies',    'monthly AI reply allowance'],
+    ] as [$metric, $limitKey, $label]) {
+        $limit = planLimit($plan, $limitKey);
+        if ($limit === null || $limit <= 0) continue;      // null is unlimited
+
+        $used = usageCount($conn, $userId, $metric);
+        if ($used < $limit * 0.9) continue;
+
+        $out[] = [
+            'severity' => $used >= $limit ? 'danger' : 'warning',
+            'message'  => $used >= $limit
+                ? "You have used your entire $label for this month (" . number_format($used) . " of " . number_format($limit) . ")."
+                : "You have used " . round(($used / $limit) * 100) . "% of your $label this month.",
+            'action'   => 'See usage',
+            'url'      => APP_URL . '/billing.php',
+        ];
+    }
+
+    return $out;
+}
+
 // --- Validation -------------------------------------------------------------
 
 function isValidTimezone($tz) {

@@ -177,14 +177,6 @@ $pageTitle = 'Instance Settings';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php foreach (['success' => 'success', 'error' => 'danger'] as $key => $cls): ?>
-    <?php if ($msg = flash($key)): ?>
-        <div class="alert alert-<?= $cls ?> alert-dismissible fade show">
-            <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    <?php endif; ?>
-<?php endforeach; ?>
-
 <form method="POST" data-ajax>
     <?= csrfField() ?>
 

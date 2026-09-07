@@ -5,7 +5,7 @@ $currentPage = $currentPage ?? currentPage();
 $brandName = $brandName ?? brandName($conn ?? null);
 $brandLogo = brandLogoUrl($conn ?? null);
 ?>
-<aside class="app-sidebar" id="appSidebar">
+<aside class="app-sidebar" id="appSidebar" aria-label="Main navigation">
     <div class="sidebar-brand">
         <?php if ($brandLogo !== ''): ?>
             <img src="<?= sanitize($brandLogo) ?>" alt="<?= sanitize($brandName) ?>" class="sidebar-brand-logo">

@@ -232,13 +232,6 @@ $pageTitle = 'Chatbot';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-<?php if ($msg = flash('error')): ?>
-    <div class="alert alert-danger"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-
 <?php if (!$hasChatbot): ?>
     <div class="card">
         <div class="card-body">

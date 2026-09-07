@@ -134,14 +134,6 @@ $pageTitle = 'Tenants';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php foreach (['success' => 'success', 'error' => 'danger'] as $key => $cls): ?>
-    <?php if ($msg = flash($key)): ?>
-        <div class="alert alert-<?= $cls ?> alert-dismissible fade show">
-            <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    <?php endif; ?>
-<?php endforeach; ?>
-
 <div class="card mb-4">
     <div class="card-body">
         <form method="GET" class="row g-2 align-items-end">

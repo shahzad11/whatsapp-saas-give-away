@@ -64,14 +64,6 @@ $pageTitle = 'Overview';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php foreach (['success' => 'success', 'error' => 'danger'] as $key => $cls): ?>
-    <?php if ($msg = flash($key)): ?>
-        <div class="alert alert-<?= $cls ?> alert-dismissible fade show">
-            <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    <?php endif; ?>
-<?php endforeach; ?>
-
 <?php if ($showSetup): ?>
 <div class="card mb-4 border-primary">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -168,10 +160,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <div class="row g-4">
     <div class="col-lg-6">
         <div class="card table-card h-100">
-            <div class="card-header">Top Tenants by Messages (this month)</div>
+            <div class="card-header"><i class="bi bi-bar-chart"></i>Top tenants by messages (this month)</div>
             <div class="table-responsive">
+                <?php // #33 §4. The message column is read down, not across, so it
+                      // aligns right and in tabular figures — .num does both. ?>
                 <table class="table align-middle mb-0">
-                    <thead><tr><th>Tenant</th><th>Plan</th><th>Messages</th></tr></thead>
+                    <thead><tr><th>Tenant</th><th>Plan</th><th class="num">Messages</th></tr></thead>
                     <tbody>
                     <?php if (!$topTenants): ?>
                         <tr><td colspan="3" class="text-muted small">No messages sent this month.</td></tr>
@@ -184,7 +178,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                 </a>
                             </td>
                             <td class="small text-muted"><?= sanitize($t['plan_name'] ?? '—') ?></td>
-                            <td class="small fw-500"><?= number_format((int)$t['messages']) ?></td>
+                            <td class="small fw-500 num"><?= number_format((int)$t['messages']) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -196,19 +190,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="col-lg-6">
         <div class="card table-card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Tenants per Plan</span>
+                <span><i class="bi bi-box-seam"></i>Tenants per plan</span>
                 <a href="<?= APP_URL ?>/admin/plans.php" class="btn btn-sm btn-link text-decoration-none">Manage</a>
             </div>
             <div class="table-responsive">
                 <table class="table align-middle mb-0">
-                    <thead><tr><th>Plan</th><th>Price</th><th>Tenants</th><th></th></tr></thead>
+                    <thead><tr><th>Plan</th><th class="num">Price</th><th class="num">Tenants</th><th></th></tr></thead>
                     <tbody>
                     <?php foreach ($planBreakdown as $p): ?>
                         <tr class="<?= $p['is_active'] ? '' : 'opacity-50' ?>">
                             <td class="small fw-500"><?= sanitize($p['name']) ?></td>
-                            <td class="small"><?= sanitize(formatPrice($p)) ?></td>
-                            <td class="small"><?= number_format((int)$p['tenants']) ?></td>
-                            <td><?php if (!$p['is_active']): ?><span class="badge bg-secondary x-small">inactive</span><?php endif; ?></td>
+                            <td class="small num"><?= sanitize(formatPrice($p)) ?></td>
+                            <td class="small num"><?= number_format((int)$p['tenants']) ?></td>
+                            <?php // A tag, not a state: it labels the plan row. ?>
+                            <td><?php if (!$p['is_active']): ?><span class="badge-tag">Inactive</span><?php endif; ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>

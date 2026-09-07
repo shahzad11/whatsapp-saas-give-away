@@ -21,6 +21,9 @@ require_once $basePath . '/config/database.php';
 require_once $basePath . '/includes/functions.php';
 // After functions.php, whose flash()/redirect()/csrfTokenValid() it wraps.
 require_once $basePath . '/includes/ajax.php';
+// Also after functions.php: it drains the same flash() queue, from the layouts
+// rather than from each page (#33).
+require_once $basePath . '/includes/flash.php';
 require_once $basePath . '/includes/auth.php';
 require_once $basePath . '/includes/tenant.php';
 // Loaded before plan.php: price formatting reads the instance-wide currency.

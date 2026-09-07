@@ -151,16 +151,10 @@ $pageTitle = 'Profile';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<?php // One place for the page-level message, because both cards post to the
-      // same page and either one of them can be the sender. The per-field
-      // messages below say which input is at fault. ?>
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-<?php if ($msg = flash('error')): ?>
-    <div class="alert alert-danger"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-
+<?php // The page-level message is the layout's job now (includes/flash.php) —
+      // it matters here because both cards post to this same page and either one
+      // of them can be the sender. The per-field messages below still say which
+      // input is at fault. ?>
 <div class="row g-4">
     <div class="col-lg-4">
         <div class="card text-center mb-4">

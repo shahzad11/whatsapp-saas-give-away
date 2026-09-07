@@ -21,6 +21,46 @@
     --danger-light: #fee2e2;
     --info: #3b82f6;
     --info-light: #dbeafe;
+
+    /* #33 §2/§18. A type scale, so the next component does not invent another
+       font-size. The ~300 existing literals are deliberately left alone:
+       rewriting them blind is how a layout regression ships. New work reaches
+       for these, and the old values are already close to them. */
+    --fs-xs: 0.75rem;
+    --fs-sm: 0.8125rem;
+    --fs-base: 0.9375rem;
+    --fs-lg: 1.0625rem;
+    --fs-xl: 1.25rem;
+    --fs-2xl: 1.5rem;
+    --fs-3xl: 1.875rem;
+
+    /* Weights are a scale too, and the reason the pages looked inconsistent:
+       labels, card headers and page titles were each picking their own. */
+    --fw-label: 500;
+    --fw-heading: 600;
+    --fw-title: 700;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+
+    --radius-sm: 6px;
+    --radius: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+    --shadow-lg: 0 10px 30px rgba(15, 23, 42, 0.12);
+
+    /* The one focus ring for the whole app. Bootstrap's is a 0.25rem alpha
+       shadow in the component's own colour, which on a white card next to a
+       light border is close to invisible — and it is not applied at all to
+       links, table actions or the sidebar. */
+    --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.35);
 }
 
 * {
@@ -29,17 +69,88 @@
     box-sizing: border-box;
 }
 
+/* 14px was a full step below what this much dense tabular text needs, and the
+   inherited line-height was Bootstrap's 1.5 against a smaller box, so rows read
+   as tighter than they measured. 15px/1.5 is the change with the widest reach in
+   #33 and the one nothing else depends on. */
 body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     background: var(--body-bg);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 15px;
+    line-height: 1.5;
 }
 
 .fw-500 { font-weight: 500; }
 .fw-600 { font-weight: 600; }
 .x-small { font-size: 0.7rem; }
 .text-muted-light { color: #64748b; }
+
+/* ===== Accessibility ===== */
+
+/* First tab stop on every page. Off-screen until focused, at which point it has
+   to be visible *and* above the sticky topbar, or it is a link that announces
+   itself and cannot be seen. */
+.skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 2000;
+    background: var(--primary);
+    color: #fff;
+    padding: 10px 16px;
+    border-bottom-right-radius: var(--radius);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-heading);
+    text-decoration: none;
+}
+
+.skip-link:focus {
+    left: 0;
+    color: #fff;
+}
+
+/* :focus-visible, not :focus — a mouse click on a button should not leave a
+   ring behind, which is why the blanket :focus rules of a decade ago were
+   turned off by everyone and accessibility lost the ring entirely. */
+a:focus-visible,
+button:focus-visible,
+.btn:focus-visible,
+.nav-link-item:focus-visible,
+.chat-list-item:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
+}
+
+.form-control:focus-visible,
+.form-select:focus-visible,
+.form-check-input:focus-visible {
+    outline: 2px solid transparent;
+    box-shadow: var(--focus-ring);
+}
+
+/* Inside the dark sidebar the indigo ring on near-black is not a contrast the
+   WCAG non-text minimum is met at. White is. */
+.app-sidebar a:focus-visible,
+.app-sidebar button:focus-visible {
+    outline-color: #fff;
+    box-shadow: none;
+}
+
+/* Someone who has asked their OS to stop moving things means it. The sidebar
+   slide, the recording pulse and every hover transition are decoration. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
 
 /* ===== App Layout ===== */
 .app-wrapper {
@@ -94,8 +205,19 @@ body {
     padding: 16px 0;
 }
 
+/* #33 §6. The four sections (Main / WhatsApp / Account / Platform) were
+   separated by 8px and a small caption, which at a glance is one long list of
+   eleven links. A rule plus real space makes the grouping do its job. */
 .nav-section {
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.nav-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
 }
 
 .nav-section-title {
@@ -126,16 +248,24 @@ body {
     background: rgba(255,255,255,0.04);
 }
 
+/* The active row differed from its neighbours by a 3px bar and a background one
+   step off the sidebar's own — findable only by looking for it. The icon carries
+   the state too now, which is what the eye lands on first. */
 .nav-link-item.active {
     color: var(--sidebar-text-active);
     background: var(--sidebar-active);
     border-left-color: var(--primary);
+    font-weight: var(--fw-heading);
 }
 
 .nav-link-item i {
     font-size: 1.1rem;
     width: 20px;
     text-align: center;
+}
+
+.nav-link-item.active i {
+    color: var(--sidebar-text-active);
 }
 
 .sidebar-footer {
@@ -186,7 +316,60 @@ body {
 
 .app-content {
     flex: 1;
-    padding: 24px;
+    padding: var(--space-5);
+}
+
+/* #33 §2. The page title is the largest thing in the chrome and was 600 — the
+   same weight as every card header on the page under it, so it did not read as
+   the title of anything. The size is unchanged (--fs-xl is Bootstrap's own h5);
+   only the weight moves, because the size was never the problem. */
+.app-topbar h5 {
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-title);
+}
+
+/* #33 §9/§17. A 44×44 target is the floor in both the WCAG 2.5.5 guidance and
+   Apple's HIG, and this is the *only* way to reach the navigation on a phone —
+   the one control on the app that must not be fiddly. Bootstrap's .btn-link
+   padding gave it about 30×24. */
+.sidebar-toggle {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+/* #33 §3. A row for the actions that belong to the whole page. It exists
+   because the tenant dashboard was putting its "Link account" button inside the
+   stat-card grid, where a button reads as a metric. */
+.page-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-5);
+}
+
+.page-toolbar .page-toolbar-title {
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-heading);
+    margin: 0;
+}
+
+.page-toolbar .page-toolbar-subtitle {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    margin: 2px 0 0;
+}
+
+.page-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
 }
 
 /* ===== User Avatar ===== */
@@ -236,15 +419,26 @@ body {
 .card {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
 }
 
 .card-header {
     background: transparent;
     border-bottom: 1px solid var(--border-color);
-    padding: 16px 20px;
-    font-weight: 600;
+    padding: var(--space-4) 20px;
+    font-weight: var(--fw-heading);
+}
+
+/* #33 §7. An icon in the header, so a page of six stacked cards can be scanned
+   rather than read. Tinted rather than inherited: at the header's own weight an
+   icon in the text colour is just another glyph in the sentence. */
+.card-header > i:first-child,
+.card-header .card-header-icon {
+    color: var(--primary);
+    margin-right: var(--space-2);
+    font-size: var(--fs-lg);
+    vertical-align: -1px;
 }
 
 .card-body {
@@ -282,17 +476,62 @@ body {
     font-weight: 500;
 }
 
-/* ===== Status Badges ===== */
+/* ===== Status Badges =====
+ *
+ * #33 §1/§7 asked for one pill-shaped component for every status. The
+ * vocabulary itself is not redefined here — it lives in waStatusLabel() /
+ * waStatusClass() (and now apptStatusLabel() / apptStatusClass()) so a status
+ * cannot render two ways. What is added is a *semantic* tier underneath the
+ * connection-specific names, for the statuses that are not connections:
+ * appointments, subscriptions, tenants. Pill for a state, rectangular for a
+ * tag — which is why `.badge-tag` is separate and square-ish. */
 .badge-status {
+    display: inline-block;
     font-size: 0.7rem;
-    font-weight: 600;
+    font-weight: var(--fw-heading);
     padding: 4px 10px;
     border-radius: 20px;
+    line-height: 1.4;
+    white-space: nowrap;
 }
 
-.badge-connected {
+.badge-connected,
+.badge-ok {
     background: var(--success-light);
     color: #065f46;
+}
+
+.badge-warn {
+    background: var(--warning-light);
+    color: #92400e;
+}
+
+.badge-bad {
+    background: var(--danger-light);
+    color: #991b1b;
+}
+
+.badge-pending {
+    background: var(--info-light);
+    color: #1e40af;
+}
+
+.badge-neutral {
+    background: #f1f5f9;
+    color: #475569;
+}
+
+/* A tag is not a state: it labels a row rather than describing where it is in a
+   lifecycle, so it does not get the pill. */
+.badge-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: var(--fw-label);
+    padding: 3px 7px;
+    border-radius: var(--radius-sm);
+    background: #f1f5f9;
+    color: #475569;
+    white-space: nowrap;
 }
 
 /* badge-failed had no rule at all, so the one status that always needs a human
@@ -344,6 +583,46 @@ body {
 
 .table-card .table tr:last-child td {
     border-bottom: none;
+}
+
+/* #33 §4. Hover, not stripes. A striped table encodes nothing — the bands are
+   there whatever the data says — while a hover row tells you which one your
+   pointer is on, which is the question you actually have when a row has three
+   action buttons at the end of it. Bootstrap's own hover variable is what
+   .table-hover reads, so setting it here works with or without the class. */
+.table-card .table tbody tr {
+    transition: background 0.12s ease;
+}
+
+.table-card .table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.table-card .table > :not(caption) > * > * {
+    box-shadow: none;                /* Bootstrap draws its stripes with one */
+}
+
+/* Numbers are compared down a column, not read across a row, so they align on
+   the right — and in a font where the digits are all the same width, or the
+   columns do not line up even when the text does. */
+.table-card .table th.num,
+.table-card .table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Opt-in, because it only helps a table long enough to scroll past its own
+   header, and it needs an ancestor that scrolls rather than clips: it is the
+   .table-responsive that scrolls, so the sticky offset is relative to it. */
+.table-sticky {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.table-sticky .table th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
 }
 
 /* ===== Auth Pages ===== */
@@ -414,10 +693,23 @@ body {
 }
 
 .form-label {
-    font-weight: 500;
+    font-weight: var(--fw-label);
     font-size: 0.875rem;
     margin-bottom: 6px;
     color: var(--text-primary);
+}
+
+/* #33 §5. A disabled field looked like an ordinary one that happened to be
+   empty — same border, same fill — so "you may not change this" was only
+   discoverable by clicking it. The cursor is half the fix: it is the part that
+   answers the click. */
+.form-control:disabled,
+.form-select:disabled,
+.form-check-input:disabled {
+    background: #f1f5f9;
+    color: #64748b;
+    cursor: not-allowed;
+    border-color: var(--border-color);
 }
 
 .btn-primary {
@@ -1302,10 +1594,58 @@ body {
 }
 
 /* ===== Alerts ===== */
+/* #33 §7. `border: none` left these floating on the page with no edge, which is
+   why they read as a coloured gap rather than as a notice. A left accent gives
+   them one, in their own severity colour, without adding a full border that
+   would compete with the cards around them. */
 .alert {
     border-radius: 10px;
     font-size: 0.875rem;
     border: none;
+    border-left: 4px solid currentColor;
+}
+
+/* Bootstrap 5 sets --bs-alert-color per variant, so currentColor above is
+   already the right hue — except that the same colour at full strength is the
+   text colour too, and a 4px bar of it is heavy. These pull it back to the
+   palette's own accent. */
+.alert-success { border-left-color: var(--success); }
+.alert-danger  { border-left-color: var(--danger); }
+.alert-warning { border-left-color: var(--warning); }
+.alert-info    { border-left-color: var(--info); }
+.alert-primary { border-left-color: var(--primary); }
+
+/* #33 §9. A table wider than its container scrolls, and on a trackpad or a
+   phone nothing says so — the last column is simply missing.
+ *
+ * Four background layers, and the trick is the attachment pair: the two shadows
+ * are `scroll`, so they stay pinned to the visible edges of the box, and the two
+ * white covers are `local`, so they travel with the content and slide over the
+ * shadow exactly when that edge is reached. The cue therefore appears only on
+ * the side there is more to see, with no scroll listener. */
+.table-responsive {
+    background:
+        linear-gradient(to right, var(--card-bg) 30%, rgba(255, 255, 255, 0)) left / 32px 100% no-repeat,
+        linear-gradient(to left, var(--card-bg) 30%, rgba(255, 255, 255, 0)) right / 32px 100% no-repeat,
+        radial-gradient(farthest-side at 0 50%, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0)) left / 12px 100% no-repeat,
+        radial-gradient(farthest-side at 100% 50%, rgba(15, 23, 42, 0.14), rgba(15, 23, 42, 0)) right / 12px 100% no-repeat;
+    background-attachment: local, local, scroll, scroll;
+}
+
+/* ===== Toasts =====
+ *
+ * One container, created by forms.js on demand and shared by the AJAX saves and
+ * by the server-rendered flash messages (includes/flash.php). Positioned rather
+ * than in flow, which is the whole point of #33 §7: an alert prepended into the
+ * page pushed everything below it down by its own height the moment a save
+ * finished, so the thing you were about to click moved. */
+.wa-toast {
+    box-shadow: var(--shadow-lg);
+    border-radius: var(--radius);
+}
+
+.wa-toast .toast-body {
+    font-size: var(--fs-sm);
 }
 
 /* ===== Empty State ===== */

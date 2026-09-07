@@ -214,13 +214,6 @@ $pageTitle = 'AI / LLM';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-<?php if ($msg = flash('error')): ?>
-    <div class="alert alert-danger"><?= sanitize($msg) ?></div>
-<?php endif; ?>
-
 <?php if (!cryptoSecretAvailable()): ?>
     <div class="alert alert-warning">
         <i class="bi bi-exclamation-triangle me-1"></i>

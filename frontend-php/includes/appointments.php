@@ -550,6 +550,47 @@ function apptCounts(mysqli $conn, $userId) {
     return array_map('intval', $row ?: []);
 }
 
+// --- How a status is written down (#33 §1, §12) ------------------------------
+//
+// The four stored values are `booked`, `completed`, `cancelled` and `no_show`,
+// and the page was rendering them raw — a tenant was shown the string `no_show`
+// inside a Bootstrap `bg-danger` rectangle. WA_STATUS_LABELS in functions.php
+// solved exactly this for connection statuses in Phase 13; appointments simply
+// never joined it, so the vocabulary is defined here in the same shape: a label
+// and a badge class, one place each, so a status cannot render two ways.
+//
+// The class returns one of the semantic pill classes in style.css rather than a
+// Bootstrap colour, because a status is a state and states get pills.
+const APPT_STATUS_LABELS = [
+    'booked'    => 'Booked',
+    'completed' => 'Completed',
+    'cancelled' => 'Cancelled',
+    'no_show'   => 'No-show',
+];
+
+function apptStatusLabel($status, $isPast = false) {
+    $status = (string)$status;
+    // The one case where the stored value is not the whole truth: a booking
+    // whose time has passed is still `booked`, and "Booked" for something that
+    // was yesterday tells a tenant nothing about the thing they have to decide
+    // — whether the customer turned up.
+    if ($status === 'booked' && $isPast) return 'Awaiting outcome';
+    return APPT_STATUS_LABELS[$status] ?? ucfirst(str_replace('_', ' ', $status ?: 'unknown'));
+}
+
+function apptStatusClass($status, $isPast = false) {
+    switch ((string)$status) {
+        case 'booked':    return $isPast ? 'badge-warn' : 'badge-pending';
+        case 'completed': return 'badge-ok';
+        case 'no_show':   return 'badge-bad';
+        case 'cancelled': return 'badge-neutral';
+        // Cancelled is neutral, not danger: it is an ordinary ending that
+        // someone chose, and colouring it red puts it next to the one status
+        // that means a customer was let down.
+        default:          return 'badge-neutral';
+    }
+}
+
 // --- Reminders --------------------------------------------------------------
 
 function apptReminderMinutes(array $config) {

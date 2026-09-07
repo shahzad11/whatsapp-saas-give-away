@@ -28,8 +28,11 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
     <link href="<?= APP_URL ?>/assets/css/admin.css" rel="stylesheet">
 </head>
 <body class="admin-console">
+<?php // #33 §17 — see includes/header.php. Both layouts need it; neither can
+      // inherit it from the other, which is the cost of them being separate. ?>
+<a class="skip-link" href="#mainContent">Skip to main content</a>
 <div class="app-wrapper">
-    <aside class="app-sidebar" id="appSidebar">
+    <aside class="app-sidebar" id="appSidebar" aria-label="Admin console navigation">
         <?php // The shield stays even with a logo set: this is the console, and the
               // icon is what makes that unmistakable at a glance. ?>
         <div class="sidebar-brand">
@@ -94,12 +97,13 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
     </aside>
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
     <div class="app-main">
-        <nav class="app-topbar">
+        <nav class="app-topbar" aria-label="Page header">
             <div class="d-flex align-items-center">
-                <button class="btn btn-link sidebar-toggle d-lg-none me-2" onclick="toggleSidebar()">
+                <button class="btn btn-link sidebar-toggle d-lg-none me-2" onclick="toggleSidebar()"
+                        aria-label="Toggle navigation" aria-controls="appSidebar">
                     <i class="bi bi-list fs-4"></i>
                 </button>
-                <h5 class="mb-0 fw-600"><?= sanitize($pageTitle) ?></h5>
+                <h5 class="mb-0"><?= sanitize($pageTitle) ?></h5>
             </div>
             <div class="d-flex align-items-center gap-3">
                 <a href="<?= APP_URL ?>/dashboard.php" class="btn btn-sm btn-outline-secondary">
@@ -110,4 +114,5 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 </a>
             </div>
         </nav>
-        <div class="app-content">
+        <main class="app-content" id="mainContent">
+        <?php renderFlash(); ?>

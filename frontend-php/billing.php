@@ -62,16 +62,10 @@ $pageTitle = 'Billing & Usage';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success alert-dismissible fade show">
-        <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-<?php endif; ?>
-
 <div class="row g-4">
     <div class="col-lg-5">
         <div class="card h-100">
-            <div class="card-header">Current Plan</div>
+            <div class="card-header"><i class="bi bi-award"></i>Current plan</div>
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-3">
                     <div>
@@ -123,7 +117,7 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="col-lg-7">
         <div class="card h-100">
-            <div class="card-header">Usage This Month</div>
+            <div class="card-header"><i class="bi bi-speedometer2"></i>Usage this month</div>
             <div class="card-body">
                 <?php
                 $meters = [
@@ -171,7 +165,7 @@ require_once __DIR__ . '/includes/header.php';
     <?php if ($instructions !== ''): ?>
     <div class="col-lg-5" id="howToPay">
         <div class="card h-100">
-            <div class="card-header">How to Pay</div>
+            <div class="card-header"><i class="bi bi-bank"></i>How to pay</div>
             <div class="card-body">
                 <?php // Admin-authored plain text. nl2br over an escaped string, never
                       // raw HTML — an admin is trusted, but a stored-XSS foothold in a
@@ -185,15 +179,15 @@ require_once __DIR__ . '/includes/header.php';
     <?php if ($payments): ?>
     <div class="col-lg-<?= $instructions !== '' ? '7' : '12' ?>">
         <div class="card table-card h-100">
-            <div class="card-header">Payment History</div>
+            <div class="card-header"><i class="bi bi-receipt"></i>Payment history</div>
             <div class="table-responsive">
                 <table class="table align-middle mb-0">
-                    <thead><tr><th>Date</th><th>Amount</th><th>Plan</th><th>Period</th><th>Method</th></tr></thead>
+                    <thead><tr><th>Date</th><th class="num">Amount</th><th>Plan</th><th>Period</th><th>Method</th></tr></thead>
                     <tbody>
                     <?php foreach ($payments as $p): ?>
                         <tr>
                             <td class="small text-muted"><?= sanitize(formatUserDate($p['created_at'], $tz)) ?></td>
-                            <td class="small fw-500"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
+                            <td class="small fw-500 num"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
                             <td class="small"><?= sanitize($p['plan_name'] ?? '—') ?></td>
                             <?php // Both are DATE columns, so no timezone conversion —
                                   // see "Paid through" above. ?>

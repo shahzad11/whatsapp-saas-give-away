@@ -144,9 +144,6 @@ $pageTitle = 'Appointments';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?><div class="alert alert-success"><?= sanitize($msg) ?></div><?php endif; ?>
-<?php if ($msg = flash('error')): ?><div class="alert alert-danger"><?= sanitize($msg) ?></div><?php endif; ?>
-
 <div class="row g-3 mb-3">
     <?php foreach ([
         ['Upcoming', $counts['upcoming'] ?? 0, 'bi-calendar-check', 'primary'],
@@ -194,7 +191,9 @@ require_once __DIR__ . '/includes/header.php';
             <div class="col-md-3">
                 <label class="form-label small">Status</label>
                 <select name="status" class="form-select form-select-sm">
-                    <?php foreach (['booked' => 'Booked', 'completed' => 'Completed', 'cancelled' => 'Cancelled', 'no_show' => 'No-show', 'all' => 'All'] as $k => $v): ?>
+                    <?php // From the same map the badges use, so the filter and the
+                          // column can never disagree about what a status is called. ?>
+                    <?php foreach (APPT_STATUS_LABELS + ['all' => 'All'] as $k => $v): ?>
                         <option value="<?= $k ?>" <?= $filters['status'] === $k ? 'selected' : '' ?>><?= $v ?></option>
                     <?php endforeach; ?>
                 </select>
@@ -264,13 +263,16 @@ require_once __DIR__ . '/includes/header.php';
                             <div class="x-small text-muted">+<?= sanitize($a['customer_phone']) ?></div>
                         <?php endif; ?>
                     </td>
-                    <td><span class="badge bg-light text-dark"><?= sanitize($a['source']) ?></span></td>
+                    <?php // Where the booking came from labels the row rather than
+                          // describing its state, so it is a tag, not a pill (#33 §7). ?>
+                    <td><span class="badge-tag"><?= sanitize($a['source']) ?></span></td>
                     <td>
-                        <?php
-                        $badge = ['booked' => $isPast ? 'warning' : 'primary', 'completed' => 'success',
-                                  'cancelled' => 'secondary', 'no_show' => 'danger'][$a['status']] ?? 'secondary';
-                        ?>
-                        <span class="badge bg-<?= $badge ?>"><?= sanitize($a['status']) ?></span>
+                        <?php // The vocabulary lives in includes/appointments.php. This
+                              // used to print the stored value, so a tenant was shown the
+                              // string "no_show". ?>
+                        <span class="badge-status <?= apptStatusClass($a['status'], $isPast) ?>">
+                            <?= sanitize(apptStatusLabel($a['status'], $isPast)) ?>
+                        </span>
                     </td>
                     <td class="text-end">
                         <?php if ($a['status'] === 'booked'): ?>

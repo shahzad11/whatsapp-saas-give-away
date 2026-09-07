@@ -157,12 +157,6 @@ $pageTitle = 'Contacts';
 require_once dirname(__DIR__) . '/includes/header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success alert-dismissible fade show">
-        <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-<?php endif; ?>
-
 <?php if (empty($accounts)): ?>
     <div class="card">
         <div class="card-body">

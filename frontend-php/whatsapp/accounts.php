@@ -99,17 +99,6 @@ $pageTitle = 'WhatsApp Accounts';
 require_once dirname(__DIR__) . '/includes/header.php';
 ?>
 
-<?php if ($msg = flash('success')): ?>
-    <div class="alert alert-success alert-dismissible fade show">
-        <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-<?php endif; ?>
-<?php if ($msg = flash('error')): ?>
-    <div class="alert alert-danger alert-dismissible fade show">
-        <?= sanitize($msg) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-<?php endif; ?>
-
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <p class="text-muted mb-0 small"><?= count($accounts) ?> account(s) linked</p>

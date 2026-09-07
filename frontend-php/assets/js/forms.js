@@ -31,23 +31,64 @@
         return el;
     }
 
-    function toast(message, ok) {
+    // A server-rendered flash can be any of four severities (#33), so the
+    // second argument accepts a variant name as well as the original boolean.
+    // The boolean form is kept because every call site inside this file uses
+    // it, and "false means danger" is not worth rewriting to be told twice.
+    var TOAST_VARIANTS = {
+        success: { bg: 'success', light: true, ms: 4000 },
+        danger:  { bg: 'danger',  light: true, ms: 8000 },
+        warning: { bg: 'warning', light: false, ms: 8000 },
+        info:    { bg: 'info',    light: false, ms: 6000 }
+    };
+
+    function toast(message, variant) {
         if (!message) return;
+        if (typeof variant === 'boolean') variant = variant ? 'success' : 'danger';
+        var v = TOAST_VARIANTS[variant] || TOAST_VARIANTS.success;
+
         var el = document.createElement('div');
-        el.className = 'toast align-items-center text-white bg-' + (ok ? 'success' : 'danger') + ' border-0 show';
-        el.setAttribute('role', 'alert');
+        // Warning and info are light backgrounds in Bootstrap's palette, so
+        // white text on them fails contrast — the text colour has to follow the
+        // variant, not be assumed.
+        el.className = 'toast wa-toast align-items-center border-0 show bg-' + v.bg
+            + (v.light ? ' text-white' : ' text-dark');
+        el.setAttribute('role', variant === 'danger' ? 'alert' : 'status');
+        // Errors interrupt; a confirmation waits for a pause in what the screen
+        // reader is already saying.
+        el.setAttribute('aria-live', variant === 'danger' ? 'assertive' : 'polite');
         el.innerHTML = '<div class="d-flex"><div class="toast-body"></div>'
-            + '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>';
+            + '<button type="button" class="btn-close' + (v.light ? ' btn-close-white' : '')
+            + ' me-2 m-auto" aria-label="Dismiss" data-bs-dismiss="toast"></button></div>';
         // textContent, never innerHTML: a message can carry a plan name, an
         // email address or an SMTP server's own error string.
         el.querySelector('.toast-body').textContent = message;
         toastContainer().appendChild(el);
 
         el.querySelector('.btn-close').addEventListener('click', function () { el.remove(); });
-        setTimeout(function () { el.remove(); }, ok ? 4000 : 8000);
+        setTimeout(function () { el.remove(); }, v.ms);
     }
 
     window.waToast = toast;
+
+    // --- Server-rendered flash messages -------------------------------------
+
+    // includes/flash.php drains the PHP flash queue into a data island rather
+    // than into markup, so a redirect-and-flash save lands as the same toast an
+    // AJAX save produces. Before this, the two looked nothing alike: one was a
+    // floating toast, the other an alert that shoved the page down.
+    function showFlashIsland() {
+        var island = document.getElementById('waFlash');
+        if (!island) return;
+
+        var messages;
+        try { messages = JSON.parse(island.dataset.flash || '[]'); } catch (_) { messages = []; }
+        // Removed first: a page restored from the back/forward cache runs this
+        // again, and a flash message is by definition about a request that has
+        // already happened.
+        island.remove();
+        messages.forEach(function (m) { toast(m.message, m.type); });
+    }
 
     // --- Inline field errors ------------------------------------------------
 
@@ -254,10 +295,15 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', promoteShells);
-    } else {
+    function onReady() {
         promoteShells();
+        showFlashIsland();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', onReady);
+    } else {
+        onReady();
     }
 
     // --- Modal form triggers -----------------------------------------------
