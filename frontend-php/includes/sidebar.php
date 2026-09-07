@@ -21,24 +21,34 @@ $brandLogo = brandLogoUrl($conn ?? null);
                 <i class="bi bi-grid-1x2"></i><span>Dashboard</span>
             </a>
         </div>
+        <?php // #35. Only destinations live here. "Link Account" was removed: it is
+              // an action on the Accounts page, not a place, and it is already the
+              // primary button there, in the dashboard toolbar and in every empty
+              // state. Accounts stays lit while linking so the nav still says where
+              // you are. ?>
         <div class="nav-section">
             <span class="nav-section-title">WhatsApp</span>
-            <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="nav-link-item <?= $currentPage === 'accounts' ? 'active' : '' ?>">
+            <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="nav-link-item <?= in_array($currentPage, ['accounts', 'link'], true) ? 'active' : '' ?>">
                 <i class="bi bi-phone"></i><span>Accounts</span>
-            </a>
-            <a href="<?= APP_URL ?>/whatsapp/link.php" class="nav-link-item <?= $currentPage === 'link' ? 'active' : '' ?>">
-                <i class="bi bi-qr-code"></i><span>Link Account</span>
-            </a>
-            <a href="<?= APP_URL ?>/whatsapp/contacts.php" class="nav-link-item <?= $currentPage === 'contacts' ? 'active' : '' ?>">
-                <i class="bi bi-people"></i><span>Contacts</span>
             </a>
             <a href="<?= APP_URL ?>/whatsapp/chats.php" class="nav-link-item <?= $currentPage === 'chats' ? 'active' : '' ?>">
                 <i class="bi bi-chat-dots"></i><span>Chats</span>
             </a>
-            <?php // Shown to everyone, including plans without the feature: the page
-                  // explains what the plan is missing and links to billing, which is
-                  // more useful than the entry silently not existing. The page and
-                  // every endpoint behind it still enforce the flag server-side. ?>
+            <a href="<?= APP_URL ?>/whatsapp/contacts.php" class="nav-link-item <?= $currentPage === 'contacts' ? 'active' : '' ?>">
+                <i class="bi bi-people"></i><span>Contacts</span>
+            </a>
+        </div>
+        <?php // Split out of "WhatsApp" (#35), which had grown to seven entries
+              // covering two unrelated jobs: operating the mailbox by hand, and
+              // configuring the thing that answers it. These three are one feature
+              // set — the bot, the queue it escalates to, and what it books.
+              //
+              // Shown to everyone, including plans without the feature: the page
+              // explains what the plan is missing and links to billing, which is
+              // more useful than the entry silently not existing. The page and
+              // every endpoint behind it still enforce the flag server-side. ?>
+        <div class="nav-section">
+            <span class="nav-section-title">Automation</span>
             <a href="<?= APP_URL ?>/chatbot.php" class="nav-link-item <?= $currentPage === 'chatbot' ? 'active' : '' ?>">
                 <i class="bi bi-robot"></i><span>Chatbot</span>
             </a>
@@ -49,33 +59,25 @@ $brandLogo = brandLogoUrl($conn ?? null);
                 <i class="bi bi-calendar-check"></i><span>Appointments</span>
             </a>
         </div>
+        <?php // Profile and Settings left this section (#35). Both are already in the
+              // top-right user menu, which is where personal account items are looked
+              // for, and Settings in particular is now a read-only summary that sends
+              // you to Profile. Billing stays: it is the only one of the three a
+              // tenant is sent to from elsewhere in the app — every quota wall and
+              // every locked feature links here. ?>
         <div class="nav-section">
             <span class="nav-section-title">Account</span>
-            <a href="<?= APP_URL ?>/profile.php" class="nav-link-item <?= $currentPage === 'profile' ? 'active' : '' ?>">
-                <i class="bi bi-person"></i><span>Profile</span>
-            </a>
             <a href="<?= APP_URL ?>/billing.php" class="nav-link-item <?= $currentPage === 'billing' ? 'active' : '' ?>">
                 <i class="bi bi-credit-card"></i><span>Billing &amp; Usage</span>
             </a>
-            <a href="<?= APP_URL ?>/settings.php" class="nav-link-item <?= $currentPage === 'settings' ? 'active' : '' ?>">
-                <i class="bi bi-gear"></i><span>Settings</span>
-            </a>
         </div>
-        <?php // Still no Administration *section* here: platform management is its
-              // own console under /admin/* with its own layout and nav, not a set of
-              // tabs in the tenant menu. But the single door into it was hidden in
-              // the top-right user dropdown, which a first-time admin has no reason
-              // to open — so this is one link out, mirroring the console's own
-              // "Exit to app", and it is only rendered for admins. Visibility is
-              // never the control: requireAdmin() runs on every /admin/ request. ?>
-        <?php if (isAdmin()): ?>
-        <div class="nav-section">
-            <span class="nav-section-title">Platform</span>
-            <a href="<?= APP_URL ?>/admin/index.php" class="nav-link-item">
-                <i class="bi bi-shield-lock"></i><span>Admin console</span>
-            </a>
-        </div>
-        <?php endif; ?>
+        <?php // No Administration section, and no longer a single "Admin console" link
+              // either (#35): platform management is its own console under /admin/*
+              // with its own layout and nav, and it already has two doors from the
+              // tenant app — the top-right user menu, and the dashboard banner that
+              // appears while the instance is unconfigured, which is exactly when a
+              // first-time admin needs to find it. Visibility was never the control:
+              // requireAdmin() runs on every /admin/ request. ?>
     </nav>
     <div class="sidebar-footer">
         <div class="d-flex align-items-center gap-2">

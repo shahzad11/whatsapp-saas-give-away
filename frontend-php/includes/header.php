@@ -22,7 +22,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
 </head>
 <body>
 <?php // #33 §17. The first tab stop on the page, so a keyboard or screen-reader
-      // user is not walked through eleven navigation links to reach the content
+      // user is not walked through every navigation link to reach the content
       // on every single page. Hidden off-screen until it takes focus. ?>
 <a class="skip-link" href="#mainContent">Skip to main content</a>
 <div class="app-wrapper">
