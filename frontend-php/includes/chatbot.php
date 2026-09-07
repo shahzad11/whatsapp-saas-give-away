@@ -689,7 +689,12 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     $skip = chatbotSkipReason($config, $msg);
     if ($skip !== null) return $log($skip);
 
-    if (!chatbotWithinHours($config, getUserTimezone($conn, $userId))) {
+    // Read once. This used to be queried here and again when the context was
+    // assembled, which was two round trips for one immutable answer — and two
+    // chances for the hours check and the booking clock to disagree.
+    $timezone = getUserTimezone($conn, $userId);
+
+    if (!chatbotWithinHours($config, $timezone)) {
         // A configured out-of-hours message is still an answer, and it is free.
         $outside = trim((string)($config['outside_hours_message'] ?? ''));
         if ($outside !== '') {
@@ -759,14 +764,10 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     if (!$replyQuotaOk) return $log('quota_replies', ['detail' => 'AI reply limit ' . $replyLimit]);
 
     $history = chatbotFetchHistory($sessionId, $chatId, $tenantId, (int)($config['history_messages'] ?? 10));
-    $profile = getUserProfile($conn, $userId);
-    $timezone = getUserTimezone($conn, $userId);
-    $appointments = chatbotAppointmentContext($conn, $userId, $config, $timezone, $chatId);
-
-    $context = [
-        'business_name' => $profile['company_name'] ?? '',
-        'appointments' => $appointments,
-    ];
+    // #34: assembled by the one shared helper, so the tenant's test console is
+    // reasoning about the same business, the same services and the same clock.
+    $context = chatbotBuildContext($conn, $userId, $config, $timezone, $chatId);
+    $appointments = $context['appointments'];
 
     $reply = chatbotGenerateReply($conn, $userId, $config, $history, $text, $context);
 
@@ -831,6 +832,46 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
         'completion_tokens' => $reply['usage']['completion'] ?? null,
         'latency_ms' => $reply['latency_ms'] ?? null,
     ]);
+}
+
+// --- What the model is told about this tenant (#34) -------------------------
+
+// The single assembly point for the prompt's context array.
+//
+// This exists because there were two of them. The live handler built one and
+// `ajax/chatbot-test.php` built a smaller one, and the smaller one was missing
+// the entire appointments half — so the test console ran the real model against
+// a prompt that never mentioned booking, and confidently showed the tenant a
+// reply their customers would never receive. The comment at the top of that
+// endpoint had the rule right ("a preview built from a second, simpler code path
+// would eventually disagree with what customers actually get"); it was the call
+// site that drifted.
+//
+// So: one function, called by both. A context key added here appears in both
+// paths, which is the only arrangement that cannot drift again.
+//
+// $chatId is the one genuinely chat-specific input, and it is nullable: the test
+// console has no WhatsApp chat, and passing null simply means
+// chatbotAppointmentContext() reports no existing booking for "this customer"
+// while still returning services, hours and the clock. That is the correct
+// preview — it is what a brand-new customer's first message would see.
+function chatbotBuildContext(mysqli $conn, $userId, array $config, $timezone = null, $chatId = null) {
+    // Defaulted rather than required so a future caller cannot accidentally
+    // build a context against UTC while the rest of the app uses the tenant's
+    // zone. The live handler passes the value it already read.
+    $timezone = $timezone ?: getUserTimezone($conn, $userId);
+    $profile = getUserProfile($conn, $userId);
+
+    return [
+        'business_name' => $profile['company_name'] ?? '',
+        'appointments'  => chatbotAppointmentContext($conn, $userId, $config, $timezone, $chatId),
+        // Not read by chatbotSystemPrompt() — the appointment block carries its
+        // own copy — but every caller needs it afterwards, for formatting a
+        // booking's time or for telling the tenant which clock the console is
+        // reasoning in. Returning it here is what stops each caller resolving
+        // the timezone again and possibly differently.
+        'timezone'      => $timezone,
+    ];
 }
 
 // --- Appointments (#14) -----------------------------------------------------

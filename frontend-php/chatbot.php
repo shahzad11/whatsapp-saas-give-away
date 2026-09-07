@@ -228,6 +228,30 @@ $stmt->close();
 
 $activeServiceCount = count(array_filter($services, fn($s) => (int)$s['is_active'] === 1));
 
+// #34. The two gaps that make a working bot look broken, and the reason the
+// issue was filed as "the test AI doesn't know anything".
+//
+// The system prompt falls back to "replying on behalf of a business" when
+// company_name is empty, and to "no business information has been provided" when
+// the knowledge base is. Both are correct behaviour — the bot refusing to invent
+// facts is the single most important rule it has — but from the test console they
+// are indistinguishable from a broken model, and nothing anywhere said which it
+// was. So they are named, with the link that fixes them.
+$testProfile = getUserProfile($conn, $userId);
+$testGaps = [];
+if (trim((string)($testProfile['company_name'] ?? '')) === '') {
+    $testGaps[] = ['html' =>
+        'No <strong>company name</strong> on your profile, so the bot is told it is "replying on behalf of '
+        . 'a business" and cannot tell a customer what you are called. '
+        . '<a href="' . APP_URL . '/profile.php">Add it</a>.'];
+}
+if (trim((string)($config['knowledge_base'] ?? '')) === '') {
+    $testGaps[] = ['html' =>
+        'The <strong>knowledge base</strong> is empty, so the bot is instructed to answer nothing specific '
+        . 'and to offer a callback instead. That is deliberate — it will not invent a price or a policy — '
+        . 'but it means every specific question gets a refusal.'];
+}
+
 $pageTitle = 'Chatbot';
 require_once __DIR__ . '/includes/header.php';
 ?>
@@ -691,17 +715,40 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                 </div>
 
+                <?php // #34. The conversation itself lives in a modal now — a
+                      // single-shot input that overwrote its own answer could not
+                      // show a follow-up, and follow-ups ("yes, 3pm works") are
+                      // exactly the behaviour worth testing. This tab is the
+                      // launcher and the place that says what the test does and
+                      // does not do. ?>
                 <div class="tab-pane fade p-3" id="tab-test">
-                    <p class="text-muted small">
-                        Runs the real pipeline with your saved settings — same prompt, same model, same limits —
-                        but sends nothing to WhatsApp. Save your changes first.
+                    <p class="text-muted small mb-3">
+                        Opens a conversation with your own bot. It runs the real pipeline against your
+                        <strong>saved</strong> settings — same prompt, same business information, same services and
+                        opening hours, same model, same limits — and sends nothing to WhatsApp. Nothing is booked
+                        and nobody is notified, whatever the bot offers.
                     </p>
-                    <div class="input-group">
-                        <input type="text" class="form-control" id="testMessage"
-                               placeholder="Ask what a customer would ask…">
-                        <button class="btn btn-primary" type="button" onclick="runChatbotTest()">Test</button>
-                    </div>
-                    <div id="testOutput" class="mt-3"></div>
+
+                    <?php // The gaps that make a correctly-working bot look broken, named
+                          // here and again inside the modal. "The AI doesn't know our
+                          // name" is almost always this. ?>
+                    <?php if ($testGaps): ?>
+                        <div class="alert alert-warning small">
+                            <div class="fw-500 mb-1">
+                                <i class="bi bi-exclamation-triangle me-1"></i>Worth fixing before you judge the answers
+                            </div>
+                            <ul class="mb-0 ps-3">
+                                <?php foreach ($testGaps as $gap): ?>
+                                    <li><?= $gap['html'] ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        </div>
+                    <?php endif; ?>
+
+                    <button class="btn btn-primary" type="button" id="openTestChat"
+                            data-bs-toggle="modal" data-bs-target="#testChatModal">
+                        <i class="bi bi-chat-dots me-1"></i>Test your chatbot
+                    </button>
                 </div>
             </div>
 
@@ -974,6 +1021,78 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
+<?php // #34. The test conversation.
+      //
+      // Written as a literal `.modal` here, unlike the service form above, and
+      // the difference is the point: `data-modal-shell` exists so a *form* stays
+      // reachable without JavaScript, because Bootstrap's CSS hides `.modal`
+      // whether its JS runs or not. This is not a form. The whole feature is a
+      // fetch() loop — there is nothing here for a browser without JavaScript to
+      // fall back to, so hiding it from one is correct rather than a gap. The
+      // launcher button is inside the same `$hasChatbot` branch, so a plan
+      // without the chatbot never renders either. ?>
+<div class="modal fade" id="testChatModal" tabindex="-1" aria-labelledby="testChatTitle" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="testChatTitle">
+                    <i class="bi bi-chat-dots me-1"></i>Test your chatbot
+                </h5>
+                <button type="button" class="btn btn-sm btn-link text-muted text-decoration-none ms-auto me-2"
+                        id="testChatReset">Start over</button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body p-0">
+                <div class="px-3 pt-3">
+                    <p class="x-small text-muted mb-2">
+                        Your saved settings, the real prompt, nothing sent to WhatsApp. Times are
+                        <?= sanitize($tz) ?>.
+                    </p>
+                    <?php if ($testGaps): ?>
+                        <div class="alert alert-warning x-small py-2">
+                            <?php foreach ($testGaps as $gap): ?>
+                                <div><i class="bi bi-exclamation-triangle me-1"></i><?= $gap['html'] ?></div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    <?php // Filled by JS when the settings form is dirty. The endpoint
+                          // reads saved config by design — it has to run what the live
+                          // path would run — so the honest thing is to say which
+                          // settings are being tested, not to block the test. ?>
+                    <div class="alert alert-info x-small py-2 d-none" id="testChatUnsaved">
+                        <i class="bi bi-info-circle me-1"></i>
+                        You have unsaved changes on this page. This conversation is using your
+                        <strong>last saved</strong> settings.
+                    </div>
+                </div>
+
+                <?php // Reuses the chat styles from the real conversation view, so a
+                      // tenant recognises what they are looking at. Fixed height, not
+                      // max-height: the composer must not walk up and down the dialog
+                      // as the transcript grows. ?>
+                <div class="test-chat-thread" id="testChatThread" aria-live="polite" aria-atomic="false">
+                    <div class="test-chat-placeholder text-muted small" id="testChatPlaceholder">
+                        <i class="bi bi-chat-square-text d-block mb-2"></i>
+                        Ask what a customer would ask — "what are your opening hours?",
+                        "can I book a haircut on Thursday at 3?", "do you deliver to Clifton?"
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer p-2">
+                <div class="chat-input-area w-100 rounded">
+                    <input type="text" class="form-control" id="testChatInput" autocomplete="off"
+                           placeholder="Type a message…" aria-label="Test message">
+                    <button class="btn-send" type="button" id="testChatSend" aria-label="Send">
+                        <i class="bi bi-send-fill"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 // Per-day opening hours (#25). Presentation only: the server decides what a
 // closed day means (no windows for it) and validates every window, so a browser
@@ -1020,45 +1139,222 @@ require_once __DIR__ . '/includes/header.php';
     });
 })();
 
-    function runChatbotTest() {
-        const input = document.getElementById('testMessage');
-        const out = document.getElementById('testOutput');
-        const text = input.value.trim();
+/* The test conversation (#34).
+ *
+ * Was a single input and one output div that overwrote itself on every send, so
+ * only the latest reply ever existed and every message was turn one. The
+ * follow-ups are the interesting part — "yes, 3pm works", "the second one" — and
+ * they were the exact thing that could not be tested.
+ *
+ * The transcript is therefore not decoration: it is the request payload. Each
+ * send posts the whole conversation back as `history`, in the backend's own
+ * message shape (fromMe / text), which is what makes multi-turn behaviour and
+ * the `history_messages` setting genuinely testable. The server clamps it.
+ */
+(function () {
+    var modal  = document.getElementById('testChatModal');
+    if (!modal) return;
+
+    var thread = document.getElementById('testChatThread');
+    var input  = document.getElementById('testChatInput');
+    var send   = document.getElementById('testChatSend');
+    var reset  = document.getElementById('testChatReset');
+    var blank  = document.getElementById('testChatPlaceholder');
+    var unsaved = document.getElementById('testChatUnsaved');
+    var settingsForm = document.getElementById('chatbotForm');
+
+    // Session-scoped, as the issue suggests: the transcript survives closing and
+    // reopening the dialog within the page, and a reload starts fresh. Nothing
+    // is persisted server-side — a test conversation is not a record of
+    // anything, and storing it would put customer-shaped text in the database
+    // for no one to read.
+    var turns = [];
+    var busy = false;
+
+    function scrollToEnd() {
+        thread.scrollTop = thread.scrollHeight;
+    }
+
+    // The transcript is built with DOM nodes and textContent, never innerHTML,
+    // for the model's output as well as the tester's — a reply is remote text
+    // and the one exception is formatMessageText(), which is the same sanitising
+    // formatter the real chat view uses.
+    function addBubble(text, outgoing) {
+        if (blank) { blank.remove(); blank = null; }
+
+        var row = document.createElement('div');
+        row.className = 'msg-row ' + (outgoing ? 'msg-out' : 'msg-in');
+
+        var bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + (outgoing ? 'outgoing' : 'incoming');
+
+        var content = document.createElement('div');
+        content.className = 'bubble-content';
+        content.innerHTML = formatMessageText(text);
+        bubble.appendChild(content);
+
+        row.appendChild(bubble);
+        thread.appendChild(row);
+        scrollToEnd();
+        return bubble;
+    }
+
+    // "1,300 tokens" means nothing to a business owner testing their own bot,
+    // and it used to be the most prominent thing under the reply. The plain
+    // reading — how long it took — is shown; the numbers a developer or support
+    // needs are one click away, not gone.
+    function addMeta(bubble, data) {
+        var ms = Number(data.latency_ms || 0);
+        if (!ms && !data.model) return;
+        var speed = ms < 2000 ? 'quick' : (ms < 6000 ? 'normal' : 'slow');
+
+        var meta = document.createElement('div');
+        meta.className = 'x-small text-muted mt-1 ms-1';
+        meta.textContent = 'Answered in ' + (ms / 1000).toFixed(1) + 's (' + speed + ').';
+
+        var details = document.createElement('details');
+        details.className = 'x-small text-muted';
+        var summary = document.createElement('summary');
+        summary.textContent = 'Technical details';
+        details.appendChild(summary);
+        var body = document.createElement('div');
+        body.textContent = (data.model || 'model not reported') + ' · ' + ms + ' ms · '
+            + (data.tokens || 0) + ' tokens';
+        details.appendChild(body);
+        meta.appendChild(details);
+
+        bubble.parentNode.insertAdjacentElement('afterend', meta);
+        scrollToEnd();
+    }
+
+    // Everything the server said would differ from WhatsApp right now: the bot
+    // switched off, outside active hours, a handover phrase matched, a booking
+    // the calendar would have refused. Rendered inline in the transcript rather
+    // than at the top, because each one belongs to the message that caused it.
+    function addNotices(list) {
+        (list || []).forEach(function (n) {
+            var cls = n.level === 'warning' ? 'warning' : (n.level === 'success' ? 'success' : 'info');
+            var note = document.createElement('div');
+            note.className = 'alert alert-' + cls + ' x-small py-2 my-2';
+            note.textContent = n.text;
+            thread.appendChild(note);
+        });
+        scrollToEnd();
+    }
+
+    function setBusy(state) {
+        busy = state;
+        send.disabled = state;
+        input.disabled = state;
+        send.innerHTML = state
+            ? '<span class="spinner-border spinner-border-sm"></span>'
+            : '<i class="bi bi-send-fill"></i>';
+    }
+
+    function addTyping() {
+        var row = document.createElement('div');
+        row.className = 'msg-row msg-in';
+        row.id = 'testChatTyping';
+        row.innerHTML = '<div class="chat-bubble incoming"><div class="bubble-content text-muted">'
+            + '<span class="spinner-grow spinner-grow-sm me-1"></span>typing…</div></div>';
+        thread.appendChild(row);
+        scrollToEnd();
+    }
+
+    function removeTyping() {
+        var t = document.getElementById('testChatTyping');
+        if (t) t.remove();
+    }
+
+    function submit() {
+        if (busy) return;
+        var text = input.value.trim();
         if (!text) return;
 
-        out.innerHTML = '<div class="text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Asking the model…</div>';
+        addBubble(text, true);
+        input.value = '';
+        setBusy(true);
+        addTyping();
+
+        // Posted *before* this turn is appended to `turns`: the endpoint adds the
+        // message being answered itself, and sending it in the history as well
+        // would show the model the same line twice.
+        var payload = {
+            csrf_token: '<?= csrfToken() ?>',
+            message: text,
+            history: turns.slice()
+        };
+        turns.push({ fromMe: false, text: text });
 
         fetch('<?= APP_URL ?>/ajax/chatbot-test.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ csrf_token: '<?= csrfToken() ?>', message: text })
+            credentials: 'same-origin',
+            body: JSON.stringify(payload)
         })
-            .then(r => r.json())
-            .then(data => {
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                removeTyping();
+                setBusy(false);
+                input.focus();
+
                 if (!data.ok) {
-                    out.innerHTML = '<div class="alert alert-danger py-2 small mb-0">' + escapeHtml(data.error || 'Test failed') + '</div>';
+                    // The failed turn is dropped from the transcript payload:
+                    // there is no reply to pair it with, and leaving it in would
+                    // make the next request look like the bot ignored a message.
+                    turns.pop();
+                    addNotices([{ level: 'warning', text: data.error || 'The test failed.' }]);
                     return;
                 }
-                // "1,300 tokens" means nothing to a business owner testing their
-                // own bot, and it was the most prominent thing under the reply.
-                // The plain reading — how long it took — is shown; the numbers a
-                // developer or support needs are one click away, not gone.
-                const ms = Number(data.latency_ms || 0);
-                const speed = ms < 2000 ? 'quick' : (ms < 6000 ? 'normal' : 'slow');
-                out.innerHTML =
-                    '<div class="chat-bubble incoming d-inline-block p-2 mb-2"><div class="bubble-content">'
-                    + formatMessageText(data.reply) + '</div></div>'
-                    + '<div class="x-small text-muted">Answered in ' + (ms / 1000).toFixed(1)
-                    + 's (' + speed + ').</div>'
-                    + '<details class="x-small text-muted mt-1"><summary>Technical details</summary>'
-                    + escapeHtml(data.model || '') + ' · '
-                    + escapeHtml(String(ms)) + ' ms · '
-                    + escapeHtml(String(data.tokens || 0)) + ' tokens</details>';
+
+                var bubble = addBubble(data.reply, false);
+                addMeta(bubble, data);
+                addNotices(data.notices);
+                // fromMe is the bot's own outgoing message, which is what the
+                // live path's history looks like — chatbotBuildMessages() maps it
+                // to the assistant role.
+                turns.push({ fromMe: true, text: data.reply });
             })
-            .catch(() => {
-                out.innerHTML = '<div class="alert alert-danger py-2 small mb-0">Test failed</div>';
+            .catch(function () {
+                removeTyping();
+                setBusy(false);
+                turns.pop();
+                addNotices([{ level: 'warning', text: 'Could not reach the server. Try again.' }]);
             });
     }
+
+    send.addEventListener('click', submit);
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+
+    reset.addEventListener('click', function () {
+        turns = [];
+        thread.innerHTML = '';
+        blank = null;
+        addNotices([{ level: 'info', text: 'Conversation cleared. The bot has no memory of it.' }]);
+        input.focus();
+    });
+
+    // The endpoint reads *saved* config, because it has to run what the live path
+    // would run. The old tab said "Save your changes first" and left it at that,
+    // which does not stop anyone testing stale settings and drawing the wrong
+    // conclusion. This says which settings the conversation is actually using.
+    var dirty = false;
+    if (settingsForm) {
+        settingsForm.addEventListener('input', function () { dirty = true; });
+        settingsForm.addEventListener('change', function () { dirty = true; });
+        // A successful AJAX save reloads nothing, so the flag has to be cleared
+        // here or the warning would stick around after the settings were saved.
+        settingsForm.addEventListener('submit', function () { dirty = false; });
+    }
+
+    modal.addEventListener('shown.bs.modal', function () {
+        if (unsaved) unsaved.classList.toggle('d-none', !dirty);
+        input.focus();
+        scrollToEnd();
+    });
+})();
 </script>
 
 <?php endif; ?>
