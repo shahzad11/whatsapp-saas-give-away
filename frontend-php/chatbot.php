@@ -228,28 +228,73 @@ $stmt->close();
 
 $activeServiceCount = count(array_filter($services, fn($s) => (int)$s['is_active'] === 1));
 
-// #34. The two gaps that make a working bot look broken, and the reason the
-// issue was filed as "the test AI doesn't know anything".
+// #34. Every gap that makes a correctly-working bot look broken.
 //
-// The system prompt falls back to "replying on behalf of a business" when
-// company_name is empty, and to "no business information has been provided" when
-// the knowledge base is. Both are correct behaviour — the bot refusing to invent
-// facts is the single most important rule it has — but from the test console they
-// are indistinguishable from a broken model, and nothing anywhere said which it
-// was. So they are named, with the link that fixes them.
+// This list is the difference between "the AI is useless" and "the AI has not
+// been told anything yet". Each entry is a real reason the prompt will refuse,
+// stated as the refusal the tester will actually see, with the control that
+// fixes it.
+//
+// The first version of this only covered the company name and the knowledge
+// base, and that was not enough: asking "can you book me an appointment?" got a
+// flat refusal with no explanation, because three *other* things gate booking
+// and none of them was mentioned. A gap list that is missing the gap you just
+// hit is worse than no list, so the booking prerequisites are here now — in the
+// same order chatbotAppointmentContext() checks them, because the first one that
+// fails is the one that matters.
 $testProfile = getUserProfile($conn, $userId);
 $testGaps = [];
+
 if (trim((string)($testProfile['company_name'] ?? '')) === '') {
     $testGaps[] = ['html' =>
         'No <strong>company name</strong> on your profile, so the bot is told it is "replying on behalf of '
         . 'a business" and cannot tell a customer what you are called. '
         . '<a href="' . APP_URL . '/profile.php">Add it</a>.'];
 }
+
 if (trim((string)($config['knowledge_base'] ?? '')) === '') {
     $testGaps[] = ['html' =>
         'The <strong>knowledge base</strong> is empty, so the bot is instructed to answer nothing specific '
         . 'and to offer a callback instead. That is deliberate — it will not invent a price or a policy — '
-        . 'but it means every specific question gets a refusal.'];
+        . 'but it means every specific question gets a refusal. Fill in the '
+        . '<strong>Knowledge base</strong> tab.'];
+}
+
+// The booking chain. Only shown to a plan that actually includes appointments —
+// on a plan without it, "booking is off" is not a gap, it is the plan.
+if ($canAppointments) {
+    if (empty($config['appointments_enabled'])) {
+        // The one that caught this out. With the switch off the appointment
+        // context is null, so the prompt never mentions booking at all and the
+        // model correctly answers that it cannot book — which reads exactly like
+        // a broken bot to whoever just asked it to book something.
+        $testGaps[] = ['html' =>
+            '<strong>Appointment booking is switched off</strong>, so the bot is never told it can book '
+            . 'anything and will say it cannot. Turn it on under '
+            . '<a href="#tab-appointments" data-bs-toggle="tab" data-bs-target="#tab-appointments">Appointments</a>.'];
+    } elseif ($activeServiceCount === 0) {
+        $testGaps[] = ['html' =>
+            'Booking is on but there is <strong>no active service</strong> to book, so the bot is not told '
+            . 'about booking at all. Add one under '
+            . '<a href="#tab-appointments" data-bs-toggle="tab" data-bs-target="#tab-appointments">Appointments</a>.'];
+    } elseif (!$hasSchedule) {
+        // Distinct from the two above: here the prompt *does* describe booking,
+        // and then tells the model there are no opening hours and it must offer a
+        // callback instead. Same visible outcome, completely different cause.
+        $testGaps[] = ['html' =>
+            'Booking is on, but <strong>no opening hours are saved</strong>, so the bot is told it cannot '
+            . 'take a booking and should offer a callback. Set them under '
+            . '<a href="#tab-appointments" data-bs-toggle="tab" data-bs-target="#tab-appointments">Appointments</a>.'];
+    }
+}
+
+// A model is not a "gap" in the same sense — it is a hard stop, and the endpoint
+// returns a clear error rather than a bad answer — but it belongs in the same
+// list because it is the first thing to check.
+if (empty($config['model_id']) && empty($config['byo_model_code'])) {
+    $testGaps[] = ['html' =>
+        '<strong>No model is selected</strong>, so nothing can answer at all. Pick one under '
+        . '<a href="#tab-model" data-bs-toggle="tab" data-bs-target="#tab-model">Model</a>.'];
 }
 
 $pageTitle = 'Chatbot';
@@ -1031,62 +1076,109 @@ require_once __DIR__ . '/includes/header.php';
       // fall back to, so hiding it from one is correct rather than a gap. The
       // launcher button is inside the same `$hasChatbot` branch, so a plan
       // without the chatbot never renders either. ?>
-<div class="modal fade" id="testChatModal" tabindex="-1" aria-labelledby="testChatTitle" aria-hidden="true">
+<div class="modal fade test-chat-modal" id="testChatModal" tabindex="-1"
+     aria-labelledby="testChatTitle" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="testChatTitle">
-                    <i class="bi bi-chat-dots me-1"></i>Test your chatbot
-                </h5>
-                <button type="button" class="btn btn-sm btn-link text-muted text-decoration-none ms-auto me-2"
-                        id="testChatReset">Start over</button>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <?php // A WhatsApp-style header rather than a page heading: the avatar and
+                  // the status line are what tell you, at a glance, which bot you are
+                  // talking to and whether it would really be answering. ?>
+            <div class="modal-header test-chat-header">
+                <div class="test-chat-identity">
+                    <div class="test-chat-avatar"><i class="bi bi-robot"></i></div>
+                    <div class="min-w-0">
+                        <h5 class="modal-title" id="testChatTitle">
+                            <?= sanitize(trim((string)($testProfile['company_name'] ?? '')) !== ''
+                                ? $testProfile['company_name'] : 'Your chatbot') ?>
+                        </h5>
+                        <div class="test-chat-subtitle">
+                            <?php if (!empty($config['is_enabled'])): ?>
+                                <span class="test-chat-dot is-live"></span>Live · answers real customers
+                            <?php else: ?>
+                                <span class="test-chat-dot is-off"></span>Replies switched off · test only
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <div class="test-chat-header-actions">
+                    <button type="button" class="btn btn-sm btn-light" id="testChatReset"
+                            title="Clear the conversation and start again">
+                        <i class="bi bi-arrow-counterclockwise"></i><span class="d-none d-sm-inline ms-1">Start over</span>
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+            </div>
+
+            <?php // Standing facts, pinned once.
+                  //
+                  // These used to be appended into the transcript after every turn,
+                  // which turned a conversation into a column of identical yellow
+                  // bars. A configuration problem does not change between messages,
+                  // so it is stated once, above the conversation, and collapsed —
+                  // the count is visible without the wall of text. ?>
+            <?php $gapCount = count($testGaps); ?>
+            <div class="test-chat-pinned" id="testChatPinned">
+                <?php if ($gapCount): ?>
+                    <details class="test-chat-gaps">
+                        <summary>
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            <?= $gapCount ?> thing<?= $gapCount === 1 ? '' : 's' ?> will limit what this bot can answer
+                        </summary>
+                        <ul>
+                            <?php foreach ($testGaps as $gap): ?>
+                                <li><?= $gap['html'] ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </details>
+                <?php endif; ?>
+                <div class="test-chat-note is-info d-none" id="testChatUnsaved">
+                    <i class="bi bi-info-circle-fill"></i>
+                    <span>Unsaved changes on this page — this conversation uses your <strong>last saved</strong> settings.</span>
+                </div>
+                <?php // Config-scope notices from the server land here, deduplicated. ?>
+                <div id="testChatStanding"></div>
             </div>
 
             <div class="modal-body p-0">
-                <div class="px-3 pt-3">
-                    <p class="x-small text-muted mb-2">
-                        Your saved settings, the real prompt, nothing sent to WhatsApp. Times are
-                        <?= sanitize($tz) ?>.
-                    </p>
-                    <?php if ($testGaps): ?>
-                        <div class="alert alert-warning x-small py-2">
-                            <?php foreach ($testGaps as $gap): ?>
-                                <div><i class="bi bi-exclamation-triangle me-1"></i><?= $gap['html'] ?></div>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
-                    <?php // Filled by JS when the settings form is dirty. The endpoint
-                          // reads saved config by design — it has to run what the live
-                          // path would run — so the honest thing is to say which
-                          // settings are being tested, not to block the test. ?>
-                    <div class="alert alert-info x-small py-2 d-none" id="testChatUnsaved">
-                        <i class="bi bi-info-circle me-1"></i>
-                        You have unsaved changes on this page. This conversation is using your
-                        <strong>last saved</strong> settings.
-                    </div>
-                </div>
-
-                <?php // Reuses the chat styles from the real conversation view, so a
-                      // tenant recognises what they are looking at. Fixed height, not
-                      // max-height: the composer must not walk up and down the dialog
-                      // as the transcript grows. ?>
+                <?php // Reuses .msg-row / .chat-bubble / .bubble-content from the real
+                      // conversation view, so a tenant recognises what they are looking
+                      // at — the question this whole feature answers is "what will my
+                      // customer see". ?>
                 <div class="test-chat-thread" id="testChatThread" aria-live="polite" aria-atomic="false">
-                    <div class="test-chat-placeholder text-muted small" id="testChatPlaceholder">
-                        <i class="bi bi-chat-square-text d-block mb-2"></i>
-                        Ask what a customer would ask — "what are your opening hours?",
-                        "can I book a haircut on Thursday at 3?", "do you deliver to Clifton?"
+                    <div class="test-chat-empty" id="testChatPlaceholder">
+                        <div class="test-chat-empty-icon"><i class="bi bi-chat-square-text"></i></div>
+                        <p class="test-chat-empty-title">Talk to your bot the way a customer would</p>
+                        <p class="test-chat-empty-body">
+                            It answers from your saved settings and sends nothing to WhatsApp.
+                            Nothing is booked and nobody is notified, whatever it offers.
+                        </p>
+                        <?php // Real starting points, not decoration: each one exercises a
+                              // different half of the prompt — the knowledge base, the
+                              // opening hours, and the booking instructions. ?>
+                        <div class="test-chat-suggestions">
+                            <button type="button" class="test-chat-chip" data-suggest="What do you offer?">What do you offer?</button>
+                            <button type="button" class="test-chat-chip" data-suggest="What are your opening hours?">What are your opening hours?</button>
+                            <?php if ($canAppointments): ?>
+                                <button type="button" class="test-chat-chip" data-suggest="Can I book an appointment?">Can I book an appointment?</button>
+                            <?php endif; ?>
+                            <?php if (!empty($config['handoff_enabled'])): ?>
+                                <button type="button" class="test-chat-chip" data-suggest="Can I speak to a person?">Can I speak to a person?</button>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div class="modal-footer p-2">
-                <div class="chat-input-area w-100 rounded">
+            <div class="modal-footer test-chat-footer">
+                <div class="test-chat-composer">
                     <input type="text" class="form-control" id="testChatInput" autocomplete="off"
                            placeholder="Type a message…" aria-label="Test message">
                     <button class="btn-send" type="button" id="testChatSend" aria-label="Send">
                         <i class="bi bi-send-fill"></i>
                     </button>
+                </div>
+                <div class="test-chat-footnote">
+                    Saved settings · times in <?= sanitize($tz) ?> · nothing is sent to WhatsApp
                 </div>
             </div>
         </div>
@@ -1152,35 +1244,39 @@ require_once __DIR__ . '/includes/header.php';
  * the `history_messages` setting genuinely testable. The server clamps it.
  */
 (function () {
-    var modal  = document.getElementById('testChatModal');
+    var modal = document.getElementById('testChatModal');
     if (!modal) return;
 
-    var thread = document.getElementById('testChatThread');
-    var input  = document.getElementById('testChatInput');
-    var send   = document.getElementById('testChatSend');
-    var reset  = document.getElementById('testChatReset');
-    var blank  = document.getElementById('testChatPlaceholder');
-    var unsaved = document.getElementById('testChatUnsaved');
+    var thread   = document.getElementById('testChatThread');
+    var input    = document.getElementById('testChatInput');
+    var send     = document.getElementById('testChatSend');
+    var reset    = document.getElementById('testChatReset');
+    var blank    = document.getElementById('testChatPlaceholder');
+    var unsaved  = document.getElementById('testChatUnsaved');
+    var standing = document.getElementById('testChatStanding');
     var settingsForm = document.getElementById('chatbotForm');
 
-    // Session-scoped, as the issue suggests: the transcript survives closing and
-    // reopening the dialog within the page, and a reload starts fresh. Nothing
-    // is persisted server-side — a test conversation is not a record of
-    // anything, and storing it would put customer-shaped text in the database
-    // for no one to read.
+    // Session-scoped: the transcript survives closing and reopening the dialog
+    // within the page, and a reload starts fresh. Nothing is persisted
+    // server-side — a test conversation is not a record of anything, and storing
+    // it would put customer-shaped text in the database for nobody to read.
     var turns = [];
     var busy = false;
+    // Config-scope notices already pinned, so the same standing fact is never
+    // shown twice however many messages are sent.
+    var seenStanding = Object.create(null);
 
-    function scrollToEnd() {
-        thread.scrollTop = thread.scrollHeight;
+    function scrollToEnd() { thread.scrollTop = thread.scrollHeight; }
+
+    function clearEmptyState() {
+        if (blank) { blank.remove(); blank = null; }
     }
 
-    // The transcript is built with DOM nodes and textContent, never innerHTML,
-    // for the model's output as well as the tester's — a reply is remote text
-    // and the one exception is formatMessageText(), which is the same sanitising
-    // formatter the real chat view uses.
+    // Built with DOM nodes and textContent, never innerHTML — except for the
+    // reply body, which goes through formatMessageText(), the same sanitising
+    // formatter the real chat view uses (it escapes before it formats).
     function addBubble(text, outgoing) {
-        if (blank) { blank.remove(); blank = null; }
+        clearEmptyState();
 
         var row = document.createElement('div');
         row.className = 'msg-row ' + (outgoing ? 'msg-out' : 'msg-in');
@@ -1199,45 +1295,56 @@ require_once __DIR__ . '/includes/header.php';
         return bubble;
     }
 
-    // "1,300 tokens" means nothing to a business owner testing their own bot,
-    // and it used to be the most prominent thing under the reply. The plain
-    // reading — how long it took — is shown; the numbers a developer or support
-    // needs are one click away, not gone.
+    // Timing goes *inside* the bubble, bottom-right, where WhatsApp puts its own
+    // timestamp. It used to be a separate block under the bubble, which read as
+    // another message and doubled the vertical space every reply took.
+    //
+    // "1,300 tokens" means nothing to a business owner testing their own bot, so
+    // the plain reading is the label and the numbers a developer or support needs
+    // are behind a title attribute rather than an always-open <details>.
     function addMeta(bubble, data) {
         var ms = Number(data.latency_ms || 0);
         if (!ms && !data.model) return;
-        var speed = ms < 2000 ? 'quick' : (ms < 6000 ? 'normal' : 'slow');
 
         var meta = document.createElement('div');
-        meta.className = 'x-small text-muted mt-1 ms-1';
-        meta.textContent = 'Answered in ' + (ms / 1000).toFixed(1) + 's (' + speed + ').';
-
-        var details = document.createElement('details');
-        details.className = 'x-small text-muted';
-        var summary = document.createElement('summary');
-        summary.textContent = 'Technical details';
-        details.appendChild(summary);
-        var body = document.createElement('div');
-        body.textContent = (data.model || 'model not reported') + ' · ' + ms + ' ms · '
+        meta.className = 'bubble-meta test-chat-meta';
+        var speed = ms < 2000 ? 'quick' : (ms < 6000 ? 'normal' : 'slow');
+        meta.textContent = (ms / 1000).toFixed(1) + 's · ' + speed;
+        meta.title = (data.model || 'model not reported') + ' · ' + ms + ' ms · '
             + (data.tokens || 0) + ' tokens';
-        details.appendChild(body);
-        meta.appendChild(details);
-
-        bubble.parentNode.insertAdjacentElement('afterend', meta);
-        scrollToEnd();
+        bubble.appendChild(meta);
     }
 
-    // Everything the server said would differ from WhatsApp right now: the bot
-    // switched off, outside active hours, a handover phrase matched, a booking
-    // the calendar would have refused. Rendered inline in the transcript rather
-    // than at the top, because each one belongs to the message that caused it.
+    function noteNode(n, compact) {
+        var level = n.level === 'warning' ? 'warn' : (n.level === 'success' ? 'ok' : 'info');
+        var icon = level === 'warn' ? 'bi-exclamation-triangle-fill'
+                 : (level === 'ok' ? 'bi-check-circle-fill' : 'bi-info-circle-fill');
+
+        var el = document.createElement('div');
+        el.className = 'test-chat-note is-' + level + (compact ? ' is-inline' : '');
+        var i = document.createElement('i');
+        i.className = 'bi ' + icon;
+        var span = document.createElement('span');
+        span.textContent = n.text;
+        el.appendChild(i);
+        el.appendChild(span);
+        return el;
+    }
+
+    // 'config' notices are standing facts — true of every message — so they are
+    // pinned above the conversation and deduplicated. 'turn' notices were caused
+    // by the message just sent and belong beside it. Anything untagged is treated
+    // as a turn notice, so an older server cannot silently pin something forever.
     function addNotices(list) {
         (list || []).forEach(function (n) {
-            var cls = n.level === 'warning' ? 'warning' : (n.level === 'success' ? 'success' : 'info');
-            var note = document.createElement('div');
-            note.className = 'alert alert-' + cls + ' x-small py-2 my-2';
-            note.textContent = n.text;
-            thread.appendChild(note);
+            if (n.scope === 'config') {
+                if (seenStanding[n.text]) return;
+                seenStanding[n.text] = true;
+                standing.appendChild(noteNode(n, false));
+                return;
+            }
+            clearEmptyState();
+            thread.appendChild(noteNode(n, true));
         });
         scrollToEnd();
     }
@@ -1252,11 +1359,12 @@ require_once __DIR__ . '/includes/header.php';
     }
 
     function addTyping() {
+        clearEmptyState();
         var row = document.createElement('div');
         row.className = 'msg-row msg-in';
         row.id = 'testChatTyping';
-        row.innerHTML = '<div class="chat-bubble incoming"><div class="bubble-content text-muted">'
-            + '<span class="spinner-grow spinner-grow-sm me-1"></span>typing…</div></div>';
+        row.innerHTML = '<div class="chat-bubble incoming test-chat-typing">'
+            + '<span></span><span></span><span></span></div>';
         thread.appendChild(row);
         scrollToEnd();
     }
@@ -1266,9 +1374,9 @@ require_once __DIR__ . '/includes/header.php';
         if (t) t.remove();
     }
 
-    function submit() {
+    function submit(text) {
         if (busy) return;
-        var text = input.value.trim();
+        text = (text !== undefined ? text : input.value).trim();
         if (!text) return;
 
         addBubble(text, true);
@@ -1299,40 +1407,49 @@ require_once __DIR__ . '/includes/header.php';
                 input.focus();
 
                 if (!data.ok) {
-                    // The failed turn is dropped from the transcript payload:
-                    // there is no reply to pair it with, and leaving it in would
-                    // make the next request look like the bot ignored a message.
+                    // The failed turn is dropped from the payload: there is no
+                    // reply to pair it with, and leaving it in would make the next
+                    // request look like the bot ignored a message.
                     turns.pop();
-                    addNotices([{ level: 'warning', text: data.error || 'The test failed.' }]);
+                    addNotices([{ scope: 'turn', level: 'warning', text: data.error || 'The test failed.' }]);
                     return;
                 }
 
                 var bubble = addBubble(data.reply, false);
                 addMeta(bubble, data);
                 addNotices(data.notices);
-                // fromMe is the bot's own outgoing message, which is what the
-                // live path's history looks like — chatbotBuildMessages() maps it
-                // to the assistant role.
+                // fromMe is the bot's own outgoing message, which is what the live
+                // path's history looks like — chatbotBuildMessages() maps it to the
+                // assistant role.
                 turns.push({ fromMe: true, text: data.reply });
             })
             .catch(function () {
                 removeTyping();
                 setBusy(false);
                 turns.pop();
-                addNotices([{ level: 'warning', text: 'Could not reach the server. Try again.' }]);
+                addNotices([{ scope: 'turn', level: 'warning', text: 'Could not reach the server. Try again.' }]);
             });
     }
 
-    send.addEventListener('click', submit);
+    send.addEventListener('click', function () { submit(); });
     input.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+
+    // The empty-state chips are real first messages, not placeholder text.
+    thread.addEventListener('click', function (e) {
+        var chip = e.target.closest('[data-suggest]');
+        if (chip) submit(chip.dataset.suggest);
     });
 
     reset.addEventListener('click', function () {
         turns = [];
         thread.innerHTML = '';
         blank = null;
-        addNotices([{ level: 'info', text: 'Conversation cleared. The bot has no memory of it.' }]);
+        // Standing notices are deliberately kept: clearing the conversation does
+        // not fix the configuration, and re-hiding the reason the bot cannot book
+        // would be actively misleading.
+        addNotices([{ scope: 'turn', level: 'info', text: 'Conversation cleared. The bot has no memory of it.' }]);
         input.focus();
     });
 
@@ -1345,7 +1462,7 @@ require_once __DIR__ . '/includes/header.php';
         settingsForm.addEventListener('input', function () { dirty = true; });
         settingsForm.addEventListener('change', function () { dirty = true; });
         // A successful AJAX save reloads nothing, so the flag has to be cleared
-        // here or the warning would stick around after the settings were saved.
+        // here or the warning would outlive the change it describes.
         settingsForm.addEventListener('submit', function () { dirty = false; });
     }
 

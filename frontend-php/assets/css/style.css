@@ -1394,46 +1394,352 @@ button:focus-visible,
 /* ===== The chatbot test conversation (#34) =====
  *
  * The tenant talking to their own bot, in a modal. Reuses .msg-row /
- * .chat-bubble / .bubble-content from the real conversation view on purpose:
- * the point of the test is "what will my customer see", so it should not look
- * like a different product.
+ * .chat-bubble / .bubble-content from the real conversation view on purpose: the
+ * point of the test is "what will my customer see", so it must not look like a
+ * different product.
  *
- * A fixed height rather than a max-height. With max-height the composer walks
- * down the dialog as the first few messages arrive, so the send button is never
- * twice in the same place — and this is a box people send many short messages
- * into. */
-.test-chat-thread {
-    height: 52vh;
-    min-height: 260px;
-    overflow-y: auto;
-    padding: 12px 16px;
-    background: #efeae2;
-    border-top: 1px solid var(--border-color);
+ * The whole dialog is a flex column bounded by the viewport, and the transcript
+ * is the only part allowed to take the slack. The first version gave the thread a
+ * fixed 52vh, which is fine until you add a header, a pinned warning strip, a
+ * composer and a footnote to it — on a short window (a laptop with devtools
+ * open) the dialog then grew past the viewport and the header and the composer
+ * were both scrolled off, leaving a chat you could not type into. Bounding the
+ * dialog and letting the thread shrink is the arrangement that cannot do that. */
+.test-chat-modal .modal-dialog {
+    max-height: calc(100vh - 2rem);
+    height: calc(100vh - 2rem);
 }
+
+.test-chat-modal .modal-content {
+    max-height: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* min-height: 0 is what actually lets it shrink. A flex item's default
+   min-height is auto, i.e. its content, so without this the thread refuses to
+   get smaller than the transcript and pushes the composer out of the dialog —
+   the exact failure this section exists to prevent. */
+.test-chat-modal .modal-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.test-chat-header {
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+}
+
+.test-chat-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.test-chat-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #25d366;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    flex-shrink: 0;
+}
+
+.test-chat-header .modal-title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-heading);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.test-chat-subtitle {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* Green means a real customer message would be answered right now; grey means
+   this is a rehearsal. It is the one fact that changes how you read every reply
+   in the transcript, so it sits next to the name rather than in a banner. */
+.test-chat-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.test-chat-dot.is-live { background: var(--success); }
+.test-chat-dot.is-off  { background: #94a3b8; }
+
+.test-chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+}
+
+/* --- The pinned strip: standing facts, stated once ------------------------- */
+.test-chat-pinned {
+    flex-shrink: 0;
+    background: var(--body-bg);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.test-chat-pinned:empty {
+    display: none;
+}
+
+.test-chat-note {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: 8px var(--space-4);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    border-left: 3px solid transparent;
+}
+
+.test-chat-note i { margin-top: 1px; flex-shrink: 0; }
+
+.test-chat-note.is-warn { background: var(--warning-light); color: #92400e; border-left-color: var(--warning); }
+.test-chat-note.is-info { background: var(--info-light);    color: #1e40af; border-left-color: var(--info); }
+.test-chat-note.is-ok   { background: var(--success-light); color: #065f46; border-left-color: var(--success); }
+
+/* The same note inside the transcript, where it is about one message rather than
+   about the configuration. Centred and inset so it reads as an annotation on the
+   conversation and not as another participant in it. */
+.test-chat-note.is-inline {
+    margin: var(--space-3) auto;
+    max-width: 88%;
+    border-radius: var(--radius);
+    border-left-width: 3px;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Collapsed by default. The count is the part that has to be visible; the list
+   of five reasons is not something to read on every open. */
+.test-chat-gaps {
+    font-size: var(--fs-xs);
+    background: var(--warning-light);
+    color: #92400e;
+    border-left: 3px solid var(--warning);
+}
+
+.test-chat-gaps > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 8px var(--space-4);
+    cursor: pointer;
+    font-weight: var(--fw-label);
+    list-style: none;
+}
+
+.test-chat-gaps > summary::-webkit-details-marker { display: none; }
+
+.test-chat-gaps > summary::after {
+    content: "\F282";                       /* bi-chevron-down */
+    font-family: "bootstrap-icons";
+    margin-left: auto;
+    font-size: 0.7rem;
+    transition: transform 0.15s ease;
+}
+
+.test-chat-gaps[open] > summary::after { transform: rotate(180deg); }
+
+.test-chat-gaps ul {
+    margin: 0;
+    padding: 0 var(--space-4) 10px 34px;
+}
+
+.test-chat-gaps li { margin-bottom: 5px; }
+.test-chat-gaps a  { color: inherit; font-weight: var(--fw-heading); }
+
+/* --- The transcript ------------------------------------------------------- */
+.test-chat-thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-4);
+    background: #efeae2;
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d5d0c8' fill-opacity='0.2'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+.test-chat-thread .msg-row { margin-bottom: var(--space-2); }
 
 .test-chat-thread .chat-bubble {
-    max-width: 80%;
+    max-width: 74%;
+    padding: 7px 10px 5px;
+    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.09);
 }
 
-.test-chat-placeholder {
+/* WhatsApp's bubble tail. The bubble already squares off the corner nearest its
+   sender; the tail is what makes it read as speech rather than as a card. */
+.test-chat-thread .chat-bubble::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    width: 9px;
+    height: 11px;
+}
+
+.test-chat-thread .chat-bubble.incoming::before {
+    left: -8px;
+    background: #fff;
+    clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+
+.test-chat-thread .chat-bubble.outgoing::before {
+    right: -8px;
+    background: #d9fdd3;
+    clip-path: polygon(0 0, 0 100%, 100% 0);
+}
+
+/* Timing inside the bubble, where WhatsApp puts its timestamp. It used to be a
+   separate block underneath, which read as another message and doubled the
+   vertical cost of every reply. */
+.test-chat-meta {
+    font-size: 0.65rem;
+    color: #667781;
+    cursor: help;
+}
+
+/* Three dots that actually animate, rather than the word "typing…". */
+.test-chat-typing {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 11px 12px;
+}
+
+.test-chat-typing span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #99a3ad;
+    animation: test-chat-blink 1.3s infinite ease-in-out both;
+}
+
+.test-chat-typing span:nth-child(2) { animation-delay: 0.16s; }
+.test-chat-typing span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes test-chat-blink {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+    40%           { opacity: 1;   transform: scale(1); }
+}
+
+/* --- Empty state ---------------------------------------------------------- */
+.test-chat-empty {
     height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 0 24px;
+    padding: var(--space-4);
 }
 
-.test-chat-placeholder i {
-    font-size: 2rem;
-    opacity: 0.35;
+.test-chat-empty-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    color: #667781;
+    margin-bottom: var(--space-3);
 }
 
-/* The composer borrows .chat-input-area, which is built to sit flush against a
-   panel edge; inside a modal footer it needs its own corners back. */
-.modal .chat-input-area {
-    border-radius: var(--radius);
+.test-chat-empty-title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-heading);
+    color: var(--text-primary);
+    margin: 0 0 4px;
+}
+
+.test-chat-empty-body {
+    font-size: var(--fs-sm);
+    color: #5b6b76;
+    max-width: 380px;
+    margin: 0 0 var(--space-4);
+}
+
+/* Real first messages, not placeholder prose. Each chip exercises a different
+   half of the prompt — knowledge base, opening hours, booking instructions —
+   which is also how a tenant discovers what is missing. */
+.test-chat-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    justify-content: center;
+}
+
+.test-chat-chip {
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text-primary);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.test-chat-chip:hover {
+    background: #fff;
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+/* --- Composer ------------------------------------------------------------- */
+.test-chat-footer {
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 10px var(--space-4) 8px;
+    background: #f0f2f5;
+}
+
+.test-chat-composer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.test-chat-composer .form-control {
+    flex: 1;
+    border-radius: 20px;
+    padding: 9px 16px;
+    border: 1px solid var(--border-color);
+    background: #fff;
+}
+
+.test-chat-footnote {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+@media (max-width: 575.98px) {
+    .test-chat-modal .modal-dialog { max-height: 100vh; height: 100vh; margin: 0; }
+    .test-chat-thread .chat-bubble { max-width: 86%; }
 }
 
 /* ===== Contacts Toolbar ===== */

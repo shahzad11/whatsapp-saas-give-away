@@ -87,26 +87,36 @@ foreach (array_slice((array)($input['history'] ?? []), -TEST_HISTORY_MAX_TURNS) 
 // The tenant is configuring a bot; "the answer you just saw would not have been
 // sent at all" is the most useful thing this endpoint can tell them, and it was
 // telling them none of it.
+//
+// Each notice carries a `scope`, and it matters:
+//
+//   'config' — a standing fact about the configuration. True of every message in
+//              the conversation, so the page shows it **once**, pinned. The first
+//              version tagged nothing, so "automatic replies are switched off"
+//              was appended after every single turn and the transcript became a
+//              column of identical yellow bars with the actual conversation
+//              buried between them.
+//   'turn'   — caused by the message just sent. Belongs next to that message and
+//              nowhere else.
 $notices = [];
+$note = function ($scope, $level, $text) use (&$notices) {
+    $notices[] = ['scope' => $scope, 'level' => $level, 'text' => $text];
+};
 
 // Not a refusal. A tenant switching the bot on for the first time will test it
 // before flipping the switch, and refusing to answer until it is enabled makes
 // the tool useless exactly when it is needed.
 if (empty($config['is_enabled'])) {
-    $notices[] = [
-        'level' => 'warning',
-        'text'  => 'Automatic replies are switched off, so a real customer message would get no answer at all.',
-    ];
+    $note('config', 'warning',
+        'Automatic replies are switched off, so a real customer message would get no answer at all.');
 }
 
 $timezone = getUserTimezone($conn, $userId);
 if (!chatbotWithinHours($config, $timezone)) {
     $outside = trim((string)($config['outside_hours_message'] ?? ''));
-    $notices[] = [
-        'level' => 'warning',
-        'text'  => 'It is outside your active hours. A real message right now would get '
-            . ($outside !== '' ? 'your out-of-hours message, not an AI reply.' : 'no reply at all.'),
-    ];
+    $note('config', 'warning',
+        'It is outside your active hours. A real message right now would get '
+        . ($outside !== '' ? 'your out-of-hours message, not an AI reply.' : 'no reply at all.'));
 }
 
 // Both allowances, in the live path's order and for the live path's reasons: a
@@ -150,11 +160,9 @@ if ($phrase !== null) {
 
     chatbotLogEvent($conn, $userId, 'handoff', ['detail' => 'test console: matched "' . $phrase . '"']);
 
-    $notices[] = [
-        'level' => 'info',
-        'text'  => 'That matched your handover phrase "' . $phrase . '", so the AI was not asked. '
-            . 'On WhatsApp this would open a handover and notify you — nothing was opened or sent here.',
-    ];
+    $note('turn', 'info',
+        'That matched your handover phrase "' . $phrase . '", so the AI was not asked. '
+        . 'On WhatsApp this would open a handover and notify you — nothing was opened or sent here.');
 
     echo json_encode([
         'ok' => true,
@@ -175,6 +183,36 @@ if ($phrase !== null) {
 // booking" line — correct, because that is what a new customer's first message
 // sees.
 $context = chatbotBuildContext($conn, $userId, $config, $timezone, null);
+
+// Why the bot will say it cannot book.
+//
+// This is the notice that was missing, and its absence was the whole of the
+// "I asked it to book an appointment and it refused" report. When the
+// appointment context is null the prompt never mentions booking, so the model
+// answers — correctly and unhelpfully — that it cannot book, and the tester has
+// no way to tell that from a broken model.
+//
+// The reasons are checked in the same order chatbotAppointmentContext() checks
+// them, because the first one that fails is the only one worth reporting. Only
+// for a plan that includes appointments: on a plan without it, "booking is off"
+// is not a misconfiguration, it is the plan.
+if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) {
+    if (empty($config['appointments_enabled'])) {
+        $note('config', 'warning',
+            'This bot cannot book anything: appointment booking is switched off, so the prompt never '
+            . 'mentions it. Turn it on under Chatbot → Appointments.');
+    } elseif (!apptServices($conn, $userId, true)) {
+        $note('config', 'warning',
+            'This bot cannot book anything: booking is on but there is no active service to book.');
+    }
+} elseif ($context['appointments'] !== null && empty($context['appointments']['availability'])) {
+    // The subtler one. Here booking *is* described to the model, and then the
+    // prompt tells it there are no opening hours and it must offer a callback —
+    // which looks identical to the cases above and has a different fix.
+    $note('config', 'warning',
+        'Booking is on, but no opening hours are saved, so the bot is told it cannot take a booking '
+        . 'and should offer a callback instead. Set them under Chatbot → Appointments.');
+}
 
 $result = chatbotGenerateReply($conn, $userId, $config, $history, $message, $context);
 
@@ -237,55 +275,41 @@ if ($action !== null) {
     $kind = (string)($action['action'] ?? '');
 
     if ($kind === 'handoff') {
-        $notices[] = [
-            'level' => 'info',
-            'text'  => 'The assistant offered to pass the customer to a person. On WhatsApp this would '
-                . 'open a handover and notify you — nothing was opened or sent here.',
-        ];
+        $note('turn', 'info',
+            'The assistant offered to pass the customer to a person. On WhatsApp this would '
+            . 'open a handover and notify you — nothing was opened or sent here.');
     } elseif ($appointments === null) {
         // The prompt never mentioned booking, so the model invented the marker.
         // The live path drops it silently; the tenant should know it happened,
         // because it usually means the knowledge base is describing a service
         // the appointment feature is not switched on for.
-        $notices[] = [
-            'level' => 'warning',
-            'text'  => 'The assistant tried to book something, but appointments are not switched on, '
-                . 'so nothing would have happened on WhatsApp either.',
-        ];
+        $note('turn', 'warning',
+            'The assistant tried to book something, but appointments are not switched on, '
+            . 'so nothing would have happened on WhatsApp either.');
     } elseif ($kind === 'book') {
         $service = apptMatchService(apptServices($conn, $userId, true), $action['service'] ?? '');
         if (!$service) {
-            $notices[] = [
-                'level' => 'warning',
-                'text'  => 'The assistant proposed a service name that does not match any of yours ('
-                    . (string)($action['service'] ?? '—') . '), so the booking would have been refused.',
-            ];
+            $note('turn', 'warning',
+                'The assistant proposed a service name that does not match any of yours ('
+                . (string)($action['service'] ?? '—') . '), so the booking would have been refused.');
         } else {
             [$utc, $why] = apptValidateSlot(
                 $conn, $userId, $config, $service,
                 $action['datetime'] ?? '', $appointments['timezone']
             );
-            $notices[] = $utc
-                ? [
-                    'level' => 'success',
-                    'text'  => 'The assistant proposed ' . $service['name'] . ' at '
-                        . (string)($action['datetime'] ?? '') . ' (' . $appointments['timezone'] . '). '
-                        . 'That slot is free, so a real message would have booked it. Nothing was booked here.',
-                ]
-                : [
-                    'level' => 'warning',
-                    'text'  => 'The assistant proposed ' . $service['name'] . ' at '
-                        . (string)($action['datetime'] ?? '') . ', which your calendar would refuse: ' . $why,
-                ];
+            $note('turn', $utc ? 'success' : 'warning', $utc
+                ? 'The assistant proposed ' . $service['name'] . ' at '
+                  . (string)($action['datetime'] ?? '') . ' (' . $appointments['timezone'] . '). '
+                  . 'That slot is free, so a real message would have booked it. Nothing was booked here.'
+                : 'The assistant proposed ' . $service['name'] . ' at '
+                  . (string)($action['datetime'] ?? '') . ', which your calendar would refuse: ' . $why);
         }
     } else {
         // reschedule / cancel both need an existing booking, which a console
         // session by definition does not have.
-        $notices[] = [
-            'level' => 'info',
-            'text'  => 'The assistant tried to ' . $kind . ' a booking. The test console is not a real '
-                . 'customer, so it has no existing appointment to act on.',
-        ];
+        $note('turn', 'info',
+            'The assistant tried to ' . $kind . ' a booking. The test console is not a real '
+            . 'customer, so it has no existing appointment to act on.');
     }
 }
 
