@@ -31,13 +31,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // A status change keeps the filters it was made under, or the tenant is
         // sent from "Booked" back to a list they were not looking at.
         $backTo = $self . '?' . http_build_query($_GET);
-        if (apptSetStatus($conn, $userId, $id, $action)) {
+        // Read before the write: what the customer was promised is the row as it
+        // stands now, and after apptSetStatus() the status it is changing *from*
+        // is gone.
+        $appt = apptById($conn, $userId, $id);
+        // Already in that state. apptSetStatus() changes no row and so used to
+        // report "that appointment could not be updated", which is the wrong
+        // thing to tell someone whose double-click did exactly what they asked
+        // — and under #45 it is the reply a duplicate submit gets, so it has to
+        // be honest about the fact that nothing further happened.
+        if ($appt && $appt['status'] === $action) {
+            formRespond(true, 'That appointment is already '
+                . mb_strtolower(apptStatusLabel($action)) . '.', $backTo);
+        }
+        if ($appt && apptSetStatus($conn, $userId, $id, $action)) {
             logAudit($conn, 'appointment.status_changed', 'appointment', (string)$id, ['status' => $action]);
-            formRespond(true, 'Appointment updated.', $backTo);
+
+            // #45: only the endings a customer would notice are announced.
+            // "Done" and "No-show" are the tenant writing down what happened
+            // after the fact and change nothing about what was promised, so
+            // they send nothing.
+            $prefix = 'Appointment updated.';
+            $result = ['status' => 'none'];
+            if ($action === 'cancelled') {
+                $prefix = 'Appointment cancelled.';
+                $result = apptNotifyCustomer($conn, $userId, $appt,
+                    apptChange('cancelled', $appt['scheduled_at'], $tz));
+            } elseif ($action === 'booked' && $appt['status'] === 'cancelled') {
+                // Reopening is only news to someone who heard it was cancelled.
+                $prefix = 'Appointment reopened.';
+                if (apptNoticeWasSent($conn, $userId, $id, apptChange('cancelled', $appt['scheduled_at'], $tz))) {
+                    $result = apptNotifyCustomer($conn, $userId, $appt,
+                        apptChange('reinstated', $appt['scheduled_at'], $tz));
+                }
+            }
+            if ($result['status'] !== 'none') {
+                logAudit($conn, 'appointment.customer_notified', 'appointment', (string)$id,
+                    ['change' => $action, 'result' => $result['status'], 'detail' => $result['detail']]);
+            }
+
+            [$message, $variant] = apptNoticeSummary($prefix, $result);
+            formRespond(true, $message, $backTo, [], ['variant' => $variant]);
         }
         // apptSetStatus() only reports false for an id that is not this tenant's
         // or a status it does not know, and both used to redirect in silence.
         formRespond(false, 'That appointment could not be updated.', $backTo);
+    }
+
+    // #45: the retry behind "Tell customer". A failed WhatsApp send is recorded
+    // rather than swallowed, so there is always something concrete to send
+    // again — the message the customer was always going to get, not one rebuilt
+    // against a diary that has moved on since.
+    if ($action === 'notify_retry' && $id) {
+        $backTo = $self . '?' . http_build_query($_GET);
+        $result = apptRetryNotice($conn, $userId, $id);
+        if ($result['status'] === 'none') {
+            formRespond(false, 'There is nothing waiting to be sent for that appointment.', $backTo);
+        }
+        logAudit($conn, 'appointment.customer_notified', 'appointment', (string)$id,
+            ['change' => 'retry', 'result' => $result['status'], 'detail' => $result['detail']]);
+
+        [$message, $variant] = apptNoticeSummary('Tried again.', $result);
+        formRespond($result['status'] !== 'failed', $message, $backTo, [], ['variant' => $variant]);
     }
 
     if ($action === 'reschedule' && $id) {
@@ -60,6 +115,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ['scheduled_local' => 'Use the date and time picker.']);
         }
         $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
+
+        // Already there. Said plainly rather than left to the move below, which
+        // updates no row and so used to come back as "that clashes with another
+        // booking" — and #45 makes the distinction matter for more than
+        // wording: a form submitted twice must not tell the customer their
+        // appointment was moved from a time to the same time.
+        if ($appt['scheduled_at'] === $utc->format('Y-m-d H:i:s')) {
+            formRespond(true, 'That appointment is already at that time.', $self);
+        }
+
         // #35: the clash check and the move are held against every other writer
         // — the chatbot takes the same lock, so a customer cannot be given this
         // slot in the moment between the two statements here.
@@ -73,7 +138,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$id, ['via' => 'dashboard']);
-        formRespond(true, 'Appointment moved.', $self);
+
+        // #45: the customer is told both times, in the tenant's timezone. The
+        // reminders were already rebuilt by apptReschedule(); the person the
+        // appointment belongs to used to be the only party not informed.
+        $result = apptNotifyCustomer($conn, $userId, $appt,
+            apptChange('rescheduled', $utc->format('Y-m-d H:i:s'), $tz, $appt['scheduled_at']));
+        if ($result['status'] !== 'none') {
+            logAudit($conn, 'appointment.customer_notified', 'appointment', (string)$id,
+                ['change' => 'rescheduled', 'result' => $result['status'], 'detail' => $result['detail']]);
+        }
+
+        [$message, $variant] = apptNoticeSummary('Appointment moved.', $result);
+        formRespond(true, $message, $self, [], ['variant' => $variant]);
     }
 
     if ($action === 'create') {
@@ -145,6 +222,11 @@ $filters = [
 $appointments = apptList($conn, $userId, $filters);
 $counts = apptCounts($conn, $userId);
 $services = apptServices($conn, $userId, true);
+
+// #45: what the customer still has not been told, for the rows on this page.
+// One query for the whole listing — a per-row lookup over 500 rows is 500
+// queries for something almost always empty.
+$notices = apptOutstandingNotices($conn, $userId, array_column($appointments, 'id'));
 
 // The Move form's picker offers the bookings on screen that can still be moved.
 // Built from the list already fetched rather than from a second query, so the
@@ -307,7 +389,10 @@ require_once __DIR__ . '/includes/header.php';
                             <?php foreach ([
                                 ['completed', 'Done', 'success', ''],
                                 ['no_show', 'No-show', 'warning', 'Mark this customer as a no-show? Their reminders stop and the slot is freed.'],
-                                ['cancelled', 'Cancel', 'danger', 'Cancel this appointment? The customer is not told automatically, and their reminders stop.'],
+                                // #45: the customer *is* told now, so the dialog
+                                // says so — a tenant deciding whether to cancel
+                                // is deciding whether to send that message.
+                                ['cancelled', 'Cancel', 'danger', 'Cancel this appointment? The customer is told on WhatsApp and their reminders stop.'],
                             ] as [$act, $label, $colour, $confirm]): ?>
                                 <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
@@ -331,6 +416,33 @@ require_once __DIR__ . '/includes/header.php';
                 </tr>
                 <?php if (!empty($a['notes'])): ?>
                     <tr><td colspan="6" class="x-small text-muted pt-0">Note: <?= sanitize($a['notes']) ?></td></tr>
+                <?php endif; ?>
+                <?php // #45: a change the customer was not told about is said on
+                      // the row it belongs to, not only in the toast that has
+                      // long since gone. A failed send gets the retry; a booking
+                      // with no WhatsApp chat gets the plain reason, because
+                      // there is nothing to try again.
+                      $notice = $notices[(int)$a['id']] ?? null; ?>
+                <?php if ($notice): ?>
+                    <tr class="table-warning">
+                        <td colspan="6" class="x-small pt-0">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <?php if ($notice['status'] === 'failed'): ?>
+                                The customer was not told this booking was
+                                <?= sanitize($notice['kind']) ?> —
+                                <?= sanitize($notice['detail'] ?: 'the message did not go out') ?>.
+                                <form method="post" class="d-inline ms-2" data-ajax>
+                                    <?= csrfField() ?>
+                                    <input type="hidden" name="action" value="notify_retry">
+                                    <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                    <button class="btn btn-outline-primary btn-sm" type="submit">Tell customer</button>
+                                </form>
+                            <?php else: ?>
+                                This booking has no WhatsApp chat linked to it, so the customer
+                                could not be told it was <?= sanitize($notice['kind']) ?>.
+                            <?php endif; ?>
+                        </td>
+                    </tr>
                 <?php endif; ?>
             <?php endforeach; ?>
             </tbody>
@@ -422,7 +534,8 @@ require_once __DIR__ . '/includes/header.php';
         <div class="alert alert-light border small py-2">
             <i class="bi bi-info-circle me-1"></i>
             Moving one by hand is held to the same single rule as adding one: only a clash
-            with another booking is refused. Its reminders are rescheduled with it.
+            with another booking is refused. Its reminders are rescheduled with it, and the
+            customer is told the old and new times on WhatsApp.
         </div>
         <form method="post" id="apptMoveForm" class="row g-2 align-items-end" data-ajax>
             <?= csrfField() ?>

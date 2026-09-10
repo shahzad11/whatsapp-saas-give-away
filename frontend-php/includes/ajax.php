@@ -45,8 +45,20 @@ function jsonOut(array $payload, $status = 200) {
 // rather than followed: some saves genuinely need a new page (a created tenant),
 // most just need the listing redrawn, and the caller is the only thing that
 // knows which.
+// $extra['variant'] is for the save that worked and still has to be said
+// carefully (#45): an appointment cancelled whose customer could not be told is
+// not an error — the cancellation stands — and it is not a plain success
+// either, because somebody now has to phone them. It is a flash key, so it
+// lands as the matching toast on both paths; without it the JSON path is always
+// green and the tenant reads a warning in the colour of "done".
 function formRespond($ok, $message, $redirect, array $errors = [], array $extra = []) {
+    $variant = (string)($extra['variant'] ?? '');
+    if (!isset(FLASH_KEYS[$variant])) $variant = '';
+
     if (isXhrRequest()) {
+        // Sent as the toast's own vocabulary ('danger', not 'error'), so the
+        // browser does not have to keep a second copy of the mapping.
+        if ($variant !== '') $extra['variant'] = FLASH_KEYS[$variant];
         jsonOut($extra + [
             'ok' => (bool)$ok,
             'message' => (string)$message,
@@ -54,7 +66,7 @@ function formRespond($ok, $message, $redirect, array $errors = [], array $extra 
         ]);
     }
 
-    flash($ok ? 'success' : 'error', $message);
+    flash($variant !== '' ? $variant : ($ok ? 'success' : 'error'), $message);
     redirect($redirect);
 }
 

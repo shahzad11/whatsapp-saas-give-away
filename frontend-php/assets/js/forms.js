@@ -170,7 +170,11 @@
 
                 if (res.redirect) { window.location.href = res.redirect; return; }
 
-                toast(res.message || 'Saved.', true);
+                // A save can succeed and still need a warning: an appointment
+                // cancelled whose customer could not be told (#45). The handler
+                // says so with res.variant; without one this is the green toast
+                // it always was.
+                toast(res.message || 'Saved.', res.variant || true);
 
                 // A listing that has to redraw reloads. Rebuilding a table row
                 // in JS would mean the row markup existed twice, in PHP and

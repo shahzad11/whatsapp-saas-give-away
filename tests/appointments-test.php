@@ -22,6 +22,7 @@
 // Both files are function definitions only, so they load without a database, a
 // session or any of the app's configuration. Nothing below calls anything that
 // needs one.
+require_once __DIR__ . '/../frontend-php/includes/functions.php'; // formatUserDate()
 require_once __DIR__ . '/../frontend-php/includes/appointments.php';
 require_once __DIR__ . '/../frontend-php/includes/chatbot.php';   // chatbotValidTime()
 
@@ -669,6 +670,158 @@ equals('all of them, with their durations',
     'Haircut (30 minutes), Colour (90 minutes), Beard trim (15 minutes)',
     apptServiceListLine($services));
 equals('one service reads as one', 'Haircut (30 minutes)', apptServiceListLine([$services[0]]));
+
+// --- Telling the customer what the tenant changed (#45) ----------------------
+//
+// The delivery takes its database, its WhatsApp call and its quota as closures,
+// so every case below is stated as data: a duplicate submit, a send that fails,
+// a booking with nobody to tell. What is being proved is that the tenant is
+// never told a customer was notified when they were not.
+
+group('A cancellation and a move are said in the tenant timezone, with no internals');
+
+$appt = ['id' => 7, 'service_name' => 'Haircut', 'customer_name' => 'Sara',
+         'chat_id' => '923001234567@s.whatsapp.net', 'account_id' => 3,
+         'scheduled_at' => '2026-09-15 09:00:00'];
+
+// 09:00 UTC is 14:00 in Karachi: the customer is shown their own clock, which
+// is the tenant's, and never the stored instant.
+$cancelled = apptChange('cancelled', '2026-09-15 09:00:00', 'Asia/Karachi');
+equals('a cancellation names the service and the local time',
+    'Hi Sara, your Haircut on Tue 15 Sep 2026, 14:00 has been cancelled. '
+    . 'Reply here if you would like to book another time.',
+    apptNoticeText($appt, $cancelled));
+
+$moved = apptChange('rescheduled', '2026-09-16 11:30:00', 'Asia/Karachi', '2026-09-15 09:00:00');
+equals('a move states both times, old first',
+    'Hi Sara, your Haircut has been moved from Tue 15 Sep 2026, 14:00 to '
+    . 'Wed 16 Sep 2026, 16:30. Reply here if the new time does not suit.',
+    apptNoticeText($appt, $moved));
+
+equals('a booking with no name still reads as a sentence',
+    'Hi, your Haircut on Tue 15 Sep 2026, 14:00 has been cancelled. '
+    . 'Reply here if you would like to book another time.',
+    apptNoticeText(['service_name' => 'Haircut', 'customer_name' => null], $cancelled));
+
+check('no internal id, status or timezone name reaches the customer',
+    !preg_match('/\b(id|user_id|chat_id|booked|no_show|UTC)\b/i', apptNoticeText($appt, $moved)));
+
+group('An internal-only update says nothing at all');
+
+foreach (['completed', 'no_show', ''] as $kind) {
+    equals("'{$kind}' produces no message", '', apptNoticeText($appt, ['kind' => $kind, 'when' => 'whenever']));
+}
+
+group('A change is identified by what changed, not by when the button was pressed');
+
+equals('the same cancellation twice is one fingerprint',
+    apptNoticeFingerprint($cancelled),
+    apptNoticeFingerprint(apptChange('cancelled', '2026-09-15 09:00:00', 'Europe/London')));
+check('a move carries both instants, so a second, different move is a second message',
+    apptNoticeFingerprint($moved) !== apptNoticeFingerprint(
+        apptChange('rescheduled', '2026-09-17 11:30:00', 'Asia/Karachi', '2026-09-16 11:30:00')));
+check('a cancellation and a move of the same booking are never confused',
+    apptNoticeFingerprint($cancelled) !== apptNoticeFingerprint($moved));
+
+// A fake for the whole side-effecting half. $sent is what actually went to
+// WhatsApp; $marks is what the row was left saying, which is the half a tenant
+// and an auditor read later.
+function fakeDeps(array $opts = []) {
+    $state = ['sent' => [], 'marks' => [], 'claims' => 0];
+    $deps = [
+        'claim' => function ($kind, $fingerprint, $body) use (&$state, $opts) {
+            $state['claims']++;
+            // A fingerprint already taken is a change somebody else is sending.
+            if (in_array($fingerprint, $opts['taken'] ?? [], true)) return null;
+            $state['body'] = $body;
+            return 99;
+        },
+        'mark' => function ($id, $status, $detail) use (&$state) {
+            $state['marks'][] = [$status, $detail];
+        },
+        'channel' => fn() => ($opts['channel'] ?? true)
+            ? ['session_id' => 't1-abc', 'chat_id' => '923001234567@s.whatsapp.net'] : null,
+        'quota' => fn() => $opts['quota'] ?? true,
+        'send' => function (array $channel, $text) use (&$state, $opts) {
+            if (!empty($opts['throws'])) throw new RuntimeException('socket closed');
+            $state['sent'][] = [$channel['chat_id'], $text];
+            return $opts['sends'] ?? true;
+        },
+    ];
+    return [$deps, function () use (&$state) { return $state; }];
+}
+
+group('A delivered message is recorded as sent, once');
+
+[$deps, $read] = fakeDeps();
+$result = apptSendNotice($deps, 'cancelled', 'cancelled:2026-09-15 09:00:00', 'Hi Sara, …');
+equals('the tenant is told it went', 'sent', $result['status']);
+equals('exactly one message', 1, count($read()['sent']));
+equals('through the chat the booking was made in',
+    '923001234567@s.whatsapp.net', $read()['sent'][0][0]);
+equals('and the row says sent', [['sent', null]], $read()['marks']);
+
+group('A form submitted twice does not message the customer twice');
+
+[$deps, $read] = fakeDeps(['taken' => ['cancelled:2026-09-15 09:00:00']]);
+$result = apptSendNotice($deps, 'cancelled', 'cancelled:2026-09-15 09:00:00', 'Hi Sara, …');
+equals('the second submit is a duplicate', 'duplicate', $result['status']);
+equals('and sends nothing', 0, count($read()['sent']));
+
+group('A chatbot change the customer has already heard about is not repeated');
+
+// The chatbot writes its own reply down as delivered, so the fingerprint is
+// taken by the time a tenant presses Cancel on the same booking.
+[$deps, $read] = fakeDeps(['taken' => ['cancelled:2026-09-15 09:00:00']]);
+equals('the dashboard stays quiet', 0,
+    count($read()['sent']) + (apptSendNotice($deps, 'cancelled', 'cancelled:2026-09-15 09:00:00', 'x')['status'] === 'duplicate' ? 0 : 1));
+
+group('A send that fails is never reported as a customer who was told');
+
+[$deps, $read] = fakeDeps(['sends' => false]);
+$result = apptSendNotice($deps, 'cancelled', 'cancelled:x', 'Hi Sara, …');
+equals('the tenant is told it failed', 'failed', $result['status']);
+equals('the row is left retryable', 'failed', $read()['marks'][0][0]);
+check('with a reason attached', ($read()['marks'][0][1] ?? '') !== '');
+
+[$deps, $read] = fakeDeps(['throws' => true]);
+equals('a thrown send is a failure, not a crash', 'failed',
+    apptSendNotice($deps, 'cancelled', 'cancelled:x', 'Hi Sara, …')['status']);
+
+group('A booking with nobody to tell is recorded honestly and left editable');
+
+[$deps, $read] = fakeDeps(['channel' => false]);
+$result = apptSendNotice($deps, 'cancelled', 'cancelled:x', 'Hi Sara, …');
+equals('skipped, not failed — there is nothing to retry', 'skipped', $result['status']);
+equals('nothing was sent', 0, count($read()['sent']));
+equals('and the row says why', 'skipped', $read()['marks'][0][0]);
+
+group('Out of allowance is a failure the tenant sees, not a silent drop');
+
+[$deps, $read] = fakeDeps(['quota' => false]);
+$result = apptSendNotice($deps, 'cancelled', 'cancelled:x', 'Hi Sara, …');
+equals('failed', 'failed', $result['status']);
+equals('and no message was attempted', 0, count($read()['sent']));
+
+group('What the tenant reads never overstates what the customer got');
+
+[$msg, $variant] = apptNoticeSummary('Appointment cancelled.', ['status' => 'sent']);
+equals('a delivered message is a plain success', 'success', $variant);
+check('and says so', str_contains($msg, 'has been told'));
+
+[$msg, $variant] = apptNoticeSummary('Appointment cancelled.', ['status' => 'failed', 'detail' => 'WhatsApp did not accept the message']);
+equals('a failure is a warning, not a success', 'warning', $variant);
+check('the cancellation itself still stands', str_starts_with($msg, 'Appointment cancelled.'));
+check('the tenant is told the customer was not told', str_contains($msg, 'NOT told'));
+check('and how to try again', str_contains($msg, 'Tell customer'));
+
+[$msg, $variant] = apptNoticeSummary('Appointment cancelled.', ['status' => 'skipped', 'detail' => 'no chat']);
+equals('no linked chat is a warning too', 'warning', $variant);
+check('and says plainly that nothing was sent', str_contains($msg, 'could not be told'));
+
+[$msg, $variant] = apptNoticeSummary('Appointment updated.', ['status' => 'none']);
+equals('an internal-only change is reported as it always was', 'Appointment updated.', $msg);
+equals('success', 'success', $variant);
 
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

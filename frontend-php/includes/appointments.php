@@ -222,6 +222,70 @@ function apptWithinAvailability(array $availability, DateTime $localStart, $dura
     return false;
 }
 
+// --- The slot grid ----------------------------------------------------------
+
+// The block size the diary is divided into, when the tenant has not chosen one.
+// Half an hour, which is also the default service length, so a fresh tenant's
+// slots line up with their fresh service instead of being offered twice as often
+// as the appointment lasts.
+const APPT_DEFAULT_SLOT_MINUTES = 30;
+
+// The tenant's block size, as a number of minutes.
+//
+// Read through here and nowhere else, so the form, the offered times, the
+// booking check and the prompt cannot each fall back to a different grid — which
+// is exactly how a bot comes to offer a time it then refuses to book.
+//
+// Any length between five minutes and eight hours is honoured, not only the ones
+// the dropdown offers: the column can also hold a value from an earlier release
+// or a hand-edit, and quietly rounding someone's diary to the nearest preset is
+// worse than showing them the length they actually have.
+function apptSlotMinutes(array $config) {
+    $minutes = (int)($config['appointment_slot_minutes'] ?? APPT_DEFAULT_SLOT_MINUTES);
+    return $minutes > 0 ? max(5, min(480, $minutes)) : APPT_DEFAULT_SLOT_MINUTES;
+}
+
+// The block sizes the form offers, as minutes.
+//
+// Labelled by apptHumanMinutes() for the same reason the reminder list is, so
+// the dropdown, the prompt and any refusal all name the length the same way.
+function apptSlotChoices() {
+    $out = [];
+    foreach ([15, 30, 45, 60, 90, 120, 180, 240, 480] as $minutes) {
+        $out[$minutes] = apptHumanMinutes($minutes);
+    }
+    return $out;
+}
+
+// Is $localStart one of the diary's block boundaries?
+//
+// Measured from the opening time of the window the appointment falls in, not
+// from midnight: a business that opens at 09:30 works to the half hour, and one
+// that opens at 09:10 has its slots at 09:10, 09:40 — the grid belongs to the
+// tenant's day, not to the clock. This is the same walk apptFreeSlots() makes,
+// asked as a question about one time, so an offer and a booking cannot disagree.
+//
+// Containment is re-checked here rather than assumed, because the alignment is
+// only meaningful relative to the window the appointment is actually in: with
+// two windows a day, a time on the morning's grid may be nowhere on the
+// afternoon's.
+function apptOnSlotGrid(array $availability, DateTime $localStart, $durationMinutes, $slotMinutes) {
+    $slot = max(5, (int)$slotMinutes);
+    $weekday = (int)$localStart->format('w');
+    $startMin = ((int)$localStart->format('H')) * 60 + (int)$localStart->format('i');
+    $endMin = $startMin + max(0, (int)$durationMinutes);
+
+    foreach ($availability as $w) {
+        if ((int)$w['weekday'] !== $weekday) continue;
+        [$wsH, $wsM] = array_map('intval', explode(':', $w['start_time']));
+        [$weH, $weM] = array_map('intval', explode(':', $w['end_time']));
+        $open = $wsH * 60 + $wsM;
+        if ($startMin < $open || $endMin > $weH * 60 + $weM) continue;
+        if (($startMin - $open) % $slot === 0) return true;
+    }
+    return false;
+}
+
 // The slot maths, with no database in sight (#35).
 //
 // Everything that decides whether a time can be offered is here, as a pure
@@ -243,10 +307,18 @@ function apptFreeSlots(array $availability, array $busy, DateTime $fromLocal, $d
 
     $duration = max(5, (int)$durationMinutes);
     $horizon  = max(0, (int)($opts['horizon_days'] ?? 30));
-    // Candidate starts are on a 15-minute grid: it is what people actually say
-    // ("half two", "quarter past"), and stepping by the service duration would
-    // miss a free slot that starts between two notional ones.
-    $step     = max(5, (int)($opts['step_minutes'] ?? 15));
+    // Candidate starts step by the tenant's block size, from each opening time,
+    // so the times offered sit against each other: a half-hour diary opening at
+    // 09:00 offers 09:00, 09:30, 10:00 and nothing between them.
+    //
+    // This used to be a fixed quarter of an hour on the reasoning that people
+    // say "quarter past" and that a coarser grid hides an opening left by a
+    // cancellation. Both are true and neither survived contact with a real
+    // diary: a business that works in half hours was offered 09:15, a customer
+    // took it, and the 09:00 and 09:30 blocks either side of it were both gone
+    // for a fifteen-minute gain. The grid a business actually works to is
+    // something only that business knows, so it is theirs to set.
+    $step     = max(5, (int)($opts['step_minutes'] ?? APPT_DEFAULT_SLOT_MINUTES));
     $limit    = max(1, (int)($opts['limit'] ?? 100));
     $perDay   = max(0, (int)($opts['per_day'] ?? 0));
     $earliest = ($opts['earliest'] ?? null) instanceof DateTime ? $opts['earliest'] : null;
@@ -384,6 +456,7 @@ function apptOpenSlots(mysqli $conn, $userId, array $config, array $service, Dat
 
     return apptFreeSlots($availability, $busy, $fromLocal, $duration, $opts + [
         'horizon_days' => $horizon,
+        'step_minutes' => apptSlotMinutes($config),
         'earliest' => $earliestLocal,
         'latest' => $latestLocal,
     ]);
@@ -478,6 +551,18 @@ function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, 
     $availability = apptAvailability($conn, $userId);
     if (!apptWithinAvailability($availability, $local, (int)$service['duration_minutes'])) {
         return [null, apptDayScheduleLabel($availability, (int)$local->format('w'))
+            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
+    }
+
+    // On the diary's grid, not merely inside opening hours. Without this the
+    // whole setting is advisory: the times offered would step by the tenant's
+    // block size and a customer who typed "quarter past" instead of picking one
+    // of them would still be booked, leaving a stub either side of them that no
+    // slot can use. Refused with the next real opening, like any other refusal.
+    $slotMinutes = apptSlotMinutes($config);
+    if (!apptOnSlotGrid($availability, $local, (int)$service['duration_minutes'], $slotMinutes)) {
+        return [null, 'We book in ' . apptHumanMinutes($slotMinutes)
+            . ' slots, so an appointment cannot start then.'
             . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
     }
 
@@ -660,6 +745,7 @@ function apptDateAvailabilityLine(mysqli $conn, $userId, array $config, array $s
 
     $nowUtc = new DateTime('now', new DateTimeZone('UTC'));
     $opts = [
+        'step_minutes' => apptSlotMinutes($config),
         'earliest' => (clone $nowUtc)->modify('+' . $lead . ' minutes')->setTimezone($tz),
         'latest'   => (clone $nowUtc)->modify('+' . $horizon . ' days')->setTimezone($tz),
     ];
@@ -1385,4 +1471,337 @@ function apptReminderText(array $appt, $whenLocal, $minutesBefore) {
     $hello = $name !== '' ? "Hi {$name}, " : 'Hi, ';
     return $hello . "a reminder that your {$appt['service_name']} is in {$lead} — {$whenLocal}. "
         . 'Reply here if you need to change or cancel it.';
+}
+
+// --- Telling the customer what the tenant changed (#45) ---------------------
+//
+// A booking taken over WhatsApp is a promise made in a conversation, and until
+// this existed a tenant could cancel or move one from the dashboard and the
+// customer would hear nothing at all — they turned up at the old time, or for
+// an appointment that no longer existed. The reminders were rescheduled
+// correctly; the person was simply never told.
+//
+// The rules the delivery is held to are the reminders' rules, because they are
+// the same problem: a message that must go out exactly once, whose sender can
+// die halfway, and whose failure must never be reported to the tenant as a
+// success. So a change is written down before it is sent (appointment_notifications),
+// the row is claimed with a conditional UPDATE, and only a delivered message
+// writes `sent`.
+
+// A change is only ever sent once, so what identifies it has to be the change
+// itself and not the moment the button was pressed. Two submissions of the same
+// cancellation are the same instant cancelled; a genuine second move is a
+// different pair of instants and is therefore a different message.
+function apptNoticeFingerprint(array $change) {
+    $kind = (string)($change['kind'] ?? '');
+    $at = (string)($change['at'] ?? '');
+    $was = (string)($change['was_at'] ?? '');
+    return $was === '' ? $kind . ':' . $at : $kind . ':' . $was . '>' . $at;
+}
+
+// What the customer reads. Pure, and the times arrive already rendered in the
+// tenant's timezone by the caller — a customer is told "Tue 15 Sep, 14:00",
+// never a UTC instant, and never an id or a status name.
+//
+// Returns '' for a change the customer would not notice, which is the whole of
+// "internal-only updates send nothing": marking a booking done or a no-show
+// says nothing about what was promised, so it produces no text and therefore no
+// row and no message.
+function apptNoticeText(array $appt, array $change) {
+    $name = trim((string)($appt['customer_name'] ?? ''));
+    $hello = $name !== '' ? "Hi {$name}, " : 'Hi, ';
+    $service = trim((string)($appt['service_name'] ?? '')) ?: 'appointment';
+    $when = (string)($change['when'] ?? '');
+    $was = (string)($change['was'] ?? '');
+
+    switch ((string)($change['kind'] ?? '')) {
+        case 'cancelled':
+            return $hello . "your {$service} on {$when} has been cancelled. "
+                . 'Reply here if you would like to book another time.';
+        case 'rescheduled':
+            return $hello . "your {$service} has been moved from {$was} to {$when}. "
+                . 'Reply here if the new time does not suit.';
+        // A booking reopened after the customer was told it was cancelled. Only
+        // ever reached when the cancellation actually went out — see
+        // apptNoticeWasSent() — because telling someone their appointment is
+        // back on when they never heard it was off is worse than silence.
+        case 'reinstated':
+            return $hello . "your {$service} on {$when} is going ahead after all. "
+                . 'Reply here if that no longer suits you.';
+    }
+    return '';
+}
+
+// The change, with both instants and both labels, ready for the two functions
+// above. $tz is the tenant's timezone and is the only zone a customer is ever
+// shown a time in.
+function apptChange($kind, $atUtc, $timezone, $wasUtc = null) {
+    $format = 'D j M Y, H:i';
+    return [
+        'kind' => (string)$kind,
+        'at' => (string)$atUtc,
+        'was_at' => $wasUtc === null ? '' : (string)$wasUtc,
+        'when' => formatUserDate($atUtc, $timezone, $format),
+        'was' => $wasUtc === null ? '' : formatUserDate($wasUtc, $timezone, $format),
+    ];
+}
+
+// Claim, send, record — with every side effect injected (#45).
+//
+// The database, the WhatsApp call and the quota all arrive as closures, for the
+// same reason the slot maths was separated from its queries: the interesting
+// cases here are a duplicate submit, a send that fails and a booking with
+// nobody to tell, and a test that needed a live MySQL and a live WhatsApp
+// socket to state them would be testing the fixture.
+//
+// Returns ['status' => 'sent'|'duplicate'|'skipped'|'failed', 'detail' => string].
+// Nothing here reports a success it did not have: a failed send leaves a
+// `failed` row the tenant is shown and can retry, never a "customer notified".
+function apptSendNotice(array $deps, $kind, $fingerprint, $text) {
+    $noticeId = ($deps['claim'])($kind, $fingerprint, $text);
+    // Somebody else owns this exact change: the same form submitted twice, a
+    // retried POST, or the chatbot having already said it in its own reply.
+    if (!$noticeId) return ['status' => 'duplicate', 'detail' => 'the customer had already been told'];
+
+    $channel = ($deps['channel'])();
+    if (!$channel) {
+        $detail = 'no WhatsApp account or chat is linked to this booking';
+        ($deps['mark'])($noticeId, 'skipped', $detail);
+        return ['status' => 'skipped', 'detail' => $detail];
+    }
+
+    // A notification is a message and is metered like one, exactly as a
+    // reminder is. Out of allowance is a failure the tenant has to see — the
+    // appointment change stands either way.
+    if (isset($deps['quota']) && !($deps['quota'])()) {
+        $detail = 'the monthly message limit has been reached';
+        ($deps['mark'])($noticeId, 'failed', $detail);
+        return ['status' => 'failed', 'detail' => $detail];
+    }
+
+    try {
+        $ok = ($deps['send'])($channel, $text);
+        $detail = 'WhatsApp did not accept the message';
+    } catch (Throwable $e) {
+        $ok = false;
+        $detail = 'the message could not be sent';
+    }
+
+    if (!$ok) {
+        ($deps['mark'])($noticeId, 'failed', $detail);
+        return ['status' => 'failed', 'detail' => $detail];
+    }
+
+    ($deps['mark'])($noticeId, 'sent', null);
+    return ['status' => 'sent', 'detail' => ''];
+}
+
+// How the tenant is told what the customer was told. Pure, and it never
+// dresses a failure up as a success: the two outcomes the tenant has to act on
+// come back as 'warning' so the page shows them in the colour of something
+// unfinished.
+//
+// Returns [message, flash variant].
+function apptNoticeSummary($prefix, array $result) {
+    switch ((string)($result['status'] ?? '')) {
+        case 'sent':
+            return [$prefix . ' The customer has been told on WhatsApp.', 'success'];
+        case 'duplicate':
+            return [$prefix . ' The customer had already been told.', 'success'];
+        case 'skipped':
+            return [$prefix . ' No WhatsApp chat is linked to this booking, so the customer could not be told.',
+                'warning'];
+        case 'failed':
+            return [$prefix . ' The customer was NOT told — ' . ($result['detail'] ?? 'the message did not go out')
+                . '. Use "Tell customer" on the booking to try again.', 'warning'];
+    }
+    return [$prefix, 'success'];
+}
+
+// A claim that is also the de-duplication (#45).
+//
+// The unique key on (appointment_id, fingerprint) means the insert is the
+// claim: the first submission of a change creates the row and owns it, and a
+// second one finds it already there. `failed` is re-claimable because a retry
+// is the point of recording a failure, and a `sending` row older than the
+// window below was abandoned by a process that died — anything else (`sent`,
+// `skipped`, a live `sending`) belongs to somebody and is left alone.
+//
+// Returns the notice id when this caller owns the send, or null.
+//
+// The order of the assignments below is load-bearing. MySQL evaluates them left
+// to right against the row as it is being changed, so `status` is written last:
+// set first, it would rewrite the very column the other five conditions are
+// testing, and a re-claimed row would keep its old attempt count and its stale
+// failure reason. `claimed_at` goes immediately before it for the same reason —
+// the one condition that can still read it correctly is the last one, and by
+// then the answer no longer depends on it.
+const APPT_NOTICE_STALE_MINUTES = 5;
+
+function apptClaimNotice(mysqli $conn, $userId, $appointmentId, $kind, $fingerprint, $body, $channel = 'dashboard') {
+    $reclaimable = "(status = 'failed' OR (status = 'sending'
+                     AND claimed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL "
+                     . APPT_NOTICE_STALE_MINUTES . " MINUTE)))";
+
+    $stmt = $conn->prepare(
+        "INSERT INTO appointment_notifications
+            (appointment_id, user_id, kind, fingerprint, body, channel, status, attempts, claimed_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'sending', 1, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE
+            id         = LAST_INSERT_ID(id),
+            detail     = IF({$reclaimable}, NULL, detail),
+            body       = IF({$reclaimable}, VALUES(body), body),
+            attempts   = IF({$reclaimable}, attempts + 1, attempts),
+            claimed_at = IF({$reclaimable}, UTC_TIMESTAMP(), claimed_at),
+            status     = IF({$reclaimable}, 'sending', status)"
+    );
+    $stmt->bind_param('iissss', $appointmentId, $userId, $kind, $fingerprint, $body, $channel);
+    $stmt->execute();
+    // 1 = inserted, 2 = an existing row this caller just re-claimed, 0 = a row
+    // nothing changed about, which is somebody else's send.
+    $owned = $stmt->affected_rows !== 0;
+    $id = $conn->insert_id;
+    $stmt->close();
+
+    return $owned ? (int)$id : null;
+}
+
+function apptMarkNotice(mysqli $conn, $noticeId, $status, $detail = null) {
+    $detail = $detail === null ? null : mb_substr((string)$detail, 0, 255);
+    $stmt = $conn->prepare(
+        "UPDATE appointment_notifications
+            SET status = ?, detail = ?, claimed_at = NULL,
+                sent_at = IF(? = 'sent', UTC_TIMESTAMP(), sent_at)
+          WHERE id = ?"
+    );
+    $stmt->bind_param('sssi', $status, $detail, $status, $noticeId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// The account and chat a notification goes through: the ones the booking was
+// made in, and no others. A manual booking has no linked account, so there is
+// nothing to send through and nothing is invented — the row is recorded as
+// skipped and the tenant is told plainly.
+function apptNoticeChannel(mysqli $conn, $userId, array $appt) {
+    $chatId = trim((string)($appt['chat_id'] ?? ''));
+    $accountId = (int)($appt['account_id'] ?? 0);
+    if ($chatId === '' || !$accountId) return null;
+
+    $stmt = $conn->prepare("SELECT session_id FROM wa_accounts WHERE id = ? AND user_id = ?");
+    $stmt->bind_param('ii', $accountId, $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    $sessionId = trim((string)($row['session_id'] ?? ''));
+    return $sessionId === '' ? null : ['session_id' => $sessionId, 'chat_id' => $chatId];
+}
+
+// The real dependencies, in the shape apptSendNotice() expects.
+function apptNoticeDeps(mysqli $conn, $userId, array $appt, $channelName = 'dashboard') {
+    return [
+        'claim' => fn($kind, $fingerprint, $body) => apptClaimNotice($conn, $userId, (int)$appt['id'],
+            $kind, $fingerprint, $body, $channelName),
+        'mark' => fn($noticeId, $status, $detail) => apptMarkNotice($conn, $noticeId, $status, $detail),
+        'channel' => fn() => apptNoticeChannel($conn, $userId, $appt),
+        'quota' => function () use ($conn, $userId) { [$ok] = checkMessageQuota($conn, $userId); return $ok; },
+        'send' => fn(array $channel, $text) => chatbotSendReply($conn, $userId, 't' . $userId,
+            $channel['session_id'], $channel['chat_id'], $text),
+    ];
+}
+
+// Tells the customer about one change a tenant made. The single entry point the
+// dashboard uses.
+function apptNotifyCustomer(mysqli $conn, $userId, array $appt, array $change) {
+    $text = apptNoticeText($appt, $change);
+    // Nothing a customer would notice: no message, and no row pretending there
+    // was one to send.
+    if ($text === '') return ['status' => 'none', 'detail' => ''];
+
+    return apptSendNotice(apptNoticeDeps($conn, $userId, $appt),
+        (string)$change['kind'], apptNoticeFingerprint($change), $text);
+}
+
+// The chatbot has already told the customer in its own reply, so the change is
+// recorded as delivered rather than sent again. This is what makes a
+// chatbot-driven cancellation invisible to the dashboard's notifier: the
+// fingerprint is taken, so a tenant who then presses Cancel on the same booking
+// cannot produce a second message about the same change.
+function apptRecordNoticeSent(mysqli $conn, $userId, $appointmentId, array $change, $body, $channel = 'chatbot') {
+    $kind = (string)($change['kind'] ?? '');
+    $fingerprint = apptNoticeFingerprint($change);
+    $stmt = $conn->prepare(
+        "INSERT INTO appointment_notifications
+            (appointment_id, user_id, kind, fingerprint, body, channel, status, attempts, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'sent', 1, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)"
+    );
+    $body = mb_substr((string)$body, 0, 2000);
+    $stmt->bind_param('iissss', $appointmentId, $userId, $kind, $fingerprint, $body, $channel);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Did this exact change reach the customer? Asked before a reinstatement, so a
+// booking reopened after a cancellation nobody heard about stays silent.
+function apptNoticeWasSent(mysqli $conn, $userId, $appointmentId, array $change) {
+    $fingerprint = apptNoticeFingerprint($change);
+    $stmt = $conn->prepare(
+        "SELECT 1 FROM appointment_notifications
+          WHERE appointment_id = ? AND user_id = ? AND fingerprint = ? AND status = 'sent' LIMIT 1"
+    );
+    $stmt->bind_param('iis', $appointmentId, $userId, $fingerprint);
+    $stmt->execute();
+    $found = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $found;
+}
+
+// Everything the tenant still has to know about, keyed by appointment: a
+// message that failed and can be retried, and one that was never possible
+// because the booking has no WhatsApp chat. Read for a whole page in one query
+// — the listing shows up to 500 rows.
+function apptOutstandingNotices(mysqli $conn, $userId, array $appointmentIds) {
+    $ids = array_values(array_unique(array_map('intval', $appointmentIds)));
+    if (!$ids) return [];
+
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $conn->prepare(
+        "SELECT appointment_id, kind, status, detail, attempts
+           FROM appointment_notifications
+          WHERE user_id = ? AND status IN ('failed', 'skipped') AND appointment_id IN ({$in})
+          ORDER BY id ASC"
+    );
+    $stmt->bind_param('i' . str_repeat('i', count($ids)), $userId, ...$ids);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    // Last one wins: the most recent unfinished thing is what the tenant is
+    // being asked about.
+    $byAppointment = [];
+    foreach ($rows as $row) $byAppointment[(int)$row['appointment_id']] = $row;
+    return $byAppointment;
+}
+
+// The retry the tenant is offered when a send failed. It re-sends what the
+// customer was always going to be told — the stored body — rather than a
+// sentence rebuilt against a diary that has moved on since.
+function apptRetryNotice(mysqli $conn, $userId, $appointmentId) {
+    $stmt = $conn->prepare(
+        "SELECT * FROM appointment_notifications
+          WHERE appointment_id = ? AND user_id = ? AND status = 'failed'
+          ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->bind_param('ii', $appointmentId, $userId);
+    $stmt->execute();
+    $notice = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    $appt = apptById($conn, $userId, $appointmentId);
+    if (!$notice || !$appt) return ['status' => 'none', 'detail' => 'there is nothing waiting to be sent'];
+
+    return apptSendNotice(apptNoticeDeps($conn, $userId, $appt),
+        (string)$notice['kind'], (string)$notice['fingerprint'], (string)$notice['body']);
 }

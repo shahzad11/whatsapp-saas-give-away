@@ -703,6 +703,50 @@ PREPARE stmt_add_retry_idx FROM @add_retry_idx;
 EXECUTE stmt_add_retry_idx;
 DEALLOCATE PREPARE stmt_add_retry_idx;
 
+-- One row per customer-visible change to an appointment (#45).
+--
+-- A tenant who cancels or moves a booking from the dashboard owes the customer
+-- a message, and the only safe way to send one is to write down that it is
+-- owed. `fingerprint` is what the change *was* — the cancelled instant, or the
+-- pair of instants a move went between — so the unique key is the whole of the
+-- de-duplication: a form submitted twice, a retried POST and a page refresh all
+-- describe the same change and therefore the same row, and only the first of
+-- them can claim it.
+--
+-- The state machine is deliberately the reminders' one, for the same reasons:
+-- `sending` is a claim with an owner and a timestamp so a killed process cannot
+-- leave a row claiming to have delivered a message that never went out, `failed`
+-- is retryable and visible to the tenant, and `skipped` is the honest record of
+-- an appointment with nobody to tell (a manual booking with no linked account).
+--
+-- `body` is stored rather than rebuilt: a retry must send what the customer was
+-- always going to be told, not a sentence regenerated against a calendar that
+-- has moved on since.
+--
+-- `channel` distinguishes a message the dashboard sent from one the chatbot had
+-- already said in its own reply. The chatbot writes its row as `sent`, which is
+-- what stops the dashboard telling the same customer the same thing twice.
+CREATE TABLE IF NOT EXISTS appointment_notifications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    user_id INT NOT NULL,
+    kind VARCHAR(20) NOT NULL,
+    fingerprint VARCHAR(120) NOT NULL,
+    body TEXT NOT NULL,
+    channel VARCHAR(20) NOT NULL DEFAULT 'dashboard',
+    status ENUM('sending','sent','failed','skipped') NOT NULL DEFAULT 'sending',
+    attempts INT NOT NULL DEFAULT 0,
+    detail VARCHAR(255) DEFAULT NULL,
+    claimed_at DATETIME DEFAULT NULL,
+    sent_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_notice (appointment_id, fingerprint),
+    INDEX idx_user_status (user_id, status)
+) ENGINE=InnoDB;
+
 -- Appointment settings ride on chatbot_configs: the booking flow is the chatbot.
 SET @add_appt := (
     SELECT IF(COUNT(*) = 0,
@@ -719,6 +763,25 @@ SET @add_appt := (
 PREPARE stmt_add_appt FROM @add_appt;
 EXECUTE stmt_add_appt;
 DEALLOCATE PREPARE stmt_add_appt;
+
+-- The size of one block in the diary. Offered start times step by this, from
+-- each opening time, so a 30-minute grid offers 09:00, 09:30, 10:00 and nothing
+-- between them — appointments sit against each other instead of being spread
+-- over a finer grid than the business actually works to.
+--
+-- Its own guard rather than a line in the block above: that one only fires on a
+-- database that predates appointments entirely, so a tenant already using
+-- booking would never have got this column.
+SET @add_slot := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs ADD COLUMN appointment_slot_minutes INT NOT NULL DEFAULT 30',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'appointment_slot_minutes'
+);
+PREPARE stmt_add_slot FROM @add_slot;
+EXECUTE stmt_add_slot;
+DEALLOCATE PREPARE stmt_add_slot;
 
 -- ---------------------------------------------------------------------------
 -- Human handoff (issue #16)

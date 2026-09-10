@@ -41,6 +41,7 @@ function chatbotDefaultConfig($userId) {
         'appointments_enabled' => 0,
         'appointment_lead_minutes' => 60,
         'appointment_horizon_days' => 30,
+        'appointment_slot_minutes' => APPT_DEFAULT_SLOT_MINUTES,
         'reminder_minutes' => '1440,60',
         'booking_confirmation' => '',
         'handoff_enabled' => 0,
@@ -115,6 +116,11 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $apptOn    = !empty($in['appointments_enabled']) ? 1 : 0;
     $lead      = max(0, min(10080, (int)($in['appointment_lead_minutes'] ?? 60)));
     $horizon   = max(1, min(365, (int)($in['appointment_horizon_days'] ?? 30)));
+    // The diary's block size. Normalised by apptSlotMinutes() rather than here,
+    // so the value written is the same one every reader of the column resolves —
+    // an absent or nonsensical field becomes the default, never a zero step that
+    // would make the slot walk spin.
+    $slot      = apptSlotMinutes(['appointment_slot_minutes' => $in['appointment_slot_minutes'] ?? null]);
     // #36: the form posts a checkbox per lead time, and an unchecked box posts
     // nothing at all — so "no reminders" arrives as an absent field, exactly
     // like a caller that never knew about reminders. The hidden marker tells the
@@ -157,11 +163,11 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             fallback_message, tone, max_tokens, history_messages, active_hours_start, active_hours_end,
             outside_hours_message, transcribe_audio,
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
-            reminder_minutes, booking_confirmation,
+            appointment_slot_minutes, reminder_minutes, booking_confirmation,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
             handoff_notify_number, handoff_notify_email,
             handoff_share_number, handoff_share_message)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -173,6 +179,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             appointments_enabled = VALUES(appointments_enabled),
             appointment_lead_minutes = VALUES(appointment_lead_minutes),
             appointment_horizon_days = VALUES(appointment_horizon_days),
+            appointment_slot_minutes = VALUES(appointment_slot_minutes),
             reminder_minutes = VALUES(reminder_minutes),
             booking_confirmation = VALUES(booking_confirmation),
             handoff_enabled = VALUES(handoff_enabled), handoff_phrases = VALUES(handoff_phrases),
@@ -184,14 +191,14 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             handoff_share_message = VALUES(handoff_share_message)"
     );
     // The type string is derived from the values, not written by hand. This
-    // statement binds 27 columns and the hand-written string had drifted by one
+    // statement binds 28 columns and the hand-written string had drifted by one
     // character, so `bind_param` threw `ArgumentCountError` and *every* save of
     // this form 500'd. Deriving it cannot drift when a column is added — which
     // is what let #26 add two more here without touching it.
     $params = [
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
-        $apptOn, $lead, $horizon, $reminders, $confirm,
+        $apptOn, $lead, $horizon, $slot, $reminders, $confirm,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
         $shareNum, $shareMsg,
     ];
@@ -1136,7 +1143,15 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             if (!$existing) return "I could not find a booking to cancel.";
             apptSetStatus($conn, $userId, (int)$existing['id'], 'cancelled');
             logAudit($conn, 'appointment.cancelled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
-            return "Cancelled: {$existing['service_name']} on " . $fmt($existing['scheduled_at']) . '.';
+
+            $reply = "Cancelled: {$existing['service_name']} on " . $fmt($existing['scheduled_at']) . '.';
+            // #45: this reply *is* the customer being told, so it is recorded as
+            // such. A tenant who then presses Cancel on the same booking in the
+            // dashboard finds the change already delivered and sends nothing —
+            // one change, one message, whoever made it.
+            apptRecordNoticeSent($conn, $userId, (int)$existing['id'],
+                apptChange('cancelled', $existing['scheduled_at'], $timezone), $reply);
+            return $reply;
 
         case 'reschedule':
             $existing = $ctx['chat_id'] ? apptNextForChat($conn, $userId, $ctx['chat_id']) : null;
@@ -1151,7 +1166,13 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             if (!$utc) return apptRefusalLine($why);
 
             logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
-            return "Moved: {$existing['service_name']} is now " . $fmt($utc->format('Y-m-d H:i:s')) . '.';
+
+            $reply = "Moved: {$existing['service_name']} is now " . $fmt($utc->format('Y-m-d H:i:s')) . '.';
+            // Recorded for the same reason as the cancellation above (#45).
+            apptRecordNoticeSent($conn, $userId, (int)$existing['id'],
+                apptChange('rescheduled', $utc->format('Y-m-d H:i:s'), $timezone, $existing['scheduled_at']),
+                $reply);
+            return $reply;
     }
 
     return '';
