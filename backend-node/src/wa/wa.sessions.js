@@ -1837,6 +1837,70 @@ export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
   }
 }
 
+// Marks a chat as read on WhatsApp (#37).
+//
+// Two different things, both of which a person means by "read": the receipt
+// that turns the sender's ticks blue, and the unread badge on the tenant's own
+// phone. readMessages() does the first; chatModify() does the second, and it is
+// best-effort — a Baileys build or a chat state that will not take it must not
+// fail the call, because the reply it follows has already been sent.
+//
+// Only inbound messages get a receipt, and only ones newer than the last
+// receipt this process sent for the chat: re-acknowledging the whole thread on
+// every reply is a burst of traffic WhatsApp reads as automation.
+export async function markSessionChatRead(tenantId, sessionId, chatId) {
+  const { session: s, error } = sendableSession(tenantId, sessionId)
+  if (error) return { ok: false, error }
+
+  if (!s.readUpTo) s.readUpTo = new Map()
+  const since = s.readUpTo.get(chatId) || 0
+
+  // participant identifies who spoke inside a group, where remoteJid is the
+  // group itself. In a one-to-one chat storeMessage() records the sender as the
+  // chat, so passing it here would set participant to the same jid as remoteJid
+  // — which is not what a receipt for a direct message looks like.
+  const isGroup = chatId.endsWith('@g.us')
+
+  const msgs = s.messages.get(chatId) || []
+  const keys = []
+  let newest = since
+  // Newest first, and never more than a page of them: the receipt only has to
+  // reach the last unacknowledged messages, not the entire history.
+  for (let i = msgs.length - 1; i >= 0 && keys.length < 20; i--) {
+    const m = msgs[i]
+    const t = msgTime(m)
+    if (t <= since) break
+    if (m.fromMe) continue
+    keys.push({
+      remoteJid: chatId,
+      id: m.id,
+      participant: isGroup ? (m.senderJid || undefined) : undefined
+    })
+    if (t > newest) newest = t
+  }
+
+  if (keys.length === 0) return { ok: true, marked: 0 }
+
+  try {
+    await s.sock.readMessages(keys)
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+  s.readUpTo.set(chatId, newest)
+
+  try {
+    const last = msgs[msgs.length - 1]
+    await s.sock.chatModify(
+      { markRead: true, lastMessages: [{ key: { remoteJid: chatId, fromMe: !!last.fromMe, id: last.id }, messageTimestamp: Math.floor(msgTime(last) / 1000) }] },
+      chatId
+    )
+  } catch (_) {
+    // The receipt is what the customer sees; the badge is housekeeping.
+  }
+
+  return { ok: true, marked: keys.length }
+}
+
 // What the composer may send, and what WhatsApp content each maps to. 'voice'
 // is not a WhatsApp type — it is an audioMessage with ptt set, which is the one
 // flag that makes a recipient's client render a waveform instead of a file.

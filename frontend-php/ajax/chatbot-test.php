@@ -212,6 +212,15 @@ if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) 
     $note('config', 'warning',
         'Booking is on, but no opening hours are saved, so the bot is told it cannot take a booking '
         . 'and should offer a callback instead. Set them under Chatbot → Appointments.');
+} elseif ($context['appointments'] !== null && empty($context['appointments']['slots'])) {
+    // #35: hours are set and the bot knows about booking, but nothing inside the
+    // horizon is actually free — a full diary, or a minimum notice and horizon
+    // that between them leave no room. The bot will correctly decline to offer a
+    // time, which is indistinguishable from a broken bot without this line.
+    $note('config', 'warning',
+        'Booking is on and your opening hours are saved, but there is no free slot between now and '
+        . 'the end of your booking window, so the bot has nothing to offer. Check the diary, the '
+        . 'minimum notice and how far ahead you take bookings.');
 }
 
 $result = chatbotGenerateReply($conn, $userId, $config, $history, $message, $context);

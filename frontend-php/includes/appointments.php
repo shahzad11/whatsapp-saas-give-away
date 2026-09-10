@@ -222,61 +222,183 @@ function apptWithinAvailability(array $availability, DateTime $localStart, $dura
     return false;
 }
 
-// The first moment the business is open and free, at or after $fromLocal (#25).
+// The slot maths, with no database in sight (#35).
 //
-// "We are not open then" is true but unhelpful — the customer has to guess again,
-// and a bot that makes someone guess three times is a bot they stop using. This
-// walks forward a day at a time to the horizon, so the suggestion is always a
-// real slot: inside a window, long enough for the service to finish before
-// closing, not already booked, and past the minimum notice.
+// Everything that decides whether a time can be offered is here, as a pure
+// function of a schedule, a list of taken windows and a clock: the tenant's
+// opening hours, the service's duration, the minimum notice and the horizon.
+// Separated from the queries for the same reason apptValidateWeek() is — the
+// interesting cases are boundaries, closed days and timezone edges, and a test
+// that needed a database to prove "17:00 is not offered for a 60-minute service
+// that closes at 17:00" would be proving it against the wrong thing.
 //
-// Returns a DateTime in the tenant's timezone, or null when there is genuinely
-// nothing — no schedule at all, or a fully booked horizon.
-function apptNextAvailable(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, $timezone) {
-    $availability = apptAvailability($conn, $userId);
-    if (!$availability) return null;
+// $availability is the appointment_availability rows; $busy is a list of
+// ['start' => DateTime, 'end' => DateTime] in the *same* timezone as $fromLocal.
+// Returns DateTimes in that timezone, earliest first.
+//
+// Options: horizon_days, step_minutes, limit, per_day, earliest, latest
+// (the last two DateTimes).
+function apptFreeSlots(array $availability, array $busy, DateTime $fromLocal, $durationMinutes, array $opts = []) {
+    if (!$availability) return [];
 
-    $duration = max(5, (int)$service['duration_minutes']);
-    $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
-    $byDay = [];
-    foreach ($availability as $w) $byDay[(int)$w['weekday']][] = $w;
-
-    $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
-    $earliestUtc = (new DateTime('now', new DateTimeZone('UTC')))->modify('+' . $lead . ' minutes');
-
+    $duration = max(5, (int)$durationMinutes);
+    $horizon  = max(0, (int)($opts['horizon_days'] ?? 30));
     // Candidate starts are on a 15-minute grid: it is what people actually say
     // ("half two", "quarter past"), and stepping by the service duration would
     // miss a free slot that starts between two notional ones.
-    $step = 15;
-    $cursor = (clone $fromLocal);
+    $step     = max(5, (int)($opts['step_minutes'] ?? 15));
+    $limit    = max(1, (int)($opts['limit'] ?? 100));
+    $perDay   = max(0, (int)($opts['per_day'] ?? 0));
+    $earliest = ($opts['earliest'] ?? null) instanceof DateTime ? $opts['earliest'] : null;
+    // The horizon in days is a whole number of days from *now*, so the last day
+    // of the grid is only partly inside it. Without this, a bot asked at 09:00
+    // could offer 16:00 on the thirtieth day and then refuse the booking it had
+    // just offered, because apptValidateSlot() measures the same limit to the
+    // hour. One cut-off, applied to both.
+    $latest = ($opts['latest'] ?? null) instanceof DateTime ? $opts['latest'] : null;
+
+    $byDay = apptWindowsByWeekday($availability);
+    $out = [];
 
     for ($dayOffset = 0; $dayOffset <= $horizon; $dayOffset++) {
-        $day = (clone $cursor)->modify('+' . $dayOffset . ' days');
+        $day = (clone $fromLocal)->modify('+' . $dayOffset . ' days');
         $weekday = (int)$day->format('w');
+        // A day with no window is closed. That is the whole of "disabled day":
+        // the absence of a row, never a zero-length one.
         if (empty($byDay[$weekday])) continue;
 
-        $windows = $byDay[$weekday];
-        usort($windows, fn($a, $b) => strcmp($a['start_time'], $b['start_time']));
-
-        foreach ($windows as $w) {
+        $found = 0;
+        foreach ($byDay[$weekday] as $w) {
             [$sH, $sM] = array_map('intval', explode(':', $w['start_time']));
             [$eH, $eM] = array_map('intval', explode(':', $w['end_time']));
+            // The appointment must *finish* before closing, so the last start is
+            // one duration back from the end of the window.
             $lastStart = ($eH * 60 + $eM) - $duration;
 
             for ($minute = $sH * 60 + $sM; $minute <= $lastStart; $minute += $step) {
                 $candidate = (clone $day)->setTime(intdiv($minute, 60), $minute % 60, 0);
-                // Only the very first day can be partly in the past.
-                if ($dayOffset === 0 && $candidate < $fromLocal) continue;
+                if ($candidate < $fromLocal) continue;
+                if ($earliest !== null && $candidate < $earliest) continue;
+                // Past the far edge: every later candidate is too, on this day
+                // and every day after it.
+                if ($latest !== null && $candidate > $latest) return $out;
 
-                $utc = (clone $candidate)->setTimezone(new DateTimeZone('UTC'));
-                if ($utc < $earliestUtc) continue;
-                if (apptConflicts($conn, $userId, $utc, $duration)) continue;
+                $end = (clone $candidate)->modify('+' . $duration . ' minutes');
+                if (apptOverlapsBusy($busy, $candidate, $end)) continue;
 
-                return $candidate;
+                $out[] = $candidate;
+                if (count($out) >= $limit) return $out;
+                // Offering a customer eight consecutive quarter-hours on one
+                // morning is a wall of numbers, not a choice. Spreading the
+                // suggestions across days is what makes the list readable.
+                if ($perDay && ++$found >= $perDay) continue 3;
             }
         }
     }
-    return null;
+    return $out;
+}
+
+function apptWindowsByWeekday(array $availability) {
+    $byDay = [];
+    foreach ($availability as $w) $byDay[(int)$w['weekday']][] = $w;
+    foreach ($byDay as &$windows) {
+        usort($windows, fn($a, $b) => strcmp($a['start_time'], $b['start_time']));
+    }
+    return $byDay;
+}
+
+// Half-open overlap: [start, end) against [busy start, busy end). Touching is
+// not overlapping — a 10:00–10:30 booking leaves 10:30 free.
+function apptOverlapsBusy(array $busy, DateTime $start, DateTime $end) {
+    foreach ($busy as $b) {
+        if ($start < $b['end'] && $end > $b['start']) return true;
+    }
+    return false;
+}
+
+// Live bookings that touch [$fromUtc, $toUtc), as local windows for apptFreeSlots.
+//
+// Read once for a whole run rather than a query per candidate slot: the grid is
+// hundreds of candidates over a 30-day horizon, and asking the database about
+// each one was both slow and a way for two candidates to see two different
+// calendars.
+function apptBusyWindows(mysqli $conn, $userId, DateTime $fromUtc, DateTime $toUtc, DateTimeZone $tz, $excludeId = null) {
+    $sql = "SELECT scheduled_at, duration_minutes FROM appointments
+            WHERE user_id = ? AND status = 'booked'
+              AND scheduled_at < ?
+              AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?";
+    $params = [$userId, $toUtc->format('Y-m-d H:i:s'), $fromUtc->format('Y-m-d H:i:s')];
+    $types = 'iss';
+    if ($excludeId) { $sql .= " AND id <> ?"; $params[] = (int)$excludeId; $types .= 'i'; }
+
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $busy = [];
+    foreach ($rows as $r) {
+        $start = (new DateTime($r['scheduled_at'], new DateTimeZone('UTC')))->setTimezone($tz);
+        $busy[] = [
+            'start' => $start,
+            'end' => (clone $start)->modify('+' . max(1, (int)$r['duration_minutes']) . ' minutes'),
+        ];
+    }
+    return $busy;
+}
+
+// The real, bookable openings for one service (#35).
+//
+// Everything the tenant configured, applied together and in one place: the
+// enabled days and their windows, the service's duration, the minimum notice,
+// the horizon, and the bookings already in the diary. Callers get times they can
+// hand to a customer without checking anything else.
+//
+// Returns DateTimes in the tenant's timezone, earliest first.
+// $opts['availability'] and $opts['busy'] let a caller that is asking about
+// several services in a row read the schedule and the diary once instead of
+// twice per service — the reply path does exactly that, on every message.
+function apptOpenSlots(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, array $opts = []) {
+    $availability = $opts['availability'] ?? apptAvailability($conn, $userId);
+    if (!$availability) return [];
+
+    $tz = $fromLocal->getTimezone();
+    $duration = max(5, (int)$service['duration_minutes']);
+    $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
+    $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
+
+    // The notice period is a wall-clock rule in the tenant's zone once it has
+    // been converted, so the whole grid can be compared in one timezone.
+    $nowUtc = new DateTime('now', new DateTimeZone('UTC'));
+    $earliestLocal = (clone $nowUtc)->modify('+' . $lead . ' minutes')->setTimezone($tz);
+    $latestLocal = (clone $nowUtc)->modify('+' . $horizon . ' days')->setTimezone($tz);
+
+    if (isset($opts['busy'])) {
+        $busy = $opts['busy'];
+    } else {
+        $fromUtc = (clone $fromLocal)->setTimezone(new DateTimeZone('UTC'));
+        $toUtc = (clone $fromLocal)->modify('+' . ($horizon + 1) . ' days')->setTimezone(new DateTimeZone('UTC'));
+        $busy = apptBusyWindows($conn, $userId, $fromUtc, $toUtc, $tz, $opts['exclude_id'] ?? null);
+    }
+
+    return apptFreeSlots($availability, $busy, $fromLocal, $duration, $opts + [
+        'horizon_days' => $horizon,
+        'earliest' => $earliestLocal,
+        'latest' => $latestLocal,
+    ]);
+}
+
+// The first moment the business is open and free, at or after $fromLocal (#25).
+//
+// "We are not open then" is true but unhelpful — the customer has to guess again,
+// and a bot that makes someone guess three times is a bot they stop using.
+//
+// Returns a DateTime in the tenant's timezone, or null when there is genuinely
+// nothing — no schedule at all, or a fully booked horizon.
+function apptNextAvailable(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, $timezone) {
+    $slots = apptOpenSlots($conn, $userId, $config, $service, $fromLocal, ['limit' => 1]);
+    return $slots ? $slots[0] : null;
 }
 
 // "We are closed on Sunday." / "We are open Monday 09:00–17:00."
@@ -382,6 +504,21 @@ function apptSuggestionSuffix(mysqli $conn, $userId, array $config, array $servi
         : ' The next time we could fit you in is ' . $next->format('D j M, H:i') . ' — would that suit?';
 }
 
+// Free slots as one line per day: 'Mon 15 Sep: 09:00, 11:30, 14:00' (#35).
+//
+// Grouped rather than listed flat because that is how a person reads a diary,
+// and because the model is handed this verbatim — a column of thirty timestamps
+// is both a large prompt and an invitation to quote all of them at a customer.
+function apptSlotLines(array $slots) {
+    $byDay = [];
+    foreach ($slots as $slot) {
+        $byDay[$slot->format('D j M')][] = $slot->format('H:i');
+    }
+    $lines = [];
+    foreach ($byDay as $day => $times) $lines[] = $day . ': ' . implode(', ', $times);
+    return $lines;
+}
+
 // A refusal, with the follow-up prompt only when it does not already ask
 // something. Without the test the customer got "…would that suit? Could you
 // suggest another time?", which reads as the bot arguing with itself.
@@ -395,6 +532,74 @@ function apptHumanMinutes($minutes) {
     if ($minutes % 1440 === 0) return ($minutes / 1440) . ' day' . ($minutes === 1440 ? '' : 's');
     if ($minutes % 60 === 0) return ($minutes / 60) . ' hour' . ($minutes === 60 ? '' : 's');
     return $minutes . ' minutes';
+}
+
+// Runs $fn with this tenant's diary held against every other writer (#35).
+//
+// Checking that a slot is free and writing the booking are two statements, and
+// between them a second customer can take the same time — two people arriving
+// for one chair, which is the single failure a booking system must not have.
+// MySQL cannot express "no other appointment overlaps this range" as a unique
+// index, so the mutual exclusion has to be explicit.
+//
+// Scoped to the tenant, not the instance, so one busy salon cannot slow another
+// one down, and held for the two statements only. A lock that cannot be taken
+// within a few seconds runs anyway rather than refusing: the check inside is the
+// same one that ran before this existed, so the worst case is what the code
+// already did, not a customer told "try again" for a slot that is free.
+function apptWithTenantLock(mysqli $conn, $userId, callable $fn) {
+    $lock = 'appt:' . (int)$userId;
+
+    $stmt = $conn->prepare("SELECT GET_LOCK(?, 5)");
+    $stmt->bind_param('s', $lock);
+    $stmt->execute();
+    $got = (int)($stmt->get_result()->fetch_row()[0] ?? 0) === 1;
+    $stmt->close();
+
+    try {
+        return $fn();
+    } finally {
+        if ($got) {
+            $stmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+            $stmt->bind_param('s', $lock);
+            $stmt->execute();
+            $stmt->close();
+        }
+    }
+}
+
+// Books a slot, having checked one last time that it is still free (#35).
+// Returns [id, null] or [null, reason].
+function apptBookSlot(mysqli $conn, $userId, array $config, array $service, $localDateTime, $timezone, array $data) {
+    return apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $config, $service, $localDateTime, $timezone, $data) {
+        // Re-checked inside the lock, immediately before the write, against the
+        // same rules as the first pass — opening hours, notice, horizon and the
+        // diary. The earlier pass is what shaped the reply; this one is what
+        // makes it true.
+        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $localDateTime, $timezone);
+        if (!$utc) return [null, $why];
+
+        return [apptCreate($conn, $userId, $data + [
+            'service_id' => (int)($service['id'] ?? 0) ?: null,
+            'service_name' => $service['name'],
+            'duration_minutes' => (int)$service['duration_minutes'],
+            'scheduled_at' => $utc->format('Y-m-d H:i:s'),
+        ]), null];
+    });
+}
+
+// The same last-moment re-check for a move. A reschedule takes the slot exactly
+// as a new booking does, so it has to compete for it the same way.
+// Returns [DateTime utc, null] or [null, reason].
+function apptRescheduleSlot(mysqli $conn, $userId, array $config, array $service, $localDateTime, $timezone, $appointmentId) {
+    return apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $config, $service, $localDateTime, $timezone, $appointmentId) {
+        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $localDateTime, $timezone, (int)$appointmentId);
+        if (!$utc) return [null, $why];
+        if (!apptReschedule($conn, $userId, (int)$appointmentId, $utc)) {
+            return [null, 'I could not move that booking.'];
+        }
+        return [$utc, null];
+    });
 }
 
 function apptCreate(mysqli $conn, $userId, array $data) {
@@ -593,14 +798,37 @@ function apptStatusClass($status, $isPast = false) {
 
 // --- Reminders --------------------------------------------------------------
 
+// The lead times a reminder is sent at, as minutes, longest first.
+//
+// Stored as a comma-separated string because there can be several ("a day
+// before, and again an hour before"), and accepted as either that string or the
+// array of checkbox values the form now posts (#36) — one parser, so a saved
+// value and a submitted one cannot be read differently.
 function apptReminderMinutes(array $config) {
-    $raw = (string)($config['reminder_minutes'] ?? '1440,60');
+    $raw = $config['reminder_minutes'] ?? '1440,60';
+    $parts = is_array($raw) ? $raw : explode(',', (string)$raw);
+
     $out = [];
-    foreach (explode(',', $raw) as $part) {
-        $n = (int)trim($part);
+    foreach ($parts as $part) {
+        $n = (int)trim((string)$part);
         if ($n > 0 && $n <= 20160) $out[$n] = $n;   // up to two weeks
     }
     rsort($out);
+    return $out;
+}
+
+// The lead times the form offers, as minutes (#36).
+//
+// The field used to be a free-text list of raw minutes, so "Remind before" read
+// `1440,60` — a number a tenant has no way to interpret as "a day, then an
+// hour". These are the same values with their unit attached, and the labels come
+// from apptHumanMinutes() so the list and every message that quotes a lead time
+// say it the same way.
+function apptReminderChoices() {
+    $out = [];
+    foreach ([15, 30, 60, 120, 240, 720, 1440, 2880, 10080] as $minutes) {
+        $out[$minutes] = apptHumanMinutes($minutes);
+    }
     return $out;
 }
 

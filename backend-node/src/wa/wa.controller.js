@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
+import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, markSessionChatRead, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -179,6 +179,24 @@ export async function sendMessage(req, res, next) {
       return res.status(400).json(result)
     }
 
+    return res.json(result)
+  } catch (e) {
+    next(e)
+  }
+}
+
+// #37. Read receipts for a chat the chatbot has just answered.
+//
+// A failure here is reported but is never the caller's problem: the reply it
+// follows has already been delivered, and a chat left showing as unread is a
+// cosmetic defect, not a lost message. The caller logs it and moves on.
+export async function markChatRead(req, res, next) {
+  try {
+    const { sessionId, chatId } = req.params
+    const result = await markSessionChatRead(req.tenantId, sessionId, chatId)
+    if (!result.ok) {
+      return res.status(400).json(result)
+    }
     return res.json(result)
   } catch (e) {
     next(e)

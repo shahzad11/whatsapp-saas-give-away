@@ -1,5 +1,5 @@
 import express from 'express'
-import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia } from './wa.controller.js'
+import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia, markChatRead } from './wa.controller.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
 export const waRouter = express.Router()
@@ -30,6 +30,12 @@ const upload = rateLimit('upload', 10, 60_000)
 // bucket on the router.
 const createLimit = rateLimit('create', 10, 5 * 60_000)
 
+// Read receipts (#37). Its own bucket rather than the send one: every chatbot
+// reply now makes both calls, and sharing a budget would mean a busy hour spent
+// the send allowance twice as fast — throttling the actual replies to protect a
+// receipt. Cheap enough to be generous with.
+const receipt = rateLimit('receipt', 120, 60_000)
+
 // Everything else: cheap, but not free.
 const general = rateLimit('general', 60, 60_000)
 
@@ -46,3 +52,4 @@ waRouter.get('/sessions/:sessionId/chats/:chatId/messages', poll, getMessages)
 waRouter.get('/sessions/:sessionId/messages/:messageId/media', general, downloadMedia)
 waRouter.post('/sessions/:sessionId/chats/:chatId/messages', send, sendMessage)
 waRouter.post('/sessions/:sessionId/chats/:chatId/media', upload, sendMedia)
+waRouter.post('/sessions/:sessionId/chats/:chatId/read', receipt, markChatRead)

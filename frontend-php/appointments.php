@@ -60,12 +60,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ['scheduled_local' => 'Use the date and time picker.']);
         }
         $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
-        if (apptConflicts($conn, $userId, $utc, (int)$appt['duration_minutes'], $id)) {
+        // #35: the clash check and the move are held against every other writer
+        // — the chatbot takes the same lock, so a customer cannot be given this
+        // slot in the moment between the two statements here.
+        $moved = apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $utc, $appt, $id) {
+            if (apptConflicts($conn, $userId, $utc, (int)$appt['duration_minutes'], $id)) return false;
+            return apptReschedule($conn, $userId, $id, $utc);
+        });
+        if (!$moved) {
             formRespond(false, 'That clashes with another booking.', $self,
                 ['scheduled_local' => 'Something else is already booked then.']);
         }
 
-        apptReschedule($conn, $userId, $id, $utc);
         logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$id, ['via' => 'dashboard']);
         formRespond(true, 'Appointment moved.', $self);
     }
@@ -94,27 +100,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ['scheduled_local' => 'Use the date and time picker.']);
         }
         $utc = (clone $local)->setTimezone(new DateTimeZone('UTC'));
-        if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'])) {
+        $phone = preg_replace('/\D+/', '', (string)($_POST['customer_phone'] ?? ''));
+
+        // #35: same lock as the chatbot's booking path, for the same reason —
+        // the clash check is only true for as long as nothing else can write.
+        $newId = apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $utc, $service, $phone) {
+            if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'])) return null;
+            return apptCreate($conn, $userId, [
+                'account_id' => null,
+                'service_id' => (int)$service['id'],
+                'service_name' => $service['name'],
+                'duration_minutes' => (int)$service['duration_minutes'],
+                'customer_phone' => $phone ?: null,
+                'customer_name' => mb_substr(trim((string)($_POST['customer_name'] ?? '')), 0, 120) ?: null,
+                // A manual booking has no chat, so it cannot be reminded over
+                // WhatsApp unless a phone maps to one. Recorded honestly rather
+                // than pretending a chat exists.
+                'chat_id' => $phone ? $phone . '@s.whatsapp.net' : null,
+                'scheduled_at' => $utc->format('Y-m-d H:i:s'),
+                'notes' => mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 500) ?: null,
+                'source' => 'manual',
+            ]);
+        });
+        if (!$newId) {
             formRespond(false, 'That clashes with another booking.', $self,
                 ['scheduled_local' => 'Something else is already booked then.']);
         }
 
-        $phone = preg_replace('/\D+/', '', (string)($_POST['customer_phone'] ?? ''));
-        $newId = apptCreate($conn, $userId, [
-            'account_id' => null,
-            'service_id' => (int)$service['id'],
-            'service_name' => $service['name'],
-            'duration_minutes' => (int)$service['duration_minutes'],
-            'customer_phone' => $phone ?: null,
-            'customer_name' => mb_substr(trim((string)($_POST['customer_name'] ?? '')), 0, 120) ?: null,
-            // A manual booking has no chat, so it cannot be reminded over
-            // WhatsApp unless a phone maps to one. Recorded honestly rather than
-            // pretending a chat exists.
-            'chat_id' => $phone ? $phone . '@s.whatsapp.net' : null,
-            'scheduled_at' => $utc->format('Y-m-d H:i:s'),
-            'notes' => mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 500) ?: null,
-            'source' => 'manual',
-        ]);
         logAudit($conn, 'appointment.booked', 'appointment', (string)$newId, ['via' => 'dashboard']);
         formRespond(true, 'Appointment added.', $self);
     }

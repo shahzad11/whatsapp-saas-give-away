@@ -604,11 +604,44 @@ require_once __DIR__ . '/includes/header.php';
                                 <span class="input-group-text">days ahead</span>
                             </div>
                         </div>
-                        <div class="col-md-4">
-                            <label class="form-label small">Remind before</label>
-                            <input type="text" name="reminder_minutes" class="form-control form-control-sm"
-                                   value="<?= sanitize($config['reminder_minutes'] ?? '1440,60') ?>" placeholder="1440,60">
-                            <div class="form-text">Minutes, comma separated. 1440 = a day.</div>
+                        <?php // #36: the field used to be free text and showed `1440,60`, which
+                              // tells a business owner nothing — not even whether the number was
+                              // minutes or hours. Every option now carries its unit, and the list
+                              // is the one apptReminderChoices() defines, so nothing invalid can
+                              // be submitted in the first place.
+                              //
+                              // A value saved before this change that is not one of the presets
+                              // (any minute count was accepted) is added to the list as its own
+                              // checked option rather than dropped, so opening this tab cannot
+                              // quietly delete a reminder the tenant is relying on.
+                              $reminderChoices = apptReminderChoices();
+                              $reminderSaved = apptReminderMinutes($config);
+                              foreach ($reminderSaved as $m) {
+                                  if (!isset($reminderChoices[$m])) $reminderChoices[$m] = apptHumanMinutes($m);
+                              }
+                              ksort($reminderChoices); ?>
+                        <?php // Its own full-width row rather than the third column: nine
+                              // labelled options do not fit in a third of the form, and
+                              // wrapping them into a narrow stack was how the old field
+                              // came to be one cryptic line in the first place. ?>
+                        <div class="col-12">
+                            <label class="form-label small d-block">Remind before</label>
+                            <input type="hidden" name="reminder_minutes_present" value="1">
+                            <div class="d-flex flex-wrap gap-2">
+                                <?php foreach ($reminderChoices as $minutes => $label): ?>
+                                    <div class="form-check form-check-inline me-0">
+                                        <input class="form-check-input" type="checkbox" name="reminder_minutes[]"
+                                               id="remind_<?= (int)$minutes ?>" value="<?= (int)$minutes ?>"
+                                               <?= in_array((int)$minutes, $reminderSaved, true) ? 'checked' : '' ?>>
+                                        <label class="form-check-label small" for="remind_<?= (int)$minutes ?>">
+                                            <?= sanitize($label) ?>
+                                        </label>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="form-text">
+                                Before the appointment. Tick more than one to remind twice; tick none for no reminders.
+                            </div>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">Confirmation wording</label>

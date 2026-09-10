@@ -115,7 +115,16 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $apptOn    = !empty($in['appointments_enabled']) ? 1 : 0;
     $lead      = max(0, min(10080, (int)($in['appointment_lead_minutes'] ?? 60)));
     $horizon   = max(1, min(365, (int)($in['appointment_horizon_days'] ?? 30)));
-    $reminders = implode(',', apptReminderMinutes(['reminder_minutes' => $in['reminder_minutes'] ?? '1440,60']));
+    // #36: the form posts a checkbox per lead time, and an unchecked box posts
+    // nothing at all — so "no reminders" arrives as an absent field, exactly
+    // like a caller that never knew about reminders. The hidden marker tells the
+    // two apart: with it, an empty list means the tenant switched them all off;
+    // without it, the stored value is left alone rather than silently defaulted
+    // back to a day-and-an-hour they had deliberately removed.
+    $remindersSent = array_key_exists('reminder_minutes', $in) || !empty($in['reminder_minutes_present']);
+    $reminders = $remindersSent
+        ? implode(',', apptReminderMinutes(['reminder_minutes' => $in['reminder_minutes'] ?? []]))
+        : (string)(chatbotConfig($conn, $userId)['reminder_minutes'] ?? '1440,60');
     $confirm   = mb_substr((string)($in['booking_confirmation'] ?? ''), 0, 500);
 
     // Handoff (#16).
@@ -444,13 +453,34 @@ function chatbotBookingInstructions(array $a) {
         . "Bookings need at least " . apptHumanMinutes($a['lead_minutes']) . " notice "
         . "and can be at most {$a['horizon_days']} days ahead.";
 
+    // #35. The opening hours above say when the business is *open*; this says
+    // what is actually free. Both are given because they answer different
+    // questions — "are you open on Saturday?" is not "can I come at 10?".
+    if (!empty($a['slots'])) {
+        $lines[] = "Times currently free (already checked against the diary — "
+            . "offer these and nothing else):";
+        foreach ($a['slots'] as $serviceName => $dayLines) {
+            $lines[] = $serviceName . ':';
+            foreach ($dayLines as $dayLine) $lines[] = '  ' . $dayLine;
+        }
+        $lines[] = "That list is the soonest few openings, not the whole diary. If the customer "
+            . "wants a different day, offer to check it rather than guessing.";
+    } elseif (!empty($a['availability'])) {
+        // Open, but nothing bookable inside the horizon. Saying so is the point:
+        // without it the model reads the opening hours and invents a time.
+        $lines[] = "There are no free slots at all in that period. Do not offer a time — say the "
+            . "diary is full and offer to have someone follow up.";
+    }
+
     if (!empty($a['existing'])) {
         $lines[] = "This customer already has a booking: {$a['existing']['service_name']} on {$a['existing']['when_local']}.";
     }
 
     $lines[] = "Rules you must follow:";
-    $lines[] = "1. Never state that a slot is free or confirmed on your own — you cannot see the calendar. "
-        . "Offer a time, and let the confirmation come from the system.";
+    $lines[] = "1. Only ever offer a time from the free list above, and never state that a booking is "
+        . "confirmed on your own — the confirmation comes from the system. If the customer asks for a "
+        . "time that is not on the list, do not agree to it: say you will check and offer the "
+        . "nearest listed alternative.";
     $lines[] = "2. Before booking you need: which service, and a specific date and time. "
         . "Ask for whichever is missing. Ask for a name only if you do not already know it.";
     $lines[] = "3. When — and only when — the customer has clearly agreed to a specific service and time, "
@@ -694,6 +724,27 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // chances for the hours check and the booking clock to disagree.
     $timezone = getUserTimezone($conn, $userId);
 
+    // #16/#37. A conversation already with a person stays with that person, and
+    // this is asked before *anything* the bot would otherwise do — not just
+    // before the model call.
+    //
+    // It used to sit further down, after the out-of-hours branch, which meant a
+    // customer being helped by a colleague at 18:01 got the bot cutting in with
+    // "we are closed, we will reply tomorrow" over the top of a live agent. The
+    // read receipt has the same problem: marking the thread read is the bot
+    // touching a conversation it was told to leave alone, and it clears the
+    // unread badge the agent is working from.
+    //
+    // So: one gate, first, covering replies, receipts, transcription and the
+    // model. Recording that the customer said something again (handoffTouch) is
+    // the exception, and it is not an action anyone can see — it is what keeps
+    // the queue ordered by who has been waiting longest.
+    $openHandoff = handoffOpenForChat($conn, $userId, $chatId);
+    if ($openHandoff) {
+        handoffTouch($conn, (int)$openHandoff['id']);
+        return $log('skipped_handoff', ['detail' => $openHandoff['status']]);
+    }
+
     if (!chatbotWithinHours($config, $timezone)) {
         // A configured out-of-hours message is still an answer, and it is free.
         $outside = trim((string)($config['outside_hours_message'] ?? ''));
@@ -717,26 +768,16 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     if ($text === '') return $log('skipped_empty', ['detail' => $mediaType]);
 
-    // #16. Two checks, in this order and both before the model is called.
+    // #16. Did they just ask for a person? Matched in PHP, not by the model: it
+    // costs nothing and it still works when the model is down — which is exactly
+    // when people ask for a human.
     //
-    // 1. A conversation already with a person stays with that person. The bot
-    //    interrupting an agent mid-conversation is the failure mode that makes
-    //    customers give up, so this is the first thing the reply path asks.
-    $openHandoff = handoffOpenForChat($conn, $userId, $chatId);
-    if ($openHandoff) {
-        handoffTouch($conn, (int)$openHandoff['id']);
-        return $log('skipped_handoff', ['detail' => $openHandoff['status']]);
-    }
-
-    // 2. Did they just ask for one? Matched in PHP, not by the model: it costs
-    //    nothing and it still works when the model is down — which is exactly
-    //    when people ask for a human.
-    //
-    //    Plan-gated, via the effective config above — unlike check 1. That
-    //    asymmetry is deliberate: an *already open* handoff must keep silencing
-    //    the bot even if the plan has since lost the feature, or the bot would
-    //    start talking over a live agent mid-conversation. Losing the feature
-    //    stops new handoffs; it does not abandon a customer already waiting.
+    // Plan-gated, via the effective config above — unlike the open-handoff gate
+    // above, which is not. That asymmetry is deliberate: an *already open*
+    // handoff must keep silencing the bot even if the plan has since lost the
+    // feature, or the bot would start talking over a live agent mid-conversation.
+    // Losing the feature stops new handoffs; it does not abandon a customer
+    // already waiting.
     $phrase = handoffPhraseMatch($config, $text);
     if ($phrase !== null) {
         return chatbotStartHandoff($conn, $userId, $tenantId, $config, [
@@ -907,9 +948,48 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
         }
     }
 
+    // #35: the real openings, per service, worked out here rather than left to
+    // the model.
+    //
+    // Opening hours alone are not availability. Told only "Monday 09:00–17:00",
+    // a model offers 10:00 on a Monday that has been fully booked since
+    // Tuesday, the customer accepts, and the booking is then refused by
+    // apptValidateSlot() — so the bot contradicts itself in consecutive
+    // messages, which is worse than never having offered. These times are
+    // filtered against the diary, the notice period and the horizon, so
+    // anything the model quotes from this list was genuinely free when the
+    // prompt was built (and is checked once more before it is confirmed).
+    //
+    // Capped deliberately: a handful of options spread over several days is a
+    // choice a person can answer, and the whole list goes into a paid prompt on
+    // every message.
+    // The schedule and the diary are read once here and handed to every service,
+    // so a tenant with six services costs two queries rather than twelve — and,
+    // more importantly, all six answers are computed against the same calendar.
+    $availability = apptAvailability($conn, $userId);
+    $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
+    $busy = $availability ? apptBusyWindows(
+        $conn, $userId,
+        (clone $nowLocal)->setTimezone(new DateTimeZone('UTC')),
+        (clone $nowLocal)->modify('+' . ($horizon + 1) . ' days')->setTimezone(new DateTimeZone('UTC')),
+        $tz
+    ) : [];
+
+    $slots = [];
+    foreach (array_slice($services, 0, 6) as $s) {
+        $free = apptOpenSlots($conn, $userId, $config, $s, clone $nowLocal, [
+            'availability' => $availability,
+            'busy' => $busy,
+            'limit' => 8,
+            'per_day' => 3,
+        ]);
+        if ($free) $slots[$s['name']] = apptSlotLines($free);
+    }
+
     return [
         'services' => $services,
-        'availability' => apptAvailability($conn, $userId),
+        'availability' => $availability,
+        'slots' => $slots,
         'timezone' => $tz->getName(),
         'now_local' => $nowLocal->format('D j M Y, H:i'),
         'lead_minutes' => (int)($config['appointment_lead_minutes'] ?? 60),
@@ -969,25 +1049,22 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             $service = apptMatchService($services, $action['service'] ?? '');
             if (!$service) return "I could not match that to one of our services — could you say which one you would like?";
 
-            [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '', $timezone);
-            if (!$utc) return apptRefusalLine($why);
-
-            $id = apptCreate($conn, $userId, [
+            // #35: validated and written under one per-tenant lock, so the slot
+            // cannot be taken by another conversation between the two.
+            [$id, $why] = apptBookSlot($conn, $userId, $config, $service, $action['datetime'] ?? '', $timezone, [
                 'account_id' => $ctx['account_id'] ?? null,
-                'service_id' => (int)$service['id'],
-                'service_name' => $service['name'],
-                'duration_minutes' => (int)$service['duration_minutes'],
                 'customer_phone' => $ctx['customer_phone'] ?? null,
                 'customer_name' => mb_substr(trim((string)($action['name'] ?? '')), 0, 120) ?: null,
                 'chat_id' => $ctx['chat_id'] ?? null,
-                'scheduled_at' => $utc->format('Y-m-d H:i:s'),
                 'notes' => null,
                 'source' => 'chatbot',
             ]);
+            if (!$id) return apptRefusalLine($why);
             logAudit($conn, 'appointment.booked', 'appointment', (string)$id, ['via' => 'chatbot'], $userId);
 
+            $booked = apptById($conn, $userId, $id);
             $confirm = trim((string)($config['booking_confirmation'] ?? ''));
-            $when = $fmt($utc->format('Y-m-d H:i:s'));
+            $when = $fmt($booked['scheduled_at']);
             return $confirm !== ''
                 ? str_replace(['{service}', '{when}'], [$service['name'], $when], $confirm)
                 : "Confirmed: {$service['name']} on {$when}.";
@@ -1007,11 +1084,10 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
                 'name' => $existing['service_name'],
                 'duration_minutes' => (int)$existing['duration_minutes'],
             ];
-            [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $action['datetime'] ?? '',
+            [$utc, $why] = apptRescheduleSlot($conn, $userId, $config, $service, $action['datetime'] ?? '',
                 $timezone, (int)$existing['id']);
             if (!$utc) return apptRefusalLine($why);
 
-            apptReschedule($conn, $userId, (int)$existing['id'], $utc);
             logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
             return "Moved: {$existing['service_name']} is now " . $fmt($utc->format('Y-m-d H:i:s')) . '.';
     }
@@ -1021,13 +1097,35 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
 
 // Sends through the same endpoint the composer uses, and meters it the same
 // way. A bot reply is a message the tenant sent; it costs what a message costs.
+//
+// #37: a delivered reply also marks the conversation read. It is done here, not
+// at the one call site that remembered to, because every path that answers a
+// customer must leave the thread in the same state — an answered chat that
+// still shows as unread sends the tenant to a conversation that needs nothing
+// from them, which is exactly the noise the bot exists to remove.
+//
+// Deliberately *not* gated on anything else: the only way to reach this
+// function is to have decided the bot may speak, and every one of those
+// decisions — including the handover check — is made before the send.
 function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $text) {
     $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
         . '/chats/' . urlencode($chatId) . '/messages', ['text' => $text], $tenantId, 30);
 
     if (!$resp || empty($resp['ok'])) return false;
     incrementUsage($conn, $userId, 'messages_sent');
+    chatbotMarkChatRead($tenantId, $sessionId, $chatId);
     return true;
+}
+
+// Best effort, and silent about it. The reply is already delivered; a read
+// receipt that did not go through is cosmetic, and turning it into a failure
+// would make the reply path report an error for something the customer will
+// never notice. The short timeout is for the same reason — this must never be
+// what makes an inbound message time out.
+function chatbotMarkChatRead($tenantId, $sessionId, $chatId) {
+    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
+        . '/chats/' . urlencode($chatId) . '/read', null, $tenantId, 10);
+    return (bool)($resp['ok'] ?? false);
 }
 
 // Hands the conversation to a person: records it, tells the customer, and nudges
