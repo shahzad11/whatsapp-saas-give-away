@@ -421,19 +421,33 @@ function chatbotSystemPrompt(array $config, array $context = []) {
     return implode("\n\n", $parts);
 }
 
-// The booking half of the prompt (#14).
+// The booking half of the prompt (#14, #42).
 //
 // The model is told it may *propose* and must emit a machine-readable line only
 // once the customer has actually agreed. It is never told that emitting the line
 // books anything — because it does not. PHP validates the proposal against the
 // real calendar and can refuse it, so the wording deliberately avoids having the
 // model promise a confirmation it cannot give.
+//
+// #42 removed the one thing the model used to be *given*: a short sample of
+// upcoming times per service. Handing it times had three failure modes at once —
+// the same few times appeared under every service, so they read as that
+// service's timetable; the sample never contained the date the customer actually
+// asked about; and once a list was in the transcript the model quoted it back
+// turns later, long after the diary had moved. So the model is now told it cannot
+// see the diary and must ask for it, per service and per date, and the answer it
+// gets is a live query.
 function chatbotBookingInstructions(array $a) {
     $lines = [];
     $lines[] = "--- Appointments ---";
     $lines[] = "You can help customers book, reschedule and cancel appointments.";
 
-    $lines[] = "Services offered (name — duration):";
+    // Every active service, and the reason they are not timetables: durations
+    // differ, but the diary is one diary. A customer may ask for any service in
+    // any free slot, and only whether it fits before closing decides.
+    $lines[] = "Services offered (name — duration). Every one of them shares the same opening hours "
+        . "and the same diary, and none has times of its own — the duration only decides whether a "
+        . "start time still fits before closing:";
     foreach ($a['services'] as $s) {
         $lines[] = '- ' . $s['name'] . ' — ' . (int)$s['duration_minutes'] . ' minutes'
             . (trim((string)($s['description'] ?? '')) !== '' ? ' (' . $s['description'] . ')' : '');
@@ -453,47 +467,56 @@ function chatbotBookingInstructions(array $a) {
         . "Bookings need at least " . apptHumanMinutes($a['lead_minutes']) . " notice "
         . "and can be at most {$a['horizon_days']} days ahead.";
 
-    // #35. The opening hours above say when the business is *open*; this says
-    // what is actually free. Both are given because they answer different
-    // questions — "are you open on Saturday?" is not "can I come at 10?".
-    if (!empty($a['slots'])) {
-        $lines[] = "Times currently free (already checked against the diary — "
-            . "offer these and nothing else):";
-        foreach ($a['slots'] as $serviceName => $dayLines) {
-            $lines[] = $serviceName . ':';
-            foreach ($dayLines as $dayLine) $lines[] = '  ' . $dayLine;
-        }
-        $lines[] = "That list is the soonest few openings, not the whole diary. If the customer "
-            . "wants a different day, offer to check it rather than guessing.";
-    } elseif (!empty($a['availability'])) {
-        // Open, but nothing bookable inside the horizon. Saying so is the point:
-        // without it the model reads the opening hours and invents a time.
-        $lines[] = "There are no free slots at all in that period. Do not offer a time — say the "
-            . "diary is full and offer to have someone follow up.";
+    // Opening hours say when the business is *open*. Nothing here says what is
+    // free, on purpose — that is a question only the database can answer, and it
+    // is answered one date at a time, below.
+    if (!empty($a['availability']) && empty($a['has_free'])) {
+        // Open, but nothing bookable inside the whole booking window. Saying so
+        // is the point: without it the model reads the opening hours and invents
+        // a time.
+        $lines[] = "There is nothing free at all between now and the end of the booking window. "
+            . "Do not offer a time — say the diary is full and offer to have someone follow up.";
     }
 
     if (!empty($a['existing'])) {
         $lines[] = "This customer already has a booking: {$a['existing']['service_name']} on {$a['existing']['when_local']}.";
     }
 
-    $lines[] = "Rules you must follow:";
-    $lines[] = "1. Only ever offer a time from the free list above, and never state that a booking is "
-        . "confirmed on your own — the confirmation comes from the system. If the customer asks for a "
-        . "time that is not on the list, do not agree to it: say you will check and offer the "
-        . "nearest listed alternative.";
-    $lines[] = "2. Before booking you need: which service, and a specific date and time. "
-        . "Ask for whichever is missing. Ask for a name only if you do not already know it.";
-    $lines[] = "3. When — and only when — the customer has clearly agreed to a specific service and time, "
+    $lines[] = "You cannot see the diary and you must never guess, remember or repeat what is free. "
+        . "To find out, ask the system for a date and it will answer with every free start time on "
+        . "that date.";
+
+    $lines[] = "Take a booking in this order:";
+    $lines[] = "1. Service — if the customer has not said which service they want, list the services "
+        . "above and ask them to choose one. If they have already said, do not ask again.";
+    $lines[] = "2. Date — once you know the service, ask which date they would like. If they have "
+        . "already given one (including \"tomorrow\" or a weekday), use it and do not ask again.";
+    $lines[] = "3. Free times — with a service and a date, end your message with exactly this line:";
+    $lines[] = '   ' . APPT_ACTION_OPEN . ' {"action":"availability","service":"<service name>","date":"YYYY-MM-DD"} ' . APPT_ACTION_CLOSE;
+    $lines[] = "   Your own words in that message must say only that you are checking — do not name "
+        . "any time yourself. The system's answer, which is every free time on that date, is added "
+        . "to the end of your message for the customer to read.";
+    $lines[] = "4. Time — when the customer picks one of the times the system listed, book it with "
+        . "the booking line below.";
+    $lines[] = "5. Anything you or the customer said earlier about which times were free is not "
+        . "evidence: other people book while you are talking. If the customer asks you to check "
+        . "again, names a different date, or doubts whether a time is free, send the availability "
+        . "line again and use only the newest answer.";
+    $lines[] = "6. When — and only when — the customer has clearly agreed to a specific service and time, "
         . "end your message with a line in exactly this form, and nothing after it:";
     $lines[] = '   ' . APPT_ACTION_OPEN . ' {"action":"book","service":"<service name>","datetime":"YYYY-MM-DD HH:MM","name":"<customer name or empty>"} ' . APPT_ACTION_CLOSE;
-    $lines[] = "4. To cancel their existing booking, end with: "
+    $lines[] = "   If they ask for a service, date and time all at once, you may go straight to this "
+        . "line — the system re-checks the diary and will tell them if it has gone.";
+    $lines[] = "7. To cancel their existing booking, end with: "
         . APPT_ACTION_OPEN . ' {"action":"cancel"} ' . APPT_ACTION_CLOSE;
-    $lines[] = "5. To move it, end with: "
+    $lines[] = "8. To move it, end with: "
         . APPT_ACTION_OPEN . ' {"action":"reschedule","datetime":"YYYY-MM-DD HH:MM"} ' . APPT_ACTION_CLOSE;
-    $lines[] = "6. The time in that line is always the business's local time, 24-hour clock. "
-        . "Never show that line's contents to the customer or mention that it exists.";
-    $lines[] = "7. Write the human part of your message as if the booking is being submitted, "
-        . "not as if it is already guaranteed.";
+    $lines[] = "9. Send at most one of those lines per message, always as the last thing in it. "
+        . "Dates and times in them are the business's local time, 24-hour clock. Never show a line's "
+        . "contents to the customer or mention that it exists.";
+    $lines[] = "10. Never state that a booking is confirmed on your own — the confirmation comes from "
+        . "the system. Write the human part of your message as if the booking is being submitted, not "
+        . "as if it is already guaranteed. Ask for a name only if you do not already know it.";
 
     return implode("\n", $lines);
 }
@@ -948,24 +971,23 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
         }
     }
 
-    // #35: the real openings, per service, worked out here rather than left to
-    // the model.
+    // #42: whether there is anything bookable at all, and deliberately not a
+    // list of times.
     //
-    // Opening hours alone are not availability. Told only "Monday 09:00–17:00",
-    // a model offers 10:00 on a Monday that has been fully booked since
-    // Tuesday, the customer accepts, and the booking is then refused by
-    // apptValidateSlot() — so the bot contradicts itself in consecutive
-    // messages, which is worse than never having offered. These times are
-    // filtered against the diary, the notice period and the horizon, so
-    // anything the model quotes from this list was genuinely free when the
-    // prompt was built (and is checked once more before it is confirmed).
+    // #35 put the soonest few openings per service into the prompt, because
+    // opening hours alone are not availability and a model told only "Monday
+    // 09:00–17:00" invents a time on a Monday that has been full since Tuesday.
+    // That was the right problem and the wrong fix: a sample is stale the moment
+    // it is written, it is not the date the customer is about to ask about, and
+    // it sits in the transcript being quoted back for the rest of the
+    // conversation. The model now asks for a date and gets a live answer
+    // (chatbotAvailabilityAnswer), so the only thing the prompt still needs is
+    // the one fact that changes what the bot should *say*: is there anything at
+    // all, or is the diary full?
     //
-    // Capped deliberately: a handful of options spread over several days is a
-    // choice a person can answer, and the whole list goes into a paid prompt on
-    // every message.
     // The schedule and the diary are read once here and handed to every service,
-    // so a tenant with six services costs two queries rather than twelve — and,
-    // more importantly, all six answers are computed against the same calendar.
+    // so this costs two queries however many services there are — and the
+    // answers cannot disagree with each other about the same calendar.
     $availability = apptAvailability($conn, $userId);
     $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
     $busy = $availability ? apptBusyWindows(
@@ -975,21 +997,22 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
         $tz
     ) : [];
 
-    $slots = [];
-    foreach (array_slice($services, 0, 6) as $s) {
+    $hasFree = false;
+    foreach ($services as $s) {
         $free = apptOpenSlots($conn, $userId, $config, $s, clone $nowLocal, [
             'availability' => $availability,
             'busy' => $busy,
-            'limit' => 8,
-            'per_day' => 3,
+            'limit' => 1,
         ]);
-        if ($free) $slots[$s['name']] = apptSlotLines($free);
+        // One service that can be fitted somewhere is enough: the prompt only
+        // needs to know whether "the diary is full" is true of everything.
+        if ($free) { $hasFree = true; break; }
     }
 
     return [
         'services' => $services,
         'availability' => $availability,
-        'slots' => $slots,
+        'has_free' => $hasFree,
         'timezone' => $tz->getName(),
         'now_local' => $nowLocal->format('D j M Y, H:i'),
         'lead_minutes' => (int)($config['appointment_lead_minutes'] ?? 60),
@@ -1015,7 +1038,7 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
     // "the model should not" is not a control. A crafted or hallucinated action
     // marker reaches exactly this switch, so the plan is checked where the write
     // actually happens, not only where the prompt is built.
-    $isBooking = in_array($action['action'] ?? '', ['book', 'reschedule', 'cancel'], true);
+    $isBooking = in_array($action['action'] ?? '', ['book', 'reschedule', 'cancel', 'availability'], true);
     if ($isBooking && !planHasFeature($plan, 'appointments')) return '';
     if (($action['action'] ?? '') === 'handoff' && !planHasFeature($plan, 'handoff')) return '';
 
@@ -1024,6 +1047,11 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
     };
 
     switch ($action['action']) {
+        // #42: the diary, read now. Read-only, so it is also what the test
+        // console calls — see chatbotAvailabilityAnswer().
+        case 'availability':
+            return chatbotAvailabilityAnswer($conn, $userId, $config, $action, $timezone);
+
         case 'handoff':
             // The model has already told the customer in its own words, so the
             // only thing appended is the direct number the tenant chose to share
@@ -1093,6 +1121,32 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
     }
 
     return '';
+}
+
+// What the customer is told when the model asks the system what is free (#42).
+//
+// The one thing that makes this trustworthy is that it queries the database
+// every single time it is called. Nothing here reads the conversation, so
+// "actually, check again" cannot be answered from the bot's own earlier message
+// — which is exactly how a bot ends up insisting a taken time is free.
+//
+// Read-only by construction: it books nothing, writes nothing and notifies
+// nobody, which is why the tenant's test console calls this same function
+// instead of describing what it would have done. A second, simpler preview of a
+// diary lookup would be the #34 bug again in a new place.
+function chatbotAvailabilityAnswer(mysqli $conn, $userId, array $config, array $action, $timezone) {
+    $services = apptServices($conn, $userId, true);
+    if (!$services) return '';
+
+    $service = apptMatchService($services, $action['service'] ?? '');
+    // With one service there is nothing to disambiguate, so a model that asked
+    // about a date without naming it is answered rather than interrogated.
+    if (!$service && count($services) === 1) $service = $services[0];
+    if (!$service) {
+        return 'Which service would you like? We offer ' . apptServiceListLine($services) . '.';
+    }
+
+    return apptDateAvailabilityLine($conn, $userId, $config, $service, $action['date'] ?? '', $timezone);
 }
 
 // Sends through the same endpoint the composer uses, and meters it the same

@@ -504,19 +504,207 @@ function apptSuggestionSuffix(mysqli $conn, $userId, array $config, array $servi
         : ' The next time we could fit you in is ' . $next->format('D j M, H:i') . ' — would that suit?';
 }
 
-// Free slots as one line per day: 'Mon 15 Sep: 09:00, 11:30, 14:00' (#35).
+// Free times as a customer reads them: '09:00, 09:15, 11:30'.
 //
-// Grouped rather than listed flat because that is how a person reads a diary,
-// and because the model is handed this verbatim — a column of thirty timestamps
-// is both a large prompt and an invitation to quote all of them at a customer.
-function apptSlotLines(array $slots) {
-    $byDay = [];
-    foreach ($slots as $slot) {
-        $byDay[$slot->format('D j M')][] = $slot->format('H:i');
+// #42 replaced the per-day grouping this used to do. Grouping existed because
+// the model was handed several days at once; now every list is one date the
+// customer asked about, so the date is said once in the sentence around it and
+// repeating it on every line was noise.
+function apptTimeList(array $slots) {
+    return implode(', ', array_map(fn(DateTime $s) => $s->format('H:i'), $slots));
+}
+
+// --- One date, the whole diary (#42) ----------------------------------------
+
+// The most times a single day can produce. A 24-hour window on a 15-minute grid
+// is 96 starts, so this is a ceiling that a real schedule cannot reach — it
+// exists so a crafted or absurd schedule cannot build an unbounded message, not
+// to trim a day the way the old per-service sample did.
+const APPT_DAY_SLOT_CAP = 96;
+
+// The date a customer asked about, or why it cannot be used (#42).
+//
+// Returns [DateTime midnight-in-$timezone, null] or [null, reason]. Pure, with
+// the clock injectable, because every interesting case here is a boundary: today
+// versus yesterday, and the far edge of the booking window.
+function apptResolveDate($date, $timezone, $horizonDays, ?DateTime $nowLocal = null) {
+    try {
+        $tz = new DateTimeZone($timezone ?: 'UTC');
+    } catch (Exception $e) {
+        $tz = new DateTimeZone('UTC');
     }
-    $lines = [];
-    foreach ($byDay as $day => $times) $lines[] = $day . ': ' . implode(', ', $times);
-    return $lines;
+
+    // A model asked for a date will sometimes answer with a time as well
+    // ("2026-09-15 15:00"). The date is the part being asked about, so the rest
+    // is dropped rather than the whole thing refused.
+    $date = trim((string)$date);
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})\b/', $date, $m)) $date = $m[1];
+
+    $day = DateTime::createFromFormat('Y-m-d H:i:s', $date . ' 00:00:00', $tz);
+    // createFromFormat rolls a date that does not exist ("2026-02-31") into the
+    // next month, so the round trip is what actually validates it.
+    if (!$day || $day->format('Y-m-d') !== $date) return [null, 'no date'];
+
+    $now = $nowLocal instanceof DateTime
+        ? (clone $nowLocal)->setTimezone($tz)
+        : (new DateTime('now', new DateTimeZone('UTC')))->setTimezone($tz);
+
+    // Compared as calendar dates, not instants: "today" is a legitimate request
+    // at 16:00, and the notice period — not this check — decides what is left of
+    // it.
+    if ($day->format('Y-m-d') < $now->format('Y-m-d')) return [null, 'past'];
+    if ($day > (clone $now)->modify('+' . max(1, (int)$horizonDays) . ' days')) return [null, 'horizon'];
+
+    return [$day, null];
+}
+
+// Every free start time on one day, earliest first (#42).
+//
+// The whole day, with nothing sampled away — which is the entire point. The old
+// context offered a handful of soonest openings per service, so the same few
+// times appeared under every service as if they were its timetable, and the date
+// the customer actually asked about was usually not in the list at all.
+//
+// Pure, like apptFreeSlots() which does the walking: $opts carries `earliest`
+// (the notice period) and `latest` (the booking window), so a day inside the
+// window still cannot produce a time outside it.
+function apptDayFreeSlots(array $availability, array $busy, DateTime $day, $durationMinutes, array $opts = []) {
+    return apptFreeSlots($availability, $busy, (clone $day)->setTime(0, 0, 0), $durationMinutes, $opts + [
+        'horizon_days' => 0,
+        'limit' => APPT_DAY_SLOT_CAP,
+        'per_day' => 0,
+    ]);
+}
+
+// What the customer is told about one date, as a sentence (#42).
+//
+// Pure: the caller has already done the looking-up, so every branch here is
+// wording. Keys: service, reason, asked, slots, availability, next_date,
+// next_slots, horizon_days.
+function apptAvailabilityMessage(array $a) {
+    $horizon = max(1, (int)($a['horizon_days'] ?? 30));
+
+    switch ((string)($a['reason'] ?? '')) {
+        case 'no hours':
+            return 'We have no opening hours set up, so I cannot check the diary — '
+                . 'someone will follow this up with you.';
+        case 'no date':
+            return 'Which date would you like me to check?';
+        case 'past':
+            return 'That date has already passed. Which date would you like me to check?';
+        case 'horizon':
+            return 'That is further ahead than we take bookings (' . $horizon . ' days). '
+                . 'Which nearer date suits you?';
+    }
+
+    $name = (string)($a['service'] ?? '');
+    $asked = $a['asked'] ?? null;
+    $slots = $a['slots'] ?? [];
+
+    if ($slots) {
+        return 'Free times for ' . $name . ' on ' . $slots[0]->format('D j M') . ': '
+            . apptTimeList($slots) . '. Which of those would you like?';
+    }
+
+    // Nothing on that date. Why not is the useful half — "we are shut on
+    // Sundays" and "that day is full" lead to different next questions.
+    $availability = $a['availability'] ?? [];
+    $weekday = $asked instanceof DateTime ? (int)$asked->format('w') : null;
+    $line = ($weekday !== null && !apptOpenOnWeekday($availability, $weekday))
+        ? apptDayScheduleLabel($availability, $weekday)
+        : 'There is nothing free for ' . $name . ' on '
+          . ($asked instanceof DateTime ? $asked->format('D j M') : 'that date') . '.';
+
+    $nextDate = $a['next_date'] ?? null;
+    if (!$nextDate instanceof DateTime) {
+        return $line . ' I have nothing free between now and the end of our booking window, '
+            . 'so someone will follow this up with you.';
+    }
+    return $line . ' The next day with space is ' . $nextDate->format('D j M') . ': '
+        . apptTimeList($a['next_slots'] ?? []) . '. Would any of those suit?';
+}
+
+function apptOpenOnWeekday(array $availability, $weekday) {
+    foreach ($availability as $w) if ((int)$w['weekday'] === (int)$weekday) return true;
+    return false;
+}
+
+// The live diary, as the sentence the bot sends (#42).
+//
+// A fresh query every time it is called, and it is called for every availability
+// request the model makes — including "check the diary again". Nothing here reads
+// the conversation: the diary moves while people are typing, so what the bot said
+// three messages ago is not evidence about anything.
+//
+// Two queries, whatever the answer: the schedule and the diary are read once and
+// every calculation below is pure, so the requested date, the fallback date and
+// its times cannot each be measured against a slightly different calendar.
+function apptDateAvailabilityLine(mysqli $conn, $userId, array $config, array $service, $date, $timezone) {
+    try {
+        $tz = new DateTimeZone($timezone ?: 'UTC');
+    } catch (Exception $e) {
+        $tz = new DateTimeZone('UTC');
+    }
+
+    $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
+    $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
+    $duration = max(5, (int)$service['duration_minutes']);
+
+    $availability = apptAvailability($conn, $userId);
+    if (!$availability) return apptAvailabilityMessage(['reason' => 'no hours']);
+
+    [$day, $why] = apptResolveDate($date, $timezone, $horizon);
+    if ($why !== null) {
+        return apptAvailabilityMessage(['reason' => $why, 'horizon_days' => $horizon]);
+    }
+
+    $nowUtc = new DateTime('now', new DateTimeZone('UTC'));
+    $opts = [
+        'earliest' => (clone $nowUtc)->modify('+' . $lead . ' minutes')->setTimezone($tz),
+        'latest'   => (clone $nowUtc)->modify('+' . $horizon . ' days')->setTimezone($tz),
+    ];
+
+    // From whichever comes first — the day asked about may be today — to the end
+    // of the booking window, because the fallback below may look past it.
+    $fromUtc = min((clone $day)->setTimezone(new DateTimeZone('UTC')), $nowUtc);
+    $toUtc = (clone $nowUtc)->modify('+' . ($horizon + 1) . ' days');
+    $busy = apptBusyWindows($conn, $userId, $fromUtc, $toUtc, $tz);
+
+    $slots = apptDayFreeSlots($availability, $busy, $day, $duration, $opts);
+
+    // Only when the requested date has nothing: "we are full that day" on its own
+    // makes the customer guess again, and they cannot see the diary either.
+    $nextDate = null;
+    $nextSlots = [];
+    if (!$slots) {
+        $next = apptFreeSlots($availability, $busy, (clone $day)->modify('+1 day'), $duration,
+            $opts + ['horizon_days' => $horizon, 'limit' => 1]);
+        if ($next) {
+            $nextDate = $next[0];
+            $nextSlots = apptDayFreeSlots($availability, $busy, $nextDate, $duration, $opts);
+        }
+    }
+
+    return apptAvailabilityMessage([
+        'service' => $service['name'],
+        'asked' => $day,
+        'slots' => $slots,
+        'availability' => $availability,
+        'next_date' => $nextDate,
+        'next_slots' => $nextSlots,
+        'horizon_days' => $horizon,
+    ]);
+}
+
+// 'Haircut (30 minutes), Colour (90 minutes)' — every active service, for
+// the question that starts a booking. Never a subset: a service the tenant
+// configured and the bot never mentions is a service they cannot sell.
+function apptServiceListLine(array $services) {
+    $parts = [];
+    foreach ($services as $s) {
+        $parts[] = $s['name'] . ' (' . apptHumanMinutes((int)$s['duration_minutes']) . ')';
+    }
+    return implode(', ', $parts);
 }
 
 // A refusal, with the follow-up prompt only when it does not already ask

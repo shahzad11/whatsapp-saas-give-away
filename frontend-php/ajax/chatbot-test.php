@@ -212,7 +212,7 @@ if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) 
     $note('config', 'warning',
         'Booking is on, but no opening hours are saved, so the bot is told it cannot take a booking '
         . 'and should offer a callback instead. Set them under Settings → Appointments.');
-} elseif ($context['appointments'] !== null && empty($context['appointments']['slots'])) {
+} elseif ($context['appointments'] !== null && empty($context['appointments']['has_free'])) {
     // #35: hours are set and the bot knows about booking, but nothing inside the
     // horizon is actually free — a full diary, or a minimum notice and horizon
     // that between them leave no room. The bot will correctly decline to offer a
@@ -295,6 +295,19 @@ if ($action !== null) {
         $note('turn', 'warning',
             'The assistant tried to book something, but appointments are not switched on, '
             . 'so nothing would have happened on WhatsApp either.');
+    } elseif ($kind === 'availability') {
+        // #42: the one action that is a *question*, so the console can answer it
+        // for real — chatbotAvailabilityAnswer() only reads. Appended exactly as
+        // the live path appends it, because a preview that stopped at "it would
+        // have checked the diary" would hide the thing the tenant is testing:
+        // whether their opening hours and their diary produce the times they
+        // expect on the date they asked about.
+        $answer = chatbotAvailabilityAnswer($conn, $userId, $config, $action, $appointments['timezone']);
+        if ($answer !== '') $replyText = trim($replyText . "\n\n" . $answer);
+
+        $note('turn', 'info',
+            'The assistant asked the diary what is free. That answer is a live database lookup — '
+            . 'the same one a customer would get — and nothing was booked.');
     } elseif ($kind === 'book') {
         $service = apptMatchService(apptServices($conn, $userId, true), $action['service'] ?? '');
         if (!$service) {
