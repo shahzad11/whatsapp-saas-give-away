@@ -209,22 +209,17 @@ function handoffWaitLabel($requestedAt) {
 // linked account is the one running the bot, so alerting it would mean the
 // tenant's own bot messaging itself.
 
-// E.164 in the only form worth storing: digits, no punctuation, a country code
-// first. The leading '+' is presentation — it is added back on the way out —
-// because a stored '+' would then have to be stripped again at every use site
-// (a JID has no plus), and one of those sites would eventually forget.
+// The instance's one E.164 rule, applied to the handover number: '' for a blank
+// field, `false` for a typo, bare digits otherwise. A typo here means every
+// handover alert is silently sent to nobody, which is why it is refused rather
+// than stored.
 //
-// 8 is the shortest real international number (a few small countries); 15 is
-// E.164's own maximum. A number outside that range is a typo, and a typo here
-// means every handover alert is silently sent to nobody.
+// The rule itself lives in e164Digits() (functions.php) because the billing sales
+// contact (#43) needs exactly the same one. This name is kept: it is what the
+// tenant form, the admin form and the alert sender all call, and it says which
+// number is being talked about.
 function handoffNormaliseNumber($raw) {
-    $digits = preg_replace('/\D+/', '', (string)$raw);
-    if ($digits === '') return '';
-    // A local number written with a trunk prefix ("03001234567") is the single
-    // most likely mistake, and it is not something we can correct without
-    // knowing the country — so it is rejected rather than guessed at.
-    if ($digits[0] === '0') return false;
-    return (strlen($digits) >= 8 && strlen($digits) <= 15) ? $digits : false;
+    return e164Digits($raw);
 }
 
 function handoffValidNumber($raw) {

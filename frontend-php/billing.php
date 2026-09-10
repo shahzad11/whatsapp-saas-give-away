@@ -38,6 +38,17 @@ $stmt->close();
 $payments = getPayments($conn, $userId, 24);
 $instructions = paymentInstructions($conn);
 
+// #43: the contact route the admin configured, resolved once for the whole page
+// — the plan cards below build a link per plan from it, and re-reading the
+// settings inside that loop would be a query per card.
+$contactConfig = billingContactConfig($conn);
+// Who is asking. Both halves are optional, so an enquiry from a tenant who never
+// filled in a profile still identifies them by the address they log in with.
+$contactWho = [
+    'tenant' => tenantDisplayName($user, $profile),
+    'email'  => (string)($user['email'] ?? ''),
+];
+
 // The furthest date any logged payment covers.
 $paidUntil = null;
 foreach ($payments as $p) {
@@ -245,14 +256,57 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="mt-auto">
                     <?php if ($plan && $p['id'] == $plan['id']): ?>
                         <button class="btn btn-outline-secondary w-100" disabled>Current Plan</button>
-                    <?php elseif ($instructions !== ''): ?>
-                        <?php // Billing is manual by design — no gateway, so no checkout
-                              // button. Point at the admin's own instructions when they
-                              // exist, and fall back to email when they do not. ?>
-                        <a href="#howToPay" class="btn btn-primary w-100">See how to pay</a>
                     <?php else: ?>
-                        <a href="mailto:<?= sanitize(MAIL_FROM) ?>?subject=<?= rawurlencode('Plan change request: ' . $p['name']) ?>"
-                           class="btn btn-primary w-100">Contact us to switch</a>
+                        <?php
+                        // Billing is manual by design — no gateway, so no checkout
+                        // button. What replaces it is the contact route the admin
+                        // configured (#43), with this plan's name already in the
+                        // subject or the prefilled message.
+                        //
+                        // The links are built per plan, not once: each one carries a
+                        // different plan name. They are read from $contactConfig,
+                        // which was resolved once above, so this loop costs no
+                        // queries.
+                        $links = billingContactLinks($conn, $p, $contactWho, $contactConfig);
+                        ?>
+                        <?php if ($links): ?>
+                            <?php // The preferred method is the filled button. Any others are
+                                  // outlined and share a row, so three methods do not turn a
+                                  // plan card into a column of buttons. ?>
+                            <a href="<?= sanitize($links[0]['url']) ?>" class="btn btn-primary w-100"
+                               <?= $links[0]['method'] === 'whatsapp' ? 'target="_blank" rel="noopener"' : '' ?>>
+                                <i class="bi <?= sanitize($links[0]['icon']) ?> me-1"></i><?= sanitize($contactConfig['label']) ?>
+                            </a>
+                            <?php if (count($links) > 1): ?>
+                                <div class="d-flex gap-2 mt-2">
+                                    <?php foreach (array_slice($links, 1) as $link): ?>
+                                        <a href="<?= sanitize($link['url']) ?>" class="btn btn-outline-secondary btn-sm flex-fill"
+                                           <?= $link['method'] === 'whatsapp' ? 'target="_blank" rel="noopener"' : '' ?>>
+                                            <i class="bi <?= sanitize($link['icon']) ?> me-1"></i><?= sanitize($link['label']) ?>
+                                        </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($instructions !== ''): ?>
+                                <?php // The instructions stay reachable, as the step after
+                                      // asking rather than instead of it: they say how to pay
+                                      // for a plan, not how to be moved onto one. ?>
+                                <div class="x-small text-muted text-center mt-2">
+                                    Already agreed? <a href="#howToPay">See how to pay</a>.
+                                </div>
+                            <?php endif; ?>
+                        <?php elseif ($instructions !== ''): ?>
+                            <a href="#howToPay" class="btn btn-primary w-100">See how to pay</a>
+                        <?php else: ?>
+                            <?php // Nothing configured, so there is nothing to link to. A
+                                  // button that opens a blank mail window (or the old
+                                  // fallback: the instance's no-reply SMTP sender) is worse
+                                  // than a sentence that tells the truth. ?>
+                            <button class="btn btn-outline-secondary w-100" disabled
+                                    title="No contact method has been set up on this instance yet.">
+                                Contact your administrator
+                            </button>
+                        <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </div>

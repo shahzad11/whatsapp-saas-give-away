@@ -127,6 +127,33 @@ function sanitize($input) {
     return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
 }
 
+// E.164 in the only form worth storing: digits, no punctuation, a country code
+// first. Returns '' for "no number given", `false` for "that is not a number",
+// and the digits otherwise — so a caller can tell a blank field from a typo,
+// which are very different answers.
+//
+// The leading '+' is presentation and is added back on the way out, because a
+// stored '+' would have to be stripped again at every use site (a WhatsApp JID
+// has no plus, and neither does a wa.me link) and one of those sites would
+// eventually forget.
+//
+// 8 is the shortest real international number (a few small countries); 15 is
+// E.164's own maximum. A local number written with a trunk prefix
+// ("03001234567") is the most likely mistake of all, and it cannot be corrected
+// without knowing the country — so it is refused rather than guessed at. Refuse,
+// never normalise into something unreachable: a number that looks saved and can
+// never be dialled or messaged is the worst outcome available.
+//
+// Lives here rather than in one feature's file because two features now depend
+// on the same rule — handover alerts (#26) and the billing sales contact (#43) —
+// and a second copy is a second set of edge cases.
+function e164Digits($raw) {
+    $digits = preg_replace('/\D+/', '', (string)$raw);
+    if ($digits === '') return '';
+    if ($digits[0] === '0') return false;
+    return (strlen($digits) >= 8 && strlen($digits) <= 15) ? $digits : false;
+}
+
 // Delivers through the admin-configured SMTP server.
 //
 // This used to call mail(), which could never have worked: the frontend
