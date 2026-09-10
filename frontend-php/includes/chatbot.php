@@ -501,7 +501,10 @@ function chatbotBookingInstructions(array $a) {
     $lines[] = "5. Anything you or the customer said earlier about which times were free is not "
         . "evidence: other people book while you are talking. If the customer asks you to check "
         . "again, names a different date, or doubts whether a time is free, send the availability "
-        . "line again and use only the newest answer.";
+        . "line again and use only the newest answer. You have no memory of free times — if your "
+        . "message is about to name one and you did not send the availability line in that same "
+        . "message, you are guessing. Never copy a time out of an earlier message, including your "
+        . "own.";
     $lines[] = "6. When — and only when — the customer has clearly agreed to a specific service and time, "
         . "end your message with a line in exactly this form, and nothing after it:";
     $lines[] = '   ' . APPT_ACTION_OPEN . ' {"action":"book","service":"<service name>","datetime":"YYYY-MM-DD HH:MM","name":"<customer name or empty>"} ' . APPT_ACTION_CLOSE;
@@ -881,6 +884,20 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
             $actionOutcome = $action['action'];
         }
     }
+
+    // #42: the customer questioned availability and the model answered from the
+    // conversation instead of asking the diary. Asked here rather than trusted to
+    // the prompt, because the prompt already says not to and a real model still
+    // does it. Skipped entirely when the model *did* ask — which is the normal
+    // case, and then this costs one string comparison.
+    if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
+        $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $text, $replyText, $timezone);
+        if ($rechecked !== null) {
+            $replyText = $rechecked;
+            $actionOutcome = 'availability re-check';
+        }
+    }
+
     if (trim($replyText) === '') $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
 
     $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $replyText);
@@ -1147,6 +1164,42 @@ function chatbotAvailabilityAnswer(mysqli $conn, $userId, array $config, array $
     }
 
     return apptDateAvailabilityLine($conn, $userId, $config, $service, $action['date'] ?? '', $timezone);
+}
+
+// The backstop for a model that answered "are you sure?" from the transcript (#42).
+//
+// Returns the reply to send, or null when this does not apply — which is the
+// normal case, and the caller leaves the model's reply exactly as it was.
+//
+// It applies when three things are true at once: the customer questioned
+// availability in so many words (apptRecheckPhrase), the model did *not* ask the
+// diary in this reply, and this bot's own earlier diary answer can be read back
+// out of the conversation so there is a service and a date to re-ask about.
+// Anything less and there is nothing to correct with.
+//
+// The model's own sentences that quote times are dropped, because the times
+// underneath them are exactly what has just been re-checked. Putting a fresh
+// list next to a stale one and leaving the customer to notice is worse than
+// either alone.
+function chatbotRecheckedAvailability(mysqli $conn, $userId, array $config, array $history,
+                                      $incomingText, $replyText, $timezone) {
+    if (apptRecheckPhrase($incomingText) === null) return null;
+
+    $previous = apptQuotedRequestFromHistory($history, $timezone);
+    if (!$previous) return null;
+
+    $service = apptMatchService(apptServices($conn, $userId, true), $previous['service']);
+    if (!$service) return null;
+
+    $answer = apptDateAvailabilityLine($conn, $userId, $config, $service, $previous['date'], $timezone);
+    if ($answer === '') return null;
+
+    $prose = apptStripQuotedTimes($replyText);
+    // A model whose whole message was the stale list leaves nothing to keep, and
+    // a bare list with no sentence in front of it reads like a machine.
+    if ($prose === '') $prose = 'Let me check the diary again.';
+
+    return trim($prose . "\n\n" . $answer);
 }
 
 // Sends through the same endpoint the composer uses, and meters it the same

@@ -335,6 +335,20 @@ if ($action !== null) {
     }
 }
 
+// #42: the same backstop the live path applies, for the same reason and through
+// the same function — a console that did not correct a stale list would show the
+// tenant a reply their customer would never receive, which is #34 again.
+if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
+    $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $message, $replyText, $timezone);
+    if ($rechecked !== null) {
+        $replyText = $rechecked;
+        $note('turn', 'info',
+            'The assistant repeated times from earlier in the conversation instead of asking the '
+            . 'diary, so the diary was asked and its answer replaced them. A customer would see '
+            . 'the same correction.');
+    }
+}
+
 // Mirrors the live path's last resort: a reply that is nothing but an action line
 // leaves no words for the customer.
 if (trim($replyText) === '') {

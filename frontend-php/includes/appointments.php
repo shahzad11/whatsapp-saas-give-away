@@ -696,6 +696,113 @@ function apptDateAvailabilityLine(mysqli $conn, $userId, array $config, array $s
     ]);
 }
 
+// --- "Are you sure?" (#42) ---------------------------------------------------
+//
+// The prompt tells the model that nothing said earlier is evidence about the
+// diary. Observed against a real model, that holds for two turns and then does
+// not: asked "are you sure? check again", it says it is checking, does not send
+// the availability line, and pastes the list from its own previous message. The
+// times it quotes were true when they were written and may not be now.
+//
+// A prompt cannot fix that, because the instruction is already there and was
+// already read. So the check is made in PHP, on the same principle as the
+// handover phrase match: it costs nothing, it is deterministic, and it does not
+// depend on the model choosing to co-operate.
+
+// Narrow on purpose. Every phrase here is someone questioning availability, not
+// merely mentioning it — a false positive would replace a perfectly good answer
+// with a diary listing nobody asked for.
+const APPT_RECHECK_PHRASES = [
+    'check again', 'check the diary', 'check once more', 'recheck', 're-check',
+    'double check', 'double-check', 'are you sure', 'is that right',
+    'still free', 'still available', 'still open', 'has that changed',
+    'has it changed', 'any other time', 'other times',
+];
+
+function apptRecheckPhrase($text) {
+    $text = mb_strtolower(trim((string)$text));
+    if ($text === '') return null;
+    foreach (APPT_RECHECK_PHRASES as $phrase) {
+        if (str_contains($text, $phrase)) return $phrase;
+    }
+    return null;
+}
+
+// The service and date of the last diary answer this bot gave, read back out of
+// the conversation (#42).
+//
+// Parsing our own sentence, not the model's: the format is
+// apptAvailabilityMessage()'s and nothing else produces it, which is what makes
+// this reliable enough to act on. Only the bot's own messages are considered,
+// newest first, and a message with no such answer in it is skipped.
+//
+// The written date has no year — 'Wed 16 Sep' — because a customer reading a
+// diary does not need one. It is resolved forwards: the nearest matching date
+// that is not in the past, which is the only reading that can be about a
+// booking.
+//
+// Returns ['service' => string, 'date' => 'Y-m-d'] or null.
+function apptQuotedRequestFromHistory(array $history, $timezone, ?DateTime $now = null) {
+    try {
+        $tz = new DateTimeZone($timezone ?: 'UTC');
+    } catch (Exception $e) {
+        $tz = new DateTimeZone('UTC');
+    }
+    $now = $now instanceof DateTime
+        ? (clone $now)->setTimezone($tz)
+        : (new DateTime('now', new DateTimeZone('UTC')))->setTimezone($tz);
+
+    foreach (array_reverse($history) as $message) {
+        if (empty($message['fromMe'])) continue;
+        $text = (string)($message['text'] ?? '');
+
+        if (!preg_match('/(?:Free times for|nothing free for) (.+?) on [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}/u', $text, $who)) {
+            continue;
+        }
+        // The last date whose list was actually quoted — which is the fallback
+        // date when the asked-about one was closed or full, and that is the day
+        // the customer is answering about.
+        if (!preg_match_all('/([A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}):/u', $text, $days) || !$days[1]) {
+            continue;
+        }
+        $written = end($days[1]);
+
+        $date = DateTime::createFromFormat('D j M Y H:i:s', $written . ' ' . $now->format('Y') . ' 00:00:00', $tz);
+        if (!$date) continue;
+        // December read in January: a date months behind us was written about
+        // last year and means the next one. A day of slack, so a conversation
+        // that ran over midnight still reads as being about today.
+        if ($date->format('Y-m-d') < (clone $now)->modify('-1 day')->format('Y-m-d')) {
+            $date = DateTime::createFromFormat('D j M Y H:i:s',
+                $written . ' ' . ((int)$now->format('Y') + 1) . ' 00:00:00', $tz);
+            if (!$date) continue;
+        }
+
+        return ['service' => trim($who[1]), 'date' => $date->format('Y-m-d')];
+    }
+    return null;
+}
+
+// Drops every sentence that quotes a clock time (#42).
+//
+// Used only when the system is about to state the real times in the same
+// message. Leaving the model's list in would put two lists in front of the
+// customer, and the wrong one first — so the sentences that carry times go and
+// the rest of what the model wrote ("let me check that for you") stays.
+//
+// Sentence-level rather than word-level because removing "10:00" from "10:00 is
+// free" leaves a sentence that is worse than no sentence.
+function apptStripQuotedTimes($text) {
+    $kept = [];
+    foreach (preg_split('/\R/u', (string)$text) as $line) {
+        $parts = preg_split('/(?<=[.!?])\s+/u', $line);
+        $keptParts = array_filter($parts, fn($p) => !preg_match('/\b\d{1,2}:\d{2}\b/', $p));
+        $line = trim(implode(' ', $keptParts));
+        if ($line !== '') $kept[] = $line;
+    }
+    return trim(implode("\n", $kept));
+}
+
 // 'Haircut (30 minutes), Colour (90 minutes)' — every active service, for
 // the question that starts a booking. Never a subset: a service the tenant
 // configured and the bot never mentions is a service they cannot sell.

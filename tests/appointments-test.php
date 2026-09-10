@@ -592,6 +592,72 @@ check('and is gone on the second, taken while the customer was typing',
 // service: 09:15 through 10:45. Everything else is untouched.
 equals('and only the starts that overlap it are', count($before) - 7, count($after));
 
+group('"Are you sure?" is recognised in PHP, not left to the model');
+
+// Observed against a real model: told twice that its own earlier list is not
+// evidence, it still says "let me check again" and pastes the old times. These
+// are the phrases that make PHP re-ask regardless.
+foreach (['can you check again please', 'Are you sure?', 'is 10:00 still free?',
+          'please double-check that', 'has that changed?', 'any other times?'] as $said) {
+    check('"' . $said . '" is a re-check', apptRecheckPhrase($said) !== null);
+}
+foreach (['I would like to book Tuesday', 'what are your opening hours?', 'thanks!', ''] as $said) {
+    check('"' . $said . '" is not', apptRecheckPhrase($said) === null);
+}
+
+group('The service and date are read back out of the bot\'s own answer');
+
+$asked = at(MON . ' 10:00');
+$conversation = [
+    ['fromMe' => false, 'text' => 'I want a haircut on Tuesday'],
+    ['fromMe' => true,  'text' => 'Free times for Haircut on Tue 15 Sep: 09:00, 09:15. Which of those would you like?'],
+    ['fromMe' => false, 'text' => 'are you sure 09:00 is free?'],
+];
+$found = apptQuotedRequestFromHistory($conversation, 'Europe/London', $asked);
+equals('the service', 'Haircut', $found['service']);
+equals('and the date, resolved forwards to a real one', '2026-09-15', $found['date']);
+
+// The refusal wording carries two dates: the one asked about and the one whose
+// times were actually listed. The customer is answering about the second.
+$fallback = [['fromMe' => true, 'text' =>
+    'There is nothing free for Colour on Mon 14 Sep. The next day with space is Tue 15 Sep: 09:00. Would any of those suit?']];
+$found = apptQuotedRequestFromHistory($fallback, 'Europe/London', $asked);
+equals('the service from a refusal', 'Colour', $found['service']);
+equals('and the date whose times were quoted', '2026-09-15', $found['date']);
+
+check('the customer\'s own words are never parsed as an answer',
+    apptQuotedRequestFromHistory([
+        ['fromMe' => false, 'text' => 'Free times for Haircut on Tue 15 Sep: 09:00'],
+    ], 'Europe/London', $asked) === null);
+check('a conversation with no diary answer in it yields nothing',
+    apptQuotedRequestFromHistory([
+        ['fromMe' => true, 'text' => 'We are open Monday to Friday.'],
+    ], 'Europe/London', $asked) === null);
+check('and the newest answer wins when there are several',
+    apptQuotedRequestFromHistory([
+        ['fromMe' => true, 'text' => 'Free times for Haircut on Tue 15 Sep: 09:00.'],
+        ['fromMe' => true, 'text' => 'Free times for Colour on Wed 16 Sep: 10:00.'],
+    ], 'Europe/London', $asked)['service'] === 'Colour');
+
+// December read in January. The written date has no year because a customer
+// reading a diary does not need one.
+equals('a date that would be in the past is read as next year', '2027-01-05',
+    apptQuotedRequestFromHistory([['fromMe' => true, 'text' => 'Free times for Haircut on Tue 5 Jan: 09:00.']],
+        'Europe/London', at('2026-12-30 10:00'))['date']);
+
+group('A stale list is removed when the real one is about to be stated');
+
+equals('the sentence carrying times goes, the rest stays',
+    'Let me check that for you.',
+    apptStripQuotedTimes("Let me check that for you. We have 09:00, 10:00 and 11:00 free."));
+equals('a message that is nothing but times leaves nothing', '',
+    apptStripQuotedTimes('09:00, 09:15, 09:30.'));
+equals('a message with no times is untouched',
+    'Which service would you like?', apptStripQuotedTimes('Which service would you like?'));
+equals('line by line, so a list on its own line goes without taking the prose',
+    "Sure, one moment.\nI will confirm shortly.",
+    apptStripQuotedTimes("Sure, one moment.\nFree: 09:00, 10:00\nI will confirm shortly."));
+
 group('Choosing a service comes first, and every service is offered');
 
 $services = [
