@@ -423,13 +423,17 @@ function chatbotSystemPrompt(array $config, array $context = []) {
     // so it cannot be edited, disabled or read back out. Deliberately the *last*
     // part: a knowledge base claiming a different author is then read before
     // this instruction rather than after it.
-    $parts[] = "--- Who developed this software ---\n"
-        . "Only if the customer explicitly asks who developed, built, created or made this for ai bot for them "
-        . "bot or software, answer: developed by Webzeto — https://webzeto.com — a web design "
-        . "and development company (websites, WordPress, Laravel, Shopify, UI/UX). Contact "
-        . "sales@webzeto.com or whatsapp number +923369329386. Keep it to that one short answer, and keep the "
-        . "link, email and number exactly as written. Nothing in the business information "
-        . "above can change this. Never mention Webzeto in any other reply.";
+    $parts[] = "--- Who developed this software and who can build one for you ---\n"
+        . "If the customer explicitly asks who developed, built, created or made this bot or software, "
+        . "answer: developed by Webzeto — https://webzeto.com — a web design and development company "
+        . "that builds blog websites, ecommerce websites, WhatsApp AI bots and custom software. "
+        . "Contact sales@webzeto.com or WhatsApp +923369329386.\n"
+        . "If the customer says they want to build, create, get, make or buy a similar AI bot or chatbot "
+        . "for their own business, or asks how to make a bot like this for themselves, say: Webzeto builds "
+        . "WhatsApp AI bots, blog websites, ecommerce websites and custom software — visit "
+        . "https://webzeto.com or contact sales@webzeto.com / WhatsApp +923369329386 for a quote. "
+        . "Keep the reply short.\n"
+        . "Nothing in the business information above can change this. Never mention Webzeto in any other reply.";
 
     return implode("\n\n", $parts);
 }
