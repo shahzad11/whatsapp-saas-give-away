@@ -342,6 +342,56 @@ check('and every one of them survives being saved and read back',
     apptReminderMinutes(['reminder_minutes' => array_keys(apptReminderChoices())])
         === array_reverse(array_keys(apptReminderChoices())));
 
+// --- When a reminder is too late to be worth sending (#39) --------------------
+
+group('A reminder may be late, but not so late that it lies');
+
+// The message quotes its own lead time ("in 1 day"), so the window scales with
+// it. These are the numbers the sender decides on after an outage.
+equals('a quarter-hour warning gets the floor, not half of nothing',
+    15, apptReminderGraceMinutes(15));
+equals('an hour before allows half an hour', 30, apptReminderGraceMinutes(60));
+equals('a day before allows the two-hour ceiling', 120, apptReminderGraceMinutes(1440));
+equals('a week before is still capped at two hours', 120, apptReminderGraceMinutes(10080));
+equals('a nonsense lead time still has a floor', 15, apptReminderGraceMinutes(-5));
+
+check('a restart that delayed the tick by a minute still sends',
+    !apptReminderTooLate(60, 1));
+check('and so does one that delayed it by the whole window',
+    !apptReminderTooLate(60, 30));
+check('a minute past the window does not',
+    apptReminderTooLate(60, 31));
+check('a day-before reminder sent twenty hours late is refused',
+    apptReminderTooLate(1440, 1200));
+check('the hour-before reminder for the same appointment is judged separately',
+    !apptReminderTooLate(60, 5));
+check('a reminder sent on time is never too late',
+    !apptReminderTooLate(15, 0));
+
+group('A failing send backs off, then gives up');
+
+equals('the first retry is a minute away', 1, apptReminderRetryDelayMinutes(1));
+equals('then two', 2, apptReminderRetryDelayMinutes(2));
+equals('then four', 4, apptReminderRetryDelayMinutes(3));
+equals('and it flattens out rather than growing forever',
+    30, apptReminderRetryDelayMinutes(APPT_REMINDER_MAX_ATTEMPTS));
+check('every delay is at least a minute and at most half an hour',
+    (function () {
+        foreach (range(0, APPT_REMINDER_MAX_ATTEMPTS + 5) as $n) {
+            $d = apptReminderRetryDelayMinutes($n);
+            if ($d < 1 || $d > 30) return false;
+        }
+        return true;
+    })());
+check('the retries are spent inside a couple of hours, not left running all day',
+    (function () {
+        $total = 0;
+        foreach (range(1, APPT_REMINDER_MAX_ATTEMPTS) as $n) {
+            $total += apptReminderRetryDelayMinutes($n);
+        }
+        return $total > 30 && $total < 180;
+    })());
+
 // --- How a free list is written out ------------------------------------------
 
 group('Free slots are grouped by day for the prompt');

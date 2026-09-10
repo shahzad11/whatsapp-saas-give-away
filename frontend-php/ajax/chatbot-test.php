@@ -200,7 +200,7 @@ if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) 
     if (empty($config['appointments_enabled'])) {
         $note('config', 'warning',
             'This bot cannot book anything: appointment booking is switched off, so the prompt never '
-            . 'mentions it. Turn it on under Chatbot → Appointments.');
+            . 'mentions it. Turn it on under Settings → Appointments.');
     } elseif (!apptServices($conn, $userId, true)) {
         $note('config', 'warning',
             'This bot cannot book anything: booking is on but there is no active service to book.');
@@ -211,7 +211,7 @@ if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) 
     // which looks identical to the cases above and has a different fix.
     $note('config', 'warning',
         'Booking is on, but no opening hours are saved, so the bot is told it cannot take a booking '
-        . 'and should offer a callback instead. Set them under Chatbot → Appointments.');
+        . 'and should offer a callback instead. Set them under Settings → Appointments.');
 } elseif ($context['appointments'] !== null && empty($context['appointments']['slots'])) {
     // #35: hours are set and the bot knows about booking, but nothing inside the
     // horizon is actually free — a full diary, or a minimum notice and horizon

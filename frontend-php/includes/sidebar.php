@@ -49,8 +49,15 @@ $brandLogo = brandLogoUrl($conn ?? null);
               // every endpoint behind it still enforce the flag server-side. ?>
         <div class="nav-section">
             <span class="nav-section-title">Automation</span>
-            <a href="<?= APP_URL ?>/chatbot.php" class="nav-link-item <?= $currentPage === 'chatbot' ? 'active' : '' ?>">
-                <i class="bi bi-robot"></i><span>Chatbot</span>
+            <?php // #41. "Chatbot" named a third of what is behind this link: the same
+                  // page configures appointment booking and human handover, and tenants
+                  // were being sent to "Chatbot → Appointments" to set up a calendar.
+                  // "Settings" inside the Automation section says it without competing
+                  // with Profile (personal details) or the admin console (the whole
+                  // instance). 'chatbot' stays in the active-state test so the old route
+                  // lights the right item for the moment it takes to redirect. ?>
+            <a href="<?= APP_URL ?>/settings.php" class="nav-link-item <?= in_array($currentPage, ['settings', 'chatbot'], true) ? 'active' : '' ?>">
+                <i class="bi bi-sliders"></i><span>Settings</span>
             </a>
             <a href="<?= APP_URL ?>/live-chats.php" class="nav-link-item <?= $currentPage === 'live-chats' ? 'active' : '' ?>">
                 <i class="bi bi-headset"></i><span>Live chats</span>
@@ -59,10 +66,11 @@ $brandLogo = brandLogoUrl($conn ?? null);
                 <i class="bi bi-calendar-check"></i><span>Appointments</span>
             </a>
         </div>
-        <?php // Profile and Settings left this section (#35). Both are already in the
-              // top-right user menu, which is where personal account items are looked
-              // for, and Settings in particular is now a read-only summary that sends
-              // you to Profile. Billing stays: it is the only one of the three a
+        <?php // Profile left this section (#35): it is already in the top-right user
+              // menu, which is where personal account items are looked for. The old
+              // tenant settings page that sat beside it is gone entirely (#40) — it
+              // held a read-only summary of a timezone that Profile owns and a
+              // reconnection that was never a choice. Billing stays: it is the one a
               // tenant is sent to from elsewhere in the app — every quota wall and
               // every locked feature links here. ?>
         <div class="nav-section">

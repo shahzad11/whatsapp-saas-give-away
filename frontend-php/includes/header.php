@@ -45,8 +45,14 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                         <span class="d-none d-md-inline"><?= sanitize($user['name'] ?? 'User') ?></span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end">
+                        <?php // No Settings item here (#40). The page this used to open had
+                              // nothing left on it — timezone moved to Profile and automatic
+                              // reconnection was never a per-tenant choice — so it was a menu
+                              // entry that led to a summary of two things the tenant could not
+                              // change from it. The route now belongs to the tenant's
+                              // automation settings (#41), which lives in the sidebar next to
+                              // the features it configures rather than in the account menu. ?>
                         <li><a class="dropdown-item" href="<?= APP_URL ?>/profile.php"><i class="bi bi-person me-2"></i>Profile</a></li>
-                        <li><a class="dropdown-item" href="<?= APP_URL ?>/settings.php"><i class="bi bi-gear me-2"></i>Settings</a></li>
                         <?php // The only route into the admin console from the tenant app, and
                               // only for admins. Never rendered for a regular tenant — and the
                               // console guards itself server-side regardless, since hiding a

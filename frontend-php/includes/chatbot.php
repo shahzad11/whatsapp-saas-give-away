@@ -1205,7 +1205,7 @@ function chatbotOutcomeLabel($outcome) {
 // what to change. The label says what happened; this says what to do, and an
 // outcome that needs nothing returns ''.
 //
-// Detail is not dropped: chatbot.php keeps it as the row's tooltip, so support
+// Detail is not dropped: settings.php keeps it as the row's tooltip, so support
 // can still read it.
 function chatbotOutcomeHint($outcome) {
     return [

@@ -629,18 +629,79 @@ CREATE TABLE IF NOT EXISTS appointments (
 
 -- One row per reminder per appointment. The unique key is what makes the sender
 -- idempotent: a scheduler that runs twice cannot message the customer twice.
+--
+-- `sending` is a state, not a decoration (#39). The sender used to move a row
+-- straight to `sent` before calling WhatsApp, so a process killed mid-send left
+-- a row claiming it had delivered a message that never went out — the one way
+-- this could lose a reminder in total silence. The claim now parks the row in
+-- `sending` with claimed_at, and only success writes `sent`.
+--
+-- `attempts` and `retry_after` bound the retry: a transient WhatsApp or database
+-- failure is worth another go a minute later, the same failure fifty times in a
+-- row is not, and neither is any attempt at all once the appointment has been
+-- and gone.
 CREATE TABLE IF NOT EXISTS appointment_reminders (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     appointment_id BIGINT NOT NULL,
     minutes_before INT NOT NULL,
     send_at DATETIME NOT NULL,
     sent_at DATETIME DEFAULT NULL,
-    status ENUM('pending','sent','failed','skipped') NOT NULL DEFAULT 'pending',
+    claimed_at DATETIME DEFAULT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    retry_after DATETIME DEFAULT NULL,
+    status ENUM('pending','sending','sent','failed','skipped','missed') NOT NULL DEFAULT 'pending',
     detail VARCHAR(255) DEFAULT NULL,
     FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
     UNIQUE KEY unique_reminder (appointment_id, minutes_before),
     INDEX idx_due (status, send_at)
 ) ENGINE=InnoDB;
+
+-- The same three columns for a database that predates them, guarded on
+-- information_schema like every other migration in this file: MySQL has no
+-- ADD COLUMN IF NOT EXISTS and this file re-runs on every container start.
+SET @add_reminder_retry := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE appointment_reminders
+            ADD COLUMN claimed_at DATETIME DEFAULT NULL,
+            ADD COLUMN attempts INT NOT NULL DEFAULT 0,
+            ADD COLUMN retry_after DATETIME DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointment_reminders' AND COLUMN_NAME = 'attempts'
+);
+PREPARE stmt_add_reminder_retry FROM @add_reminder_retry;
+EXECUTE stmt_add_reminder_retry;
+DEALLOCATE PREPARE stmt_add_reminder_retry;
+
+-- Widening the ENUM is additive: no existing value changes meaning, so rows
+-- written by the old sender keep reading exactly as they did. Guarded on the
+-- column type rather than the column name, since the column has always existed.
+SET @add_reminder_states := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE appointment_reminders
+            MODIFY COLUMN status ENUM(''pending'',''sending'',''sent'',''failed'',''skipped'',''missed'')
+            NOT NULL DEFAULT ''pending''',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointment_reminders'
+      AND COLUMN_NAME = 'status' AND COLUMN_TYPE LIKE '%sending%'
+);
+PREPARE stmt_add_reminder_states FROM @add_reminder_states;
+EXECUTE stmt_add_reminder_states;
+DEALLOCATE PREPARE stmt_add_reminder_states;
+
+-- The due query filters on status and orders by retry_after/send_at; the old
+-- (status, send_at) index no longer covers it.
+SET @add_retry_idx := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_due_retry ON appointment_reminders (status, retry_after, send_at)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointment_reminders' AND INDEX_NAME = 'idx_due_retry'
+);
+PREPARE stmt_add_retry_idx FROM @add_retry_idx;
+EXECUTE stmt_add_retry_idx;
+DEALLOCATE PREPARE stmt_add_retry_idx;
 
 -- Appointment settings ride on chatbot_configs: the booking flow is the chatbot.
 SET @add_appt := (

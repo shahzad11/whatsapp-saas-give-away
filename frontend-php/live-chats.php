@@ -132,7 +132,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="alert alert-info">
         <i class="bi bi-info-circle me-1"></i>
         Handover to a person is switched off, so nothing new will appear here.
-        Turn it on under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Handover</a>.
+        Turn it on under <a href="<?= APP_URL ?>/settings.php#tab-handoff">Settings → Handover</a>.
     </div>
 <?php endif; ?>
 

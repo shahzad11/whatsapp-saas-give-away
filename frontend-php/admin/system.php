@@ -34,6 +34,21 @@ function backendHealth() {
 
 $health = backendHealth();
 
+// Appointment reminders (#39).
+//
+// The scheduler is a timer inside the Node backend poking a PHP endpoint once a
+// minute, which means there is nothing to look at: no cron log, no queue UI, and
+// a stack that has silently stopped reminding anybody looks exactly like a stack
+// with nobody to remind. The endpoint writes a heartbeat on every completed pass
+// and the queue counts its own states, so both are readable here.
+//
+// Three ticks of grace before it is called stale — one slow minute is a slow
+// minute, not an outage.
+$reminderTickAt = (string)appSetting($conn, 'reminder_tick_at', '');
+$reminderTickAgo = $reminderTickAt === '' ? null : max(0, time() - strtotime($reminderTickAt . ' UTC'));
+$reminderStale = $reminderTickAgo === null || $reminderTickAgo > 180;
+$reminderQueue = apptReminderHealth($conn);
+
 $dbOk = true;
 $dbVersion = '';
 try {
@@ -96,7 +111,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
 <div class="row g-3 mb-4">
-    <div class="col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card h-100">
             <div class="card-body d-flex align-items-center gap-3">
                 <i class="bi bi-hdd-network fs-2 text-<?= $health['ok'] ? 'success' : 'danger' ?>"></i>
@@ -125,7 +140,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
         </div>
     </div>
-    <div class="col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card h-100">
             <div class="card-body d-flex align-items-center gap-3">
                 <i class="bi bi-database fs-2 text-<?= $dbOk ? 'success' : 'danger' ?>"></i>
@@ -136,6 +151,60 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="x-small text-danger mt-1">
                             <strong>What to do:</strong> check <code>docker compose logs mysql --since 10m</code> on the server.
                             You are seeing this page at all, so the connection failed after login.
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4 col-md-6">
+        <div class="card h-100">
+            <div class="card-body d-flex align-items-center gap-3">
+                <?php // Amber, not red, when the queue is behind: reminders being late is a
+                      // different problem from the scheduler being dead, and they need
+                      // different answers. ?>
+                <?php $reminderClass = $reminderStale ? 'danger' : (($reminderQueue['overdue'] ?? 0) > 0 ? 'warning' : 'success'); ?>
+                <i class="bi bi-alarm fs-2 text-<?= $reminderClass ?>"></i>
+                <div>
+                    <div class="fw-600">Appointment reminders</div>
+                    <div class="small text-muted">
+                        <?php if ($reminderTickAt === ''): ?>
+                            Never run — no completed pass has been recorded
+                        <?php elseif ($reminderStale): ?>
+                            Last pass <?= sanitize(timeAgo($reminderTickAt)) ?> — expected every minute
+                        <?php else: ?>
+                            Running — last pass <?= (int)$reminderTickAgo ?>s ago
+                        <?php endif; ?>
+                    </div>
+                    <div class="x-small text-muted">
+                        <?= (int)($reminderQueue['pending'] ?? 0) ?> waiting ·
+                        <?= (int)($reminderQueue['sent_24h'] ?? 0) ?> sent in 24h
+                        <?php if (($reminderQueue['sending'] ?? 0) > 0): ?>
+                            · <?= (int)$reminderQueue['sending'] ?> in flight
+                        <?php endif; ?>
+                    </div>
+                    <?php if (($reminderQueue['missed_24h'] ?? 0) > 0 || ($reminderQueue['failed_24h'] ?? 0) > 0): ?>
+                        <div class="x-small text-warning mt-1">
+                            <?= (int)$reminderQueue['missed_24h'] ?> missed and
+                            <?= (int)$reminderQueue['failed_24h'] ?> failed in the last 24h.
+                        </div>
+                    <?php endif; ?>
+                    <?php // The failure this card exists for. The timer lives in the backend
+                          // process, so a backend that is up but was started without
+                          // BACKEND_API_KEY, or that cannot reach the frontend container by
+                          // name, leaves every reminder queued and nothing anywhere says so. ?>
+                    <?php if ($reminderStale): ?>
+                        <div class="x-small text-danger mt-1">
+                            <strong>What to do:</strong> the timer runs inside the Node backend. Check
+                            <code>docker compose logs backend --since 10m | grep -i reminder</code> on the server —
+                            a key mismatch or an unreachable frontend is logged there. Queued reminders are not
+                            lost while it is down, but any whose moment passes are recorded as missed.
+                        </div>
+                    <?php elseif (($reminderQueue['overdue'] ?? 0) > 0): ?>
+                        <div class="x-small text-warning mt-1">
+                            <strong><?= (int)$reminderQueue['overdue'] ?> more than 15 minutes overdue.</strong>
+                            The scheduler is alive, so these are failing to send — usually a tenant's WhatsApp
+                            account needing a re-link, or a monthly message allowance already spent.
                         </div>
                     <?php endif; ?>
                 </div>

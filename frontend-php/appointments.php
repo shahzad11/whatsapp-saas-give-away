@@ -191,7 +191,7 @@ require_once __DIR__ . '/includes/header.php';
             Appointment booking is not part of your plan —
             <a href="<?= APP_URL ?>/billing.php">see plans</a>.
         <?php else: ?>
-            Turn it on under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Appointments</a>.
+            Turn it on under <a href="<?= APP_URL ?>/settings.php#tab-appointments">Settings → Appointments</a>.
         <?php endif; ?>
         You can still add appointments by hand below.
     </div>
@@ -355,7 +355,7 @@ require_once __DIR__ . '/includes/header.php';
     <div class="card-body">
         <?php if (!$services): ?>
             <p class="text-muted small mb-0">
-                Define at least one service first, under <a href="<?= APP_URL ?>/chatbot.php">Chatbot → Appointments</a>.
+                Define at least one service first, under <a href="<?= APP_URL ?>/settings.php#tab-appointments">Settings → Appointments</a>.
             </p>
         <?php else: ?>
         <?php // Deliberately not held to the bot's rules. The bot must refuse a
@@ -364,7 +364,7 @@ require_once __DIR__ . '/includes/header.php';
               // the owner: squeezing someone in after closing is a normal thing
               // to want, so only double-booking is refused here. Saying so means
               // the looser behaviour reads as intent rather than as a missing
-              // check — the rules are stated in Chatbot → Appointments. ?>
+              // check — the rules are stated in Settings → Appointments. ?>
         <div class="alert alert-light border small py-2">
             <i class="bi bi-info-circle me-1"></i>
             Booked by hand, so your opening hours, minimum notice and booking horizon

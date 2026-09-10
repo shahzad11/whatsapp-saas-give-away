@@ -218,7 +218,7 @@ function instanceSetupSteps(mysqli $conn) {
         [
             'label' => 'Set up a chatbot',
             'why'   => 'Give the bot a knowledge base, pick a model, and switch it on.',
-            'url'   => APP_URL . '/chatbot.php',
+            'url'   => APP_URL . '/settings.php',
             'done'  => $count("SELECT COUNT(*) FROM chatbot_configs WHERE is_enabled = 1") > 0,
         ],
     ];
@@ -306,7 +306,7 @@ function tenantSetupSteps(mysqli $conn, $userId) {
         $steps[] = [
             'label' => 'Set up the AI chatbot',
             'why'   => 'Give it a knowledge base, pick a model, and switch it on.',
-            'url'   => APP_URL . '/chatbot.php',
+            'url'   => APP_URL . '/settings.php',
             // Both halves: an enabled bot with no model answers nothing, and is
             // the single most common way this ends up looking broken.
             'done'  => !empty($config['is_enabled'])
@@ -318,7 +318,10 @@ function tenantSetupSteps(mysqli $conn, $userId) {
         $steps[] = [
             'label' => 'Add a bookable service',
             'why'   => 'Appointment booking needs at least one service and its opening hours.',
-            'url'   => APP_URL . '/chatbot.php#appointments',
+            // The fragment is the tab's own id, so the page opens on Appointments
+            // instead of on the Knowledge base tab the tenant did not ask for. It
+            // named a non-existent element before #41 and did nothing at all.
+            'url'   => APP_URL . '/settings.php#tab-appointments',
             'done'  => countServices($conn, $userId) > 0,
         ];
     }
@@ -398,7 +401,7 @@ function tenantHealthWarnings(mysqli $conn, $userId) {
                 'severity' => 'warning',
                 'message'  => 'The chatbot is switched on but has no model selected, so every message gets the fallback reply.',
                 'action'   => 'Pick a model',
-                'url'      => APP_URL . '/chatbot.php',
+                'url'      => APP_URL . '/settings.php#tab-model',
             ];
         }
     }

@@ -113,7 +113,7 @@
     <hr class="my-4">
     <h6 class="fw-600 mb-1">AI models</h6>
     <p class="text-muted x-small">
-        Which models tenants on this plan may choose in Chatbot → Model. The
+        Which models tenants on this plan may choose in Settings → Model. The
         <strong>AI chatbot</strong> feature above must also be on. Writes the same table as
         <a href="<?= APP_URL ?>/admin/llm.php">AI / LLM</a>, so either page can be used.
     </p>

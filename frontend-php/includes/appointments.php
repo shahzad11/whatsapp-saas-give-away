@@ -657,11 +657,16 @@ function apptSetStatus(mysqli $conn, $userId, $id, $status) {
     $changed = $stmt->affected_rows > 0;
     $stmt->close();
 
-    // A cancelled appointment must not go on reminding anyone.
+    // A cancelled appointment must not go on reminding anyone. `sending` is
+    // included as well as `pending`: a row claimed a moment ago by a tick that is
+    // still running would otherwise be the one reminder a cancellation misses.
+    // The sender re-reads the appointment's status before it sends, so the two
+    // cannot cross.
     if ($changed && $status !== 'booked') {
         $stmt = $conn->prepare(
-            "UPDATE appointment_reminders SET status = 'skipped', detail = 'appointment no longer booked'
-             WHERE appointment_id = ? AND status = 'pending'"
+            "UPDATE appointment_reminders SET status = 'skipped', claimed_at = NULL,
+                    detail = 'appointment no longer booked'
+             WHERE appointment_id = ? AND status IN ('pending', 'sending')"
         );
         $stmt->bind_param('i', $id);
         $stmt->execute();
@@ -849,7 +854,8 @@ function apptScheduleReminders(mysqli $conn, $appointmentId) {
     $stmt = $conn->prepare(
         "INSERT INTO appointment_reminders (appointment_id, minutes_before, send_at)
          VALUES (?, ?, DATE_SUB(?, INTERVAL ? MINUTE))
-         ON DUPLICATE KEY UPDATE send_at = VALUES(send_at), status = 'pending', sent_at = NULL"
+         ON DUPLICATE KEY UPDATE send_at = VALUES(send_at), status = 'pending', sent_at = NULL,
+                                 claimed_at = NULL, attempts = 0, retry_after = NULL, detail = NULL"
     );
     foreach ($minutes as $m) {
         $stmt->bind_param('iisi', $appointmentId, $m, $appt['scheduled_at'], $m);
@@ -869,13 +875,52 @@ function apptScheduleReminders(mysqli $conn, $appointmentId) {
     $stmt->close();
 }
 
+// How late a reminder may be sent and still be worth sending (#39).
+//
+// A reminder quotes its own lead time — "your haircut is in 1 day" — so sending
+// it hours after its moment does not just arrive late, it arrives *wrong*. After
+// an outage long enough to matter, the honest outcome is to record that the
+// reminder was missed rather than to tell a customer their appointment is
+// tomorrow when it is in three hours.
+//
+// The allowance scales with the lead time, because "late" means different things
+// for a 15-minute warning and a one-week one: half the lead time, never under a
+// quarter of an hour (a restart must not lose anything) and never over two.
+function apptReminderGraceMinutes($minutesBefore) {
+    return max(15, min(120, intdiv(max(0, (int)$minutesBefore), 2)));
+}
+
+function apptReminderTooLate($minutesBefore, $lateByMinutes) {
+    return (int)$lateByMinutes > apptReminderGraceMinutes($minutesBefore);
+}
+
+// Retries exist for the failure that goes away on its own: a WhatsApp socket
+// mid-reconnect, a backend restart, a dropped database connection. They back off
+// so a tenant whose account is properly broken is not hammered once a minute,
+// and they stop, because a reminder that has failed eight times is not going to
+// succeed on the ninth and the appointment is coming either way.
+const APPT_REMINDER_MAX_ATTEMPTS = 8;
+
+function apptReminderRetryDelayMinutes($attempts) {
+    $attempts = max(1, (int)$attempts);
+    return (int)min(30, 2 ** ($attempts - 1));
+}
+
+// Reminders that are due now, oldest first.
+//
+// `late_minutes` is computed by the database rather than in PHP on purpose: the
+// two clocks are not guaranteed to agree, and every other decision here is made
+// against UTC_TIMESTAMP().
 function apptDueReminders(mysqli $conn, $limit = 50) {
     $limit = max(1, min(200, (int)$limit));
-    $sql = "SELECT r.id AS reminder_id, r.minutes_before, a.*, w.session_id
+    $sql = "SELECT r.id AS reminder_id, r.minutes_before, r.attempts,
+                   TIMESTAMPDIFF(MINUTE, r.send_at, UTC_TIMESTAMP()) AS late_minutes,
+                   a.*, w.session_id
             FROM appointment_reminders r
             JOIN appointments a ON r.appointment_id = a.id
             LEFT JOIN wa_accounts w ON a.account_id = w.id
             WHERE r.status = 'pending' AND r.send_at <= UTC_TIMESTAMP()
+              AND (r.retry_after IS NULL OR r.retry_after <= UTC_TIMESTAMP())
               AND a.status = 'booked' AND a.scheduled_at > UTC_TIMESTAMP()
             ORDER BY r.send_at ASC LIMIT " . $limit;
     $res = $conn->query($sql);
@@ -885,9 +930,18 @@ function apptDueReminders(mysqli $conn, $limit = 50) {
 // Claims a reminder before sending it. The UPDATE ... WHERE status='pending' is
 // the lock: two schedulers racing produce one winner, and the loser sends
 // nothing rather than the customer getting the message twice.
+//
+// The claim parks the row in `sending`, not `sent`. Writing `sent` up front made
+// the row a promise the sender had not kept yet, and a process killed between
+// the claim and the WhatsApp call turned that into a reminder nobody would ever
+// look for again. `sending` is a claim with an owner and a timestamp, so
+// apptRecoverStuckReminders() can tell an in-flight send from an abandoned one.
 function apptClaimReminder(mysqli $conn, $reminderId) {
-    $stmt = $conn->prepare("UPDATE appointment_reminders SET status = 'sent', sent_at = UTC_TIMESTAMP()
-                            WHERE id = ? AND status = 'pending'");
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders
+         SET status = 'sending', claimed_at = UTC_TIMESTAMP(), attempts = attempts + 1, detail = NULL
+         WHERE id = ? AND status = 'pending'"
+    );
     $stmt->bind_param('i', $reminderId);
     $stmt->execute();
     $claimed = $stmt->affected_rows === 1;
@@ -895,12 +949,139 @@ function apptClaimReminder(mysqli $conn, $reminderId) {
     return $claimed;
 }
 
+function apptReminderSent(mysqli $conn, $reminderId) {
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders
+         SET status = 'sent', sent_at = UTC_TIMESTAMP(), claimed_at = NULL, retry_after = NULL, detail = NULL
+         WHERE id = ? AND status = 'sending'"
+    );
+    $stmt->bind_param('i', $reminderId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Hands a failed send back to the next tick, or gives up once the attempts are
+// spent. `sent_at` is cleared: the claim no longer sets it, but a row written by
+// the previous sender may carry one, and a pending reminder with a send time is
+// a row that reads as two different things at once.
+function apptReminderRetryLater(mysqli $conn, $reminderId, $attempts, $detail) {
+    $detail = mb_substr((string)$detail, 0, 255);
+
+    if ((int)$attempts >= APPT_REMINDER_MAX_ATTEMPTS) {
+        apptMarkReminder($conn, $reminderId, 'failed', $detail . ' (gave up after '
+            . APPT_REMINDER_MAX_ATTEMPTS . ' attempts)');
+        return false;
+    }
+
+    $delay = apptReminderRetryDelayMinutes($attempts);
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders
+         SET status = 'pending', claimed_at = NULL, sent_at = NULL, detail = ?,
+             retry_after = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+         WHERE id = ?"
+    );
+    $stmt->bind_param('sii', $detail, $delay, $reminderId);
+    $stmt->execute();
+    $stmt->close();
+    return true;
+}
+
 function apptMarkReminder(mysqli $conn, $reminderId, $status, $detail = null) {
     $detail = $detail === null ? null : mb_substr((string)$detail, 0, 255);
-    $stmt = $conn->prepare("UPDATE appointment_reminders SET status = ?, detail = ? WHERE id = ?");
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders SET status = ?, detail = ?, claimed_at = NULL WHERE id = ?"
+    );
     $stmt->bind_param('ssi', $status, $detail, $reminderId);
     $stmt->execute();
     $stmt->close();
+}
+
+// Rows abandoned in `sending` by a sender that died mid-flight, put back so the
+// next tick tries again. The window is generous compared with a send, which is
+// one HTTP call to the backend, so a claim this old is not slow — it is orphaned.
+//
+// Returns the number of rows recovered, which is a number worth logging: in
+// steady state it is zero, and anything else says the sender is being killed.
+function apptRecoverStuckReminders(mysqli $conn, $staleMinutes = 5) {
+    $staleMinutes = max(2, (int)$staleMinutes);
+
+    // Spent attempts are not recovered forever, or a crash loop would retry the
+    // same row until the appointment arrived.
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders
+         SET status = 'failed', claimed_at = NULL, detail = 'send interrupted repeatedly, gave up'
+         WHERE status = 'sending' AND attempts >= ?
+           AND claimed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)"
+    );
+    $max = APPT_REMINDER_MAX_ATTEMPTS;
+    $stmt->bind_param('ii', $max, $staleMinutes);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $conn->prepare(
+        "UPDATE appointment_reminders
+         SET status = 'pending', claimed_at = NULL, sent_at = NULL, retry_after = NULL,
+             detail = 'send interrupted, retrying'
+         WHERE status = 'sending' AND claimed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)"
+    );
+    $stmt->bind_param('i', $staleMinutes);
+    $stmt->execute();
+    $recovered = $stmt->affected_rows;
+    $stmt->close();
+    return max(0, $recovered);
+}
+
+// Reminders whose appointment has already happened while they were still
+// waiting. Nothing will ever send these, and leaving them `pending` is how they
+// used to disappear: the due query stopped matching them and no row anywhere
+// said a customer had not been reminded.
+// `missed` and `skipped` are kept apart because they mean different things to
+// whoever reads them later: missed is a failure of this system, skipped is a
+// customer who cancelled. apptSetStatus() already skips reminders at the moment
+// an appointment stops being booked, so the second statement only catches rows
+// left behind by a cancellation that predates that rule.
+function apptSweepMissedReminders(mysqli $conn) {
+    $swept = 0;
+
+    $conn->query(
+        "UPDATE appointment_reminders r
+         JOIN appointments a ON a.id = r.appointment_id
+         SET r.status = 'missed', r.claimed_at = NULL,
+             r.detail = 'the appointment passed before this reminder could be sent'
+         WHERE r.status IN ('pending', 'sending')
+           AND a.status = 'booked' AND a.scheduled_at <= UTC_TIMESTAMP()"
+    );
+    $swept += max(0, $conn->affected_rows);
+
+    $conn->query(
+        "UPDATE appointment_reminders r
+         JOIN appointments a ON a.id = r.appointment_id
+         SET r.status = 'skipped', r.claimed_at = NULL,
+             r.detail = 'appointment no longer booked'
+         WHERE r.status IN ('pending', 'sending') AND a.status <> 'booked'"
+    );
+    $swept += max(0, $conn->affected_rows);
+
+    return $swept;
+}
+
+// What an operator needs to know without opening the database (#39): is the
+// queue draining, and is anything stuck in it. Cheap enough to run on every
+// tick — the table is one row per reminder per appointment, indexed on status.
+function apptReminderHealth(mysqli $conn) {
+    $sql = "SELECT
+                SUM(r.status = 'pending') AS pending,
+                SUM(r.status = 'sending') AS sending,
+                SUM(r.status = 'pending' AND r.send_at <= UTC_TIMESTAMP()
+                    AND (r.retry_after IS NULL OR r.retry_after <= UTC_TIMESTAMP())) AS due_now,
+                SUM(r.status = 'pending' AND r.send_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE)) AS overdue,
+                SUM(r.status = 'missed' AND a.scheduled_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)) AS missed_24h,
+                SUM(r.status = 'failed' AND a.scheduled_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)) AS failed_24h,
+                SUM(r.status = 'sent' AND r.sent_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)) AS sent_24h
+            FROM appointment_reminders r
+            JOIN appointments a ON a.id = r.appointment_id";
+    $row = ($res = $conn->query($sql)) ? $res->fetch_assoc() : null;
+    return array_map('intval', $row ?: []);
 }
 
 function apptReminderText(array $appt, $whenLocal, $minutesBefore) {

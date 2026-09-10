@@ -29,35 +29,89 @@ let reminderTimer
 // Once a minute is enough granularity for "24 hours before" and "1 hour before",
 // and the endpoint is idempotent, so a missed or doubled tick is harmless.
 const REMINDER_TICK_MS = 60_000
+// The endpoint stops taking new work at 30 seconds, so this only fires if the
+// frontend has stopped answering altogether.
+const REMINDER_TIMEOUT_MS = 45_000
+// The first tick runs almost immediately rather than a minute after boot. A
+// deploy is precisely when reminders have been piling up, and waiting out the
+// full interval turns every restart into a minute of avoidable lateness. The
+// short delay lets the frontend container finish coming up first; if it has not,
+// the failure is logged and the next tick is a minute away.
+const REMINDER_FIRST_TICK_MS = 5_000
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://frontend').replace(/\/+$/, '')
 
 function startReminderScheduler() {
   if (!process.env.BACKEND_API_KEY) return
 
+  // Ticks never overlap. The endpoint is safe either way — every reminder is
+  // claimed before it is sent — but a frontend slow enough to run over a minute
+  // does not need a second request piled on top of the first.
+  let inFlight = false
+  let consecutiveFailures = 0
+
   const tick = async () => {
+    if (inFlight) {
+      console.warn('Appointment reminders: previous tick still running, skipping this one')
+      return
+    }
+    inFlight = true
     try {
       const res = await fetch(`${FRONTEND_URL}/internal/appointment-reminders.php`, {
         method: 'POST',
         headers: { 'X-Api-Key': process.env.BACKEND_API_KEY },
-        signal: AbortSignal.timeout(45_000)
+        signal: AbortSignal.timeout(REMINDER_TIMEOUT_MS)
       })
       if (res.status === 401) {
         console.error('Reminder scheduler rejected: BACKEND_API_KEY mismatch with the frontend')
         return
       }
+      if (!res.ok) {
+        consecutiveFailures++
+        console.error(`Appointment reminders: frontend answered ${res.status} (${consecutiveFailures} in a row)`)
+        return
+      }
+
       const body = await res.json().catch(() => null)
+      if (consecutiveFailures > 0) {
+        console.log(`Appointment reminders: recovered after ${consecutiveFailures} failed tick(s)`)
+        consecutiveFailures = 0
+      }
+
       // Only speak when something happened: a log line a minute would bury
-      // everything else.
-      if (body?.sent || body?.failed) {
-        console.log(`Appointment reminders: sent ${body.sent}, failed ${body.failed}`)
+      // everything else. But "nothing was sent" is not the same as "nothing
+      // happened" — a reminder recovered from a killed tick, one abandoned
+      // because its appointment came first, or a queue that is not draining are
+      // all things somebody needs to be able to find afterwards.
+      if (body?.sent || body?.failed || body?.retrying || body?.missed) {
+        console.log(
+          `Appointment reminders: sent ${body.sent}, failed ${body.failed}, ` +
+          `retrying ${body.retrying ?? 0}, missed ${body.missed ?? 0}`
+        )
+      }
+      if (body?.recovered) {
+        console.warn(`Appointment reminders: recovered ${body.recovered} interrupted send(s)`)
+      }
+      if (body?.deferred) {
+        console.warn(`Appointment reminders: ${body.deferred} due reminder(s) deferred — the batch ran out of time`)
+      }
+      const overdue = body?.health?.overdue ?? 0
+      if (overdue > 0) {
+        console.warn(`Appointment reminders: ${overdue} reminder(s) more than 15 minutes overdue`)
       }
     } catch (err) {
-      if (err?.name !== 'TimeoutError' && err?.name !== 'AbortError') {
-        console.error('Reminder scheduler tick failed:', err.message)
-      }
+      consecutiveFailures++
+      const what = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+        ? `no answer within ${REMINDER_TIMEOUT_MS / 1000}s`
+        : err.message
+      // Timeouts used to be swallowed entirely, which meant a frontend that had
+      // stopped answering looked exactly like a stack with nothing to send.
+      console.error(`Reminder scheduler tick failed: ${what} (${consecutiveFailures} in a row)`)
+    } finally {
+      inFlight = false
     }
   }
 
+  setTimeout(tick, REMINDER_FIRST_TICK_MS).unref?.()
   reminderTimer = setInterval(tick, REMINDER_TICK_MS)
   // Do not hold the process open on this alone.
   reminderTimer.unref?.()
