@@ -29,18 +29,30 @@ function apptServices(mysqli $conn, $userId, $onlyActive = true) {
     return $rows;
 }
 
-function apptSaveService(mysqli $conn, $userId, $name, $minutes, $description, $id = null) {
+// A service is a name and a description. How long it takes is not its business:
+// every appointment lasts one slot, and the slot length is the tenant's single
+// setting on the Appointments tab.
+//
+// It used to carry its own 5–480 minute duration, which read well and worked
+// badly. Two lengths described the same thing, so they could disagree: a
+// 45-minute service on a half-hour diary was offered starts that ran into the
+// next block, and a tenant who changed the slot length found their services
+// still fragmenting the day. One number, in one place, is the whole fix.
+//
+// `appointment_services.duration_minutes` is left in the table and simply not
+// written, like `chatbot_configs.greeting`: it is `NOT NULL DEFAULT 30`, so
+// omitting it is valid, and a future per-service length needs no migration.
+// `appointments.duration_minutes` is still written — that one is the record of
+// how long a booking that already exists actually is, and every conflict check
+// reads it.
+function apptSaveService(mysqli $conn, $userId, $name, $description, $id = null) {
     $name = trim((string)$name);
     if ($name === '') return [false, 'A service needs a name.'];
-    // A duration drives slot maths; zero or a day-long "appointment" is a
-    // mistake that would silently break the calendar.
-    $minutes = (int)$minutes;
-    if ($minutes < 5 || $minutes > 480) return [false, 'Duration must be between 5 and 480 minutes.'];
     $description = mb_substr(trim((string)$description), 0, 255);
 
     if ($id) {
-        $stmt = $conn->prepare("UPDATE appointment_services SET name = ?, duration_minutes = ?, description = ? WHERE id = ? AND user_id = ?");
-        $stmt->bind_param('sisii', $name, $minutes, $description, $id, $userId);
+        $stmt = $conn->prepare("UPDATE appointment_services SET name = ?, description = ? WHERE id = ? AND user_id = ?");
+        $stmt->bind_param('ssii', $name, $description, $id, $userId);
     } else {
         // The plan's service cap applies to *creating* one, never to editing an
         // existing one. A tenant who drops to a smaller plan is already over the
@@ -55,8 +67,8 @@ function apptSaveService(mysqli $conn, $userId, $name, $minutes, $description, $
                   . ($serviceLimit === 1 ? '' : 's') . ' and you have ' . $serviceUsed . '.'];
         }
 
-        $stmt = $conn->prepare("INSERT INTO appointment_services (user_id, name, duration_minutes, description) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param('isis', $userId, $name, $minutes, $description);
+        $stmt = $conn->prepare("INSERT INTO appointment_services (user_id, name, description) VALUES (?, ?, ?)");
+        $stmt->bind_param('iss', $userId, $name, $description);
     }
     $stmt->execute();
     $stmt->close();
@@ -257,6 +269,25 @@ function apptSlotChoices() {
     return $out;
 }
 
+// '09:00, 09:30, 10:00' — the first few starts of a day on this grid.
+//
+// For the sentence under the form's slot length, generated from the chosen
+// length rather than written out, so the example cannot describe a grid the
+// tenant is not on. Stops at midnight rather than wrapping: an eight-hour slot
+// has two starts in a day and inventing a third as '01:00' would be a lie about
+// a diary nobody keeps.
+function apptSlotExampleTimes($slotMinutes, $openAt = '09:00', $count = 3) {
+    $slot = max(5, (int)$slotMinutes);
+    [$h, $m] = array_map('intval', explode(':', $openAt));
+    $minute = $h * 60 + $m;
+
+    $out = [];
+    for ($i = 0; $i < max(1, (int)$count) && $minute < 24 * 60; $i++, $minute += $slot) {
+        $out[] = sprintf('%02d:%02d', intdiv($minute, 60), $minute % 60);
+    }
+    return implode(', ', $out);
+}
+
 // Is $localStart one of the diary's block boundaries?
 //
 // Measured from the opening time of the window the appointment falls in, not
@@ -420,23 +451,29 @@ function apptBusyWindows(mysqli $conn, $userId, DateTime $fromUtc, DateTime $toU
     return $busy;
 }
 
-// The real, bookable openings for one service (#35).
+// The real, bookable openings in the diary (#35).
 //
 // Everything the tenant configured, applied together and in one place: the
-// enabled days and their windows, the service's duration, the minimum notice,
-// the horizon, and the bookings already in the diary. Callers get times they can
+// enabled days and their windows, the slot length, the minimum notice, the
+// horizon, and the bookings already in the diary. Callers get times they can
 // hand to a customer without checking anything else.
 //
+// Not per service any more, because nothing about a service changes the answer:
+// one length, one grid, one diary. The caller that used to ask this once per
+// service now asks it once.
+//
 // Returns DateTimes in the tenant's timezone, earliest first.
-// $opts['availability'] and $opts['busy'] let a caller that is asking about
-// several services in a row read the schedule and the diary once instead of
-// twice per service — the reply path does exactly that, on every message.
-function apptOpenSlots(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, array $opts = []) {
+// $opts['availability'] and $opts['busy'] let a caller read the schedule and the
+// diary once instead of once per question — the reply path does exactly that.
+function apptOpenSlots(mysqli $conn, $userId, array $config, DateTime $fromLocal, array $opts = []) {
     $availability = $opts['availability'] ?? apptAvailability($conn, $userId);
     if (!$availability) return [];
 
     $tz = $fromLocal->getTimezone();
-    $duration = max(5, (int)$service['duration_minutes']);
+    // The appointment is the slot: it starts on a boundary and ends on the next
+    // one, so the step and the length are the same number by construction and
+    // cannot drift apart.
+    $duration = apptSlotMinutes($config);
     $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
     $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
 
@@ -456,7 +493,7 @@ function apptOpenSlots(mysqli $conn, $userId, array $config, array $service, Dat
 
     return apptFreeSlots($availability, $busy, $fromLocal, $duration, $opts + [
         'horizon_days' => $horizon,
-        'step_minutes' => apptSlotMinutes($config),
+        'step_minutes' => $duration,
         'earliest' => $earliestLocal,
         'latest' => $latestLocal,
     ]);
@@ -469,8 +506,8 @@ function apptOpenSlots(mysqli $conn, $userId, array $config, array $service, Dat
 //
 // Returns a DateTime in the tenant's timezone, or null when there is genuinely
 // nothing — no schedule at all, or a fully booked horizon.
-function apptNextAvailable(mysqli $conn, $userId, array $config, array $service, DateTime $fromLocal, $timezone) {
-    $slots = apptOpenSlots($conn, $userId, $config, $service, $fromLocal, ['limit' => 1]);
+function apptNextAvailable(mysqli $conn, $userId, array $config, DateTime $fromLocal, $timezone) {
+    $slots = apptOpenSlots($conn, $userId, $config, $fromLocal, ['limit' => 1]);
     return $slots ? $slots[0] : null;
 }
 
@@ -513,7 +550,7 @@ function apptConflicts(mysqli $conn, $userId, DateTime $startUtc, $durationMinut
 
 // Validates a proposed booking and returns [DateTime utc, null] or [null, reason].
 // $localDateTime is 'YYYY-MM-DD HH:MM' as the customer and the tenant think of it.
-function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, $localDateTime, $timezone, $excludeId = null) {
+function apptValidateSlot(mysqli $conn, $userId, array $config, $localDateTime, $timezone, $excludeId = null) {
     try {
         $tz = new DateTimeZone($timezone ?: 'UTC');
     } catch (Exception $e) {
@@ -548,10 +585,16 @@ function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, 
     // suggestion is computed here, against the calendar, for the same reason the
     // booking itself is: the model cannot see the schedule, so anything it
     // offered on its own would be a guess it presented as fact.
+    // One length for every appointment: the slot the tenant configured. The
+    // service used to carry its own, which meant this check, the offered times
+    // and the conflict query could each be measuring a different number of
+    // minutes for the same booking.
+    $slotMinutes = apptSlotMinutes($config);
+
     $availability = apptAvailability($conn, $userId);
-    if (!apptWithinAvailability($availability, $local, (int)$service['duration_minutes'])) {
+    if (!apptWithinAvailability($availability, $local, $slotMinutes)) {
         return [null, apptDayScheduleLabel($availability, (int)$local->format('w'))
-            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
+            . apptSuggestionSuffix($conn, $userId, $config, $local, $timezone)];
     }
 
     // On the diary's grid, not merely inside opening hours. Without this the
@@ -559,16 +602,15 @@ function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, 
     // block size and a customer who typed "quarter past" instead of picking one
     // of them would still be booked, leaving a stub either side of them that no
     // slot can use. Refused with the next real opening, like any other refusal.
-    $slotMinutes = apptSlotMinutes($config);
-    if (!apptOnSlotGrid($availability, $local, (int)$service['duration_minutes'], $slotMinutes)) {
+    if (!apptOnSlotGrid($availability, $local, $slotMinutes, $slotMinutes)) {
         return [null, 'We book in ' . apptHumanMinutes($slotMinutes)
             . ' slots, so an appointment cannot start then.'
-            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
+            . apptSuggestionSuffix($conn, $userId, $config, $local, $timezone)];
     }
 
-    if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'], $excludeId)) {
+    if (apptConflicts($conn, $userId, $utc, $slotMinutes, $excludeId)) {
         return [null, 'That slot is already taken.'
-            . apptSuggestionSuffix($conn, $userId, $config, $service, $local, $timezone)];
+            . apptSuggestionSuffix($conn, $userId, $config, $local, $timezone)];
     }
 
     return [$utc, null];
@@ -582,8 +624,8 @@ function apptValidateSlot(mysqli $conn, $userId, array $config, array $service, 
 // message already covers that. Ending in a question is what lets the reply path
 // tell a refusal that already asks something from one that still needs the
 // "could you suggest another time?" prompt appended.
-function apptSuggestionSuffix(mysqli $conn, $userId, array $config, array $service, DateTime $local, $timezone) {
-    $next = apptNextAvailable($conn, $userId, $config, $service, $local, $timezone);
+function apptSuggestionSuffix(mysqli $conn, $userId, array $config, DateTime $local, $timezone) {
+    $next = apptNextAvailable($conn, $userId, $config, $local, $timezone);
     return $next === null
         ? ''
         : ' The next time we could fit you in is ' . $next->format('D j M, H:i') . ' — would that suit?';
@@ -733,7 +775,7 @@ function apptDateAvailabilityLine(mysqli $conn, $userId, array $config, array $s
 
     $horizon = max(1, (int)($config['appointment_horizon_days'] ?? 30));
     $lead = max(0, (int)($config['appointment_lead_minutes'] ?? 60));
-    $duration = max(5, (int)$service['duration_minutes']);
+    $duration = apptSlotMinutes($config);
 
     $availability = apptAvailability($conn, $userId);
     if (!$availability) return apptAvailabilityMessage(['reason' => 'no hours']);
@@ -889,15 +931,16 @@ function apptStripQuotedTimes($text) {
     return trim(implode("\n", $kept));
 }
 
-// 'Haircut (30 minutes), Colour (90 minutes)' — every active service, for
-// the question that starts a booking. Never a subset: a service the tenant
-// configured and the bot never mentions is a service they cannot sell.
+// 'Haircut, Colour, Beard trim' — every active service, for the question that
+// starts a booking. Never a subset: a service the tenant configured and the bot
+// never mentions is a service they cannot sell.
+//
+// The durations that used to be in brackets are gone with the per-service length
+// itself. They also read as a promise the diary could not keep: "Colour (90
+// minutes)" next to a half-hour grid told a customer something untrue about the
+// slot they were about to be offered.
 function apptServiceListLine(array $services) {
-    $parts = [];
-    foreach ($services as $s) {
-        $parts[] = $s['name'] . ' (' . apptHumanMinutes((int)$s['duration_minutes']) . ')';
-    }
-    return implode(', ', $parts);
+    return implode(', ', array_map(fn($s) => (string)$s['name'], $services));
 }
 
 // A refusal, with the follow-up prompt only when it does not already ask
@@ -957,13 +1000,16 @@ function apptBookSlot(mysqli $conn, $userId, array $config, array $service, $loc
         // same rules as the first pass — opening hours, notice, horizon and the
         // diary. The earlier pass is what shaped the reply; this one is what
         // makes it true.
-        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $localDateTime, $timezone);
+        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $localDateTime, $timezone);
         if (!$utc) return [null, $why];
 
+        // The length is written down on the row, not looked up later: it is how
+        // long *this* booking is, and a tenant who changes the slot length must
+        // not silently re-time the appointments already in the diary.
         return [apptCreate($conn, $userId, $data + [
             'service_id' => (int)($service['id'] ?? 0) ?: null,
             'service_name' => $service['name'],
-            'duration_minutes' => (int)$service['duration_minutes'],
+            'duration_minutes' => apptSlotMinutes($config),
             'scheduled_at' => $utc->format('Y-m-d H:i:s'),
         ]), null];
     });
@@ -972,9 +1018,9 @@ function apptBookSlot(mysqli $conn, $userId, array $config, array $service, $loc
 // The same last-moment re-check for a move. A reschedule takes the slot exactly
 // as a new booking does, so it has to compete for it the same way.
 // Returns [DateTime utc, null] or [null, reason].
-function apptRescheduleSlot(mysqli $conn, $userId, array $config, array $service, $localDateTime, $timezone, $appointmentId) {
-    return apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $config, $service, $localDateTime, $timezone, $appointmentId) {
-        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $service, $localDateTime, $timezone, (int)$appointmentId);
+function apptRescheduleSlot(mysqli $conn, $userId, array $config, $localDateTime, $timezone, $appointmentId) {
+    return apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $config, $localDateTime, $timezone, $appointmentId) {
+        [$utc, $why] = apptValidateSlot($conn, $userId, $config, $localDateTime, $timezone, (int)$appointmentId);
         if (!$utc) return [null, $why];
         if (!apptReschedule($conn, $userId, (int)$appointmentId, $utc)) {
             return [null, 'I could not move that booking.'];

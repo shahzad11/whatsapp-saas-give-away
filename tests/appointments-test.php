@@ -73,11 +73,14 @@ const SUN = '2026-09-20';
 
 group('An enabled day offers slots inside its window');
 
+// Every case below states its own `step_minutes`, because the grid is the
+// tenant's setting and a test that leaned on whatever the default happens to be
+// would change meaning the day that default does.
 $week = [window(1, '09:00', '12:00')];
-$slots = apptFreeSlots($week, [], at(MON . ' 00:00'), 60, ['horizon_days' => 0]);
+$slots = apptFreeSlots($week, [], at(MON . ' 00:00'), 60, ['horizon_days' => 0, 'step_minutes' => 15]);
 
 equals('the first slot is the opening time', MON . ' 09:00', slotStrings($slots)[0] ?? null);
-equals('slots step by 15 minutes', MON . ' 09:15', slotStrings($slots)[1] ?? null);
+equals('slots step by the block size', MON . ' 09:15', slotStrings($slots)[1] ?? null);
 equals('the last slot ends exactly at closing', MON . ' 11:00', end($slots)->format('Y-m-d H:i'));
 
 group('Two windows on one day are both offered, and the gap between them is not');
@@ -131,9 +134,15 @@ equals('a 90-minute service does not fit at all',
     [],
     slotStrings(apptFreeSlots($window, [], at(MON . ' 00:00'), 90, ['horizon_days' => 0])));
 
-equals('a 30-minute service fits three times',
+equals('a 30-minute service fits three times on a quarter-hour grid',
     [MON . ' 09:00', MON . ' 09:15', MON . ' 09:30'],
-    slotStrings(apptFreeSlots($window, [], at(MON . ' 00:00'), 30, ['horizon_days' => 0])));
+    slotStrings(apptFreeSlots($window, [], at(MON . ' 00:00'), 30,
+        ['horizon_days' => 0, 'step_minutes' => 15])));
+
+equals('and twice on its own grid, back to back',
+    [MON . ' 09:00', MON . ' 09:30'],
+    slotStrings(apptFreeSlots($window, [], at(MON . ' 00:00'), 30,
+        ['horizon_days' => 0, 'step_minutes' => 30])));
 
 group('The same rule, as apptWithinAvailability() sees it');
 
@@ -153,14 +162,141 @@ check('no schedule at all refuses everything',
 
 group('Times already past, and the minimum notice');
 
-$slots = slotStrings(apptFreeSlots($hours, [], at(MON . ' 15:40'), 60, ['horizon_days' => 0]));
+$slots = slotStrings(apptFreeSlots($hours, [], at(MON . ' 15:40'), 60,
+    ['horizon_days' => 0, 'step_minutes' => 15]));
 equals('nothing before the moment asked about is offered', MON . ' 15:45', $slots[0] ?? null);
 
 $slots = slotStrings(apptFreeSlots($hours, [], at(MON . ' 09:00'), 60, [
     'horizon_days' => 0,
+    'step_minutes' => 15,
     'earliest' => at(MON . ' 11:20'),
 ]));
 equals('the minimum notice pushes the first slot past it', MON . ' 11:30', $slots[0] ?? null);
+
+// --- The slot grid the tenant chose ------------------------------------------
+//
+// The setting exists because a fixed quarter-hour grid offered a business that
+// works in half hours a 09:15 start, and the 09:00 and 09:30 blocks either side
+// of it were both lost to it. So: the offered times step by the tenant's block
+// size, they sit against each other, and the booking check refuses anything
+// between two of them.
+
+group('The block size is the tenant\'s, and slots sit against each other');
+
+$morning = [window(1, '09:00', '12:00')];
+
+equals('half-hour blocks, back to back',
+    [MON . ' 09:00', MON . ' 09:30', MON . ' 10:00', MON . ' 10:30', MON . ' 11:00'],
+    slotStrings(apptFreeSlots($morning, [], at(MON . ' 00:00'), 60,
+        ['horizon_days' => 0, 'step_minutes' => 30])));
+
+equals('hour-long blocks for an hour-long service leave no gap at all',
+    [MON . ' 09:00', MON . ' 10:00', MON . ' 11:00'],
+    slotStrings(apptFreeSlots($morning, [], at(MON . ' 00:00'), 60,
+        ['horizon_days' => 0, 'step_minutes' => 60])));
+
+equals('an eight-hour block fills a working day exactly once',
+    [MON . ' 09:00'],
+    slotStrings(apptFreeSlots([window(1, '09:00', '17:00')], [], at(MON . ' 00:00'), 480,
+        ['horizon_days' => 0, 'step_minutes' => 480])));
+
+equals('the grid starts at the opening time, not on the clock',
+    [MON . ' 09:10', MON . ' 09:40', MON . ' 10:10'],
+    slotStrings(apptFreeSlots([window(1, '09:10', '11:00')], [], at(MON . ' 00:00'), 30,
+        ['horizon_days' => 0, 'step_minutes' => 30])));
+
+group('What the tenant may choose, and what a stored value resolves to');
+
+equals('nothing chosen is the default', APPT_DEFAULT_SLOT_MINUTES, apptSlotMinutes([]));
+equals('a saved length is honoured', 60, apptSlotMinutes(['appointment_slot_minutes' => 60]));
+equals('and so is one that arrived as a string', 15, apptSlotMinutes(['appointment_slot_minutes' => '15']));
+equals('a length the dropdown does not offer is still honoured',
+    75, apptSlotMinutes(['appointment_slot_minutes' => 75]));
+equals('zero would make the slot walk spin, so it is the default instead',
+    APPT_DEFAULT_SLOT_MINUTES, apptSlotMinutes(['appointment_slot_minutes' => 0]));
+equals('and so does a negative one',
+    APPT_DEFAULT_SLOT_MINUTES, apptSlotMinutes(['appointment_slot_minutes' => -30]));
+equals('an absent field is not a choice either',
+    APPT_DEFAULT_SLOT_MINUTES, apptSlotMinutes(['appointment_slot_minutes' => null]));
+equals('below the floor is raised to it', 5, apptSlotMinutes(['appointment_slot_minutes' => 2]));
+equals('and a day-long block is capped', 480, apptSlotMinutes(['appointment_slot_minutes' => 9999]));
+
+check('every choice offered is a length that survives being saved and read back',
+    (function () {
+        foreach (array_keys(apptSlotChoices()) as $minutes) {
+            if (apptSlotMinutes(['appointment_slot_minutes' => $minutes]) !== $minutes) return false;
+        }
+        return true;
+    })());
+equals('and each carries its unit, like the reminder list', '1 hour', apptSlotChoices()[60] ?? null);
+equals('including the long ones', '8 hours', apptSlotChoices()[480] ?? null);
+
+equals('the example under the field is generated from the chosen length',
+    '09:00, 09:30, 10:00', apptSlotExampleTimes(30));
+equals('an hour reads as an hour', '09:00, 10:00, 11:00', apptSlotExampleTimes(60));
+equals('and it stops at midnight rather than inventing a start nobody works',
+    '09:00, 17:00', apptSlotExampleTimes(480));
+
+group('A booking may only start on one of those boundaries');
+
+$allDay = [window(1, '09:00', '17:00')];
+
+check('the opening time is a boundary', apptOnSlotGrid($allDay, at(MON . ' 09:00'), 60, 30));
+check('and so is every half hour after it', apptOnSlotGrid($allDay, at(MON . ' 14:30'), 60, 30));
+check('a quarter past is not, however reasonable it sounds',
+    !apptOnSlotGrid($allDay, at(MON . ' 09:15'), 60, 30));
+check('the last start that finishes before closing is still a boundary',
+    apptOnSlotGrid($allDay, at(MON . ' 16:00'), 60, 30));
+check('one that would overrun closing is not, boundary or not',
+    !apptOnSlotGrid($allDay, at(MON . ' 16:30'), 60, 30));
+check('a closed day has no boundaries at all',
+    !apptOnSlotGrid($allDay, at(SUN . ' 09:00'), 60, 30));
+check('neither does an empty schedule',
+    !apptOnSlotGrid([], at(MON . ' 09:00'), 60, 30));
+check('a business opening at 09:10 works to 09:40, not 09:30',
+    apptOnSlotGrid([window(1, '09:10', '12:00')], at(MON . ' 09:40'), 30, 30)
+    && !apptOnSlotGrid([window(1, '09:10', '12:00')], at(MON . ' 09:30'), 30, 30));
+
+// Two windows in a day each have their own grid, which is why alignment is
+// measured against the window the appointment is actually in.
+$split = [window(1, '09:00', '12:00'), window(1, '13:10', '15:00')];
+check('the afternoon window is on its own opening time',
+    apptOnSlotGrid($split, at(MON . ' 14:10'), 30, 60));
+check('and not on the morning\'s', !apptOnSlotGrid($split, at(MON . ' 14:00'), 30, 60));
+
+group('Nothing is ever offered that the booking check would then refuse');
+
+// The invariant the setting lives or dies by: one grid, walked by the code that
+// offers times and asked as a question by the code that takes the booking.
+foreach ([15, 30, 45, 60, 90, 120, 480] as $slot) {
+    $offered = apptFreeSlots($allDay, [], at(MON . ' 00:00'), 45,
+        ['horizon_days' => 0, 'step_minutes' => $slot]);
+    $everyOne = true;
+    foreach ($offered as $start) {
+        if (!apptOnSlotGrid($allDay, $start, 45, $slot)) $everyOne = false;
+    }
+    check("every start offered on a {$slot}-minute grid is one a booking can use",
+        $offered !== [] && $everyOne);
+}
+
+group('An appointment that is exactly one slot long tiles the day');
+
+// What the production path now asks for: step and duration are the same number,
+// so the slots meet end to end and there is nothing between them to lose.
+$tiled = apptFreeSlots([window(1, '09:00', '12:00')], [], at(MON . ' 00:00'), 60,
+    ['horizon_days' => 0, 'step_minutes' => 60]);
+equals('three hour-long appointments fill a three-hour morning',
+    [MON . ' 09:00', MON . ' 10:00', MON . ' 11:00'], slotStrings($tiled));
+
+$oneTaken = apptFreeSlots([window(1, '09:00', '12:00')],
+    [['start' => at(MON . ' 10:00'), 'end' => at(MON . ' 11:00')]],
+    at(MON . ' 00:00'), 60, ['horizon_days' => 0, 'step_minutes' => 60]);
+equals('and a booking costs exactly one of them, never a straddled pair',
+    [MON . ' 09:00', MON . ' 11:00'], slotStrings($oneTaken));
+
+equals('a half-hour diary gives sixteen half hours between 09:00 and 17:00',
+    16, count(apptFreeSlots([window(1, '09:00', '17:00')], [], at(MON . ' 00:00'), 30,
+        ['horizon_days' => 0, 'step_minutes' => 30])));
 
 // --- Bookings already taken -------------------------------------------------
 
@@ -216,10 +352,12 @@ equals('nothing past the end of the booking window is offered',
      TUE . ' 09:00', TUE . ' 09:15', TUE . ' 09:30'],
     slotStrings(apptFreeSlots($mornings, [], at(MON . ' 00:00'), 60, [
         'horizon_days' => 30,
+        'step_minutes' => 15,
         'latest' => at(TUE . ' 09:30'),
     ])));
 
-$slots = apptFreeSlots($everyDay, [], at(MON . ' 00:00'), 60, ['limit' => 5, 'per_day' => 2]);
+$slots = apptFreeSlots($everyDay, [], at(MON . ' 00:00'), 60,
+    ['limit' => 5, 'per_day' => 2, 'step_minutes' => 15]);
 equals('the total cap is honoured', 5, count($slots));
 equals('and the per-day cap spreads the offer across days',
     [MON . ' 09:00', MON . ' 09:15', TUE . ' 09:00', TUE . ' 09:15', '2026-09-16 09:00'],
@@ -412,7 +550,7 @@ equals('nothing free is nothing written', '', apptTimeList([]));
 group('A whole day is offered, not a sample of it');
 
 $fullDay = [window(1, '09:00', '17:00')];
-$day = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 30);
+$day = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 30, ['step_minutes' => 15]);
 
 equals('a 30-minute service gets every 15-minute start until it stops fitting',
     31, count($day));
@@ -420,10 +558,12 @@ equals('starting at opening', MON . ' 09:00', slotStrings($day)[0]);
 equals('and ending one duration before closing', MON . ' 16:30', end($day)->format('Y-m-d H:i'));
 check('the old three-a-day cap is gone', count($day) > 3);
 
-group('Every service shares the day; only its duration differs');
+group('A longer appointment runs out of room earlier, it does not get its own day');
 
-// The heart of the bug: the same diary, so a long service is not given its own
-// timetable — it simply runs out of room earlier.
+// The same diary at three lengths. Services no longer carry a duration of their
+// own — apptOpenSlots() passes the tenant's slot length — but the walker still
+// takes one, and where a window's last usable start falls is the rule these
+// pin down.
 $hourly = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 60);
 $longer = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 90);
 
@@ -436,7 +576,8 @@ equals('a 90-minute service uses the same grid, ending earlier still',
 group("Another service's booking blocks the slot all the same");
 
 $lunchBooking = [['start' => at(MON . ' 12:00'), 'end' => at(MON . ' 13:00')]];
-$times = slotStrings(apptDayFreeSlots($fullDay, $lunchBooking, at(MON . ' 00:00'), 60));
+$times = slotStrings(apptDayFreeSlots($fullDay, $lunchBooking, at(MON . ' 00:00'), 60,
+    ['step_minutes' => 15]));
 
 check('the booked hour is absent', !in_array(MON . ' 12:00', $times, true));
 check('and so is every start that would run into it',
@@ -582,9 +723,9 @@ group('The diary, not the conversation, decides');
 // What "check the diary again" has to mean. Nothing is remembered between these
 // two calls: the second sees a booking the first did not, and answers differently
 // for the same service on the same date.
-$before = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 60);
+$before = apptDayFreeSlots($fullDay, [], at(MON . ' 00:00'), 60, ['step_minutes' => 15]);
 $after  = apptDayFreeSlots($fullDay, [['start' => at(MON . ' 10:00'), 'end' => at(MON . ' 11:00')]],
-    at(MON . ' 00:00'), 60);
+    at(MON . ' 00:00'), 60, ['step_minutes' => 15]);
 
 check('10:00 was free on the first lookup', in_array(MON . ' 10:00', slotStrings($before), true));
 check('and is gone on the second, taken while the customer was typing',
@@ -661,15 +802,17 @@ equals('line by line, so a list on its own line goes without taking the prose',
 
 group('Choosing a service comes first, and every service is offered');
 
+// Names only. The durations that used to be in brackets went with the
+// per-service length: every appointment is one slot, so "Colour (90 minutes)"
+// next to a half-hour diary was telling the customer something untrue.
 $services = [
-    ['name' => 'Haircut', 'duration_minutes' => 30],
-    ['name' => 'Colour', 'duration_minutes' => 90],
-    ['name' => 'Beard trim', 'duration_minutes' => 15],
+    ['name' => 'Haircut'],
+    ['name' => 'Colour'],
+    ['name' => 'Beard trim'],
 ];
-equals('all of them, with their durations',
-    'Haircut (30 minutes), Colour (90 minutes), Beard trim (15 minutes)',
-    apptServiceListLine($services));
-equals('one service reads as one', 'Haircut (30 minutes)', apptServiceListLine([$services[0]]));
+equals('all of them, by name', 'Haircut, Colour, Beard trim', apptServiceListLine($services));
+equals('one service reads as one', 'Haircut', apptServiceListLine([$services[0]]));
+equals('no services is an empty line, not a stray comma', '', apptServiceListLine([]));
 
 // --- Telling the customer what the tenant changed (#45) ----------------------
 //

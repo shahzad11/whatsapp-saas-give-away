@@ -316,7 +316,7 @@ if ($action !== null) {
                 . (string)($action['service'] ?? '—') . '), so the booking would have been refused.');
         } else {
             [$utc, $why] = apptValidateSlot(
-                $conn, $userId, $config, $service,
+                $conn, $userId, $config,
                 $action['datetime'] ?? '', $appointments['timezone']
             );
             $note('turn', $utc ? 'success' : 'warning', $utc

@@ -181,13 +181,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // #35: same lock as the chatbot's booking path, for the same reason —
         // the clash check is only true for as long as nothing else can write.
-        $newId = apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $utc, $service, $phone) {
-            if (apptConflicts($conn, $userId, $utc, (int)$service['duration_minutes'])) return null;
+        // One appointment is one slot, whichever service it is. Written onto the
+        // row rather than looked up later, so changing the slot length never
+        // re-times a booking that already exists.
+        $slotMinutes = apptSlotMinutes($config);
+        $newId = apptWithTenantLock($conn, $userId, function () use ($conn, $userId, $utc, $service, $phone, $slotMinutes) {
+            if (apptConflicts($conn, $userId, $utc, $slotMinutes)) return null;
             return apptCreate($conn, $userId, [
                 'account_id' => null,
                 'service_id' => (int)$service['id'],
                 'service_name' => $service['name'],
-                'duration_minutes' => (int)$service['duration_minutes'],
+                'duration_minutes' => $slotMinutes,
                 'customer_phone' => $phone ?: null,
                 'customer_name' => mb_substr(trim((string)($_POST['customer_name'] ?? '')), 0, 120) ?: null,
                 // A manual booking has no chat, so it cannot be reminded over
@@ -489,7 +493,7 @@ require_once __DIR__ . '/includes/header.php';
                 <label class="form-label small" for="apptService">Service</label>
                 <select name="service_id" id="apptService" class="form-select form-select-sm" required>
                     <?php foreach ($services as $s): ?>
-                        <option value="<?= (int)$s['id'] ?>"><?= sanitize($s['name']) ?> (<?= (int)$s['duration_minutes'] ?> min)</option>
+                        <option value="<?= (int)$s['id'] ?>"><?= sanitize($s['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>

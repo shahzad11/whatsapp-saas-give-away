@@ -572,12 +572,19 @@ CREATE TABLE IF NOT EXISTS chatbot_events (
 -- Appointment booking over WhatsApp (issue #14)
 -- ---------------------------------------------------------------------------
 
--- What a tenant offers. Duration drives slot maths, so it is minutes, not text.
+-- What a tenant offers: a name and a description. How long it takes is not the
+-- service's business — every appointment is one slot, and the slot length is
+-- `chatbot_configs.appointment_slot_minutes`.
+--
+-- `duration_minutes` is no longer read or written. It is kept, and kept
+-- NOT NULL DEFAULT 30 so an INSERT that omits it is valid, for the same reason
+-- `chatbot_configs.greeting` is kept: a future per-service length then needs no
+-- migration. Two numbers describing one appointment could disagree, and did.
 CREATE TABLE IF NOT EXISTS appointment_services (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     name VARCHAR(100) NOT NULL,
-    duration_minutes INT NOT NULL DEFAULT 30,
+    duration_minutes INT NOT NULL DEFAULT 30,   -- vestigial; see above
     description VARCHAR(255) DEFAULT NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     sort_order INT NOT NULL DEFAULT 0,
@@ -609,7 +616,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     account_id INT DEFAULT NULL,
     service_id INT DEFAULT NULL,
     service_name VARCHAR(100) NOT NULL,      -- copied: renaming a service must not rewrite history
-    duration_minutes INT NOT NULL DEFAULT 30,
+    duration_minutes INT NOT NULL DEFAULT 30,   -- copied too: how long *this* booking is
     customer_phone VARCHAR(32) DEFAULT NULL,
     customer_name VARCHAR(120) DEFAULT NULL,
     chat_id VARCHAR(100) DEFAULT NULL,

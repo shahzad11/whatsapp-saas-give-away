@@ -54,7 +54,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
         [$ok, $err] = apptSaveService(
             $conn, $userId,
             $_POST['service_name'] ?? '',
-            $_POST['service_minutes'] ?? 30,
             $_POST['service_description'] ?? '',
             ($_POST['service_id'] ?? '') === '' ? null : (int)$_POST['service_id']
         );
@@ -130,6 +129,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
     // even see.
     if (!$canAppointments) {
         $input['appointments_enabled'] = 0;
+        // The slot length is a disabled select on a plan without booking, and a
+        // disabled field submits nothing — which apptSlotMinutes() reads as "not
+        // chosen" and resolves to the default. Carried forward for the same
+        // reason as the handover email above: a save made for an unrelated
+        // reason must not re-cut a diary the tenant configured earlier.
+        $input['appointment_slot_minutes'] = $config['appointment_slot_minutes'] ?? null;
     }
     if (!$canHandoff) {
         $input['handoff_enabled'] = 0;
@@ -600,6 +605,38 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <div class="row g-3 mb-3">
+                        <?php // The diary's block size. A dropdown rather than a number box
+                              // because it is a choice between the few lengths a business
+                              // actually works to, not an arbitrary number of minutes — and
+                              // because every option can then carry its unit, which is what
+                              // the reminder field had to be changed to for the same reason.
+                              //
+                              // A saved length that is not one of the presets (the column
+                              // accepts any 5–480) is added as its own option rather than
+                              // dropped, so opening this tab cannot silently re-cut a
+                              // tenant's diary.
+                              $slotChoices = apptSlotChoices();
+                              $slotSaved = apptSlotMinutes($config);
+                              if (!isset($slotChoices[$slotSaved])) {
+                                  $slotChoices[$slotSaved] = apptHumanMinutes($slotSaved);
+                                  ksort($slotChoices);
+                              } ?>
+                        <div class="col-md-4">
+                            <label class="form-label small" for="appointment_slot_minutes">Slot length</label>
+                            <select name="appointment_slot_minutes" id="appointment_slot_minutes"
+                                    class="form-select form-select-sm" <?= $canAppointments ? '' : 'disabled' ?>>
+                                <?php foreach ($slotChoices as $minutes => $label): ?>
+                                    <option value="<?= (int)$minutes ?>" <?= $slotSaved === (int)$minutes ? 'selected' : '' ?>>
+                                        <?= sanitize($label) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text">
+                                Appointments start one after another from each opening time. With slots of
+                                <?= sanitize(apptHumanMinutes($slotSaved)) ?> and hours from 09:00 that is
+                                <?= sanitize(apptSlotExampleTimes($slotSaved)) ?> — and nothing in between.
+                            </div>
+                        </div>
                         <div class="col-md-4">
                             <label class="form-label small">Minimum notice</label>
                             <div class="input-group input-group-sm">
@@ -870,8 +907,7 @@ require_once __DIR__ . '/includes/header.php';
                       // off this is still a working link to a real form (#24). ?>
                 <a href="#serviceCard" class="btn btn-sm btn-primary"
                    data-modal-target="#serviceModal" data-modal-reset="on"
-                   data-modal-title="Add a service" data-field-service-id=""
-                   data-field-service-minutes="30">
+                   data-modal-title="Add a service" data-field-service-id="">
                     <i class="bi bi-plus-lg me-1"></i>Add service
                 </a>
             </div>
@@ -887,7 +923,6 @@ require_once __DIR__ . '/includes/header.php';
                                         <div class="x-small text-muted"><?= sanitize($s['description']) ?></div>
                                     <?php endif; ?>
                                 </td>
-                                <td class="small text-muted"><?= (int)$s['duration_minutes'] ?> min</td>
                                 <td class="text-end">
                                     <div class="d-flex gap-1 justify-content-end">
                                         <?php // Editing was not possible at all before: apptSaveService()
@@ -899,7 +934,6 @@ require_once __DIR__ . '/includes/header.php';
                                            data-modal-title="Edit service"
                                            data-field-service-id="<?= (int)$s['id'] ?>"
                                            data-field-service-name="<?= sanitize($s['name']) ?>"
-                                           data-field-service-minutes="<?= (int)$s['duration_minutes'] ?>"
                                            data-field-service-description="<?= sanitize((string)$s['description']) ?>">Edit</a>
                                         <form method="post" class="d-inline" data-ajax>
                                             <?= csrfField() ?>
@@ -1021,23 +1055,22 @@ require_once __DIR__ . '/includes/header.php';
                             <input type="text" id="svcName" name="service_name" class="form-control form-control-sm"
                                    placeholder="Consultation" maxlength="100" required>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label small" for="svcMinutes">Length</label>
-                            <div class="input-group input-group-sm">
-                                <input type="number" id="svcMinutes" name="service_minutes" class="form-control"
-                                       value="30" min="5" max="480">
-                                <span class="input-group-text">min</span>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
+                        <div class="col-md-7">
                             <label class="form-label small" for="svcDesc">Description</label>
                             <input type="text" id="svcDesc" name="service_description"
                                    class="form-control form-control-sm" maxlength="255">
                         </div>
                     </div>
+                    <?php // The per-service length is gone: every appointment is one slot,
+                          // set once under Slot length above. Two numbers describing the
+                          // same thing could disagree, and did — a 45-minute service on a
+                          // half-hour diary was offered starts that ran into the next
+                          // block. ?>
                     <div class="form-text mb-3">
-                        The length drives the slot maths, so it has to be the real length. The
-                        description is optional and the bot may repeat it to a customer.
+                        Every appointment lasts one slot —
+                        <?= sanitize(apptHumanMinutes(apptSlotMinutes($config))) ?>, set under
+                        <strong>Slot length</strong> on the Appointments tab. The description is
+                        optional and the bot may repeat it to a customer.
                     </div>
                     <button type="submit" class="btn btn-primary btn-sm">Save service</button>
                 </form>

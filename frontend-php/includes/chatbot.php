@@ -466,14 +466,15 @@ function chatbotBookingInstructions(array $a) {
     $lines[] = "--- Appointments ---";
     $lines[] = "You can help customers book, reschedule and cancel appointments.";
 
-    // Every active service, and the reason they are not timetables: durations
-    // differ, but the diary is one diary. A customer may ask for any service in
-    // any free slot, and only whether it fits before closing decides.
-    $lines[] = "Services offered (name — duration). Every one of them shares the same opening hours "
-        . "and the same diary, and none has times of its own — the duration only decides whether a "
-        . "start time still fits before closing:";
+    // Every active service, and the reason they are not timetables: one diary,
+    // one slot length, so the service a customer picks changes what they are
+    // getting and never when they can have it. The list used to carry a duration
+    // per service, which invited the model to reason about lengths that no longer
+    // exist.
+    $lines[] = "Services offered. Every one of them shares the same opening hours, the same diary "
+        . "and the same slot length, so none has times of its own:";
     foreach ($a['services'] as $s) {
-        $lines[] = '- ' . $s['name'] . ' — ' . (int)$s['duration_minutes'] . ' minutes'
+        $lines[] = '- ' . $s['name']
             . (trim((string)($s['description'] ?? '')) !== '' ? ' (' . $s['description'] . ')' : '');
     }
 
@@ -490,6 +491,16 @@ function chatbotBookingInstructions(array $a) {
     $lines[] = "Right now it is {$a['now_local']} ({$a['timezone']}). "
         . "Bookings need at least " . apptHumanMinutes($a['lead_minutes']) . " notice "
         . "and can be at most {$a['horizon_days']} days ahead.";
+
+    // Said as well as enforced. The booking check refuses a start that is not on
+    // the grid, but a model that does not know the grid exists will offer one,
+    // and a refusal the customer sees is worse than an offer never made.
+    if (!empty($a['slot_minutes'])) {
+        $lines[] = "Every appointment lasts " . apptHumanMinutes((int)$a['slot_minutes'])
+            . ", whichever service it is, and they run one after another from each opening time. "
+            . "Only those start times can be booked — never offer or book a time between two of "
+            . "them, even if the customer suggests one.";
+    }
 
     // Opening hours say when the business is *open*. Nothing here says what is
     // free, on purpose — that is a question only the database can answer, and it
@@ -1038,17 +1049,15 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
         $tz
     ) : [];
 
-    $hasFree = false;
-    foreach ($services as $s) {
-        $free = apptOpenSlots($conn, $userId, $config, $s, clone $nowLocal, [
-            'availability' => $availability,
-            'busy' => $busy,
-            'limit' => 1,
-        ]);
-        // One service that can be fitted somewhere is enough: the prompt only
-        // needs to know whether "the diary is full" is true of everything.
-        if ($free) { $hasFree = true; break; }
-    }
+    // One question, because there is one answer: every appointment is one slot
+    // long, so "is anything free" cannot be true of one service and false of
+    // another. This used to loop over the services, from when each carried its
+    // own duration.
+    $hasFree = apptOpenSlots($conn, $userId, $config, clone $nowLocal, [
+        'availability' => $availability,
+        'busy' => $busy,
+        'limit' => 1,
+    ]) !== [];
 
     return [
         'services' => $services,
@@ -1058,6 +1067,7 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
         'now_local' => $nowLocal->format('D j M Y, H:i'),
         'lead_minutes' => (int)($config['appointment_lead_minutes'] ?? 60),
         'horizon_days' => (int)($config['appointment_horizon_days'] ?? 30),
+        'slot_minutes' => apptSlotMinutes($config),
         'existing' => $existing,
     ];
 }
@@ -1157,11 +1167,7 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             $existing = $ctx['chat_id'] ? apptNextForChat($conn, $userId, $ctx['chat_id']) : null;
             if (!$existing) return "I could not find a booking to move.";
 
-            $service = [
-                'name' => $existing['service_name'],
-                'duration_minutes' => (int)$existing['duration_minutes'],
-            ];
-            [$utc, $why] = apptRescheduleSlot($conn, $userId, $config, $service, $action['datetime'] ?? '',
+            [$utc, $why] = apptRescheduleSlot($conn, $userId, $config, $action['datetime'] ?? '',
                 $timezone, (int)$existing['id']);
             if (!$utc) return apptRefusalLine($why);
 
