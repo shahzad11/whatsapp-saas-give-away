@@ -24,23 +24,66 @@ const SERPAPI_ENDPOINT = 'https://serpapi.com/search.json';
 // the "Load 20 more" button promises.
 const LEADS_PAGE_SIZE = 20;
 
+// The default search size, in metres. 5 km: a city district, which is what an
+// admin prospecting one neighbourhood at a time actually wants. The form asks
+// for kilometres because that is the unit a human reasons in; metres are what
+// SerpApi's `m` takes, so metres are what is stored and passed around.
+const LEADS_DEFAULT_RADIUS_M = 5000;
+
+// The area every search falls back to when nothing was typed and nothing was
+// configured. Never '': a blank `location` is the bug this constant exists to
+// prevent — see leadsSearch().
+const LEADS_DEFAULT_LOCATION = 'Lahore, Pakistan';
+
 // --- Configuration ----------------------------------------------------------
 
-// Defaults for the three settings the admin can pre-set. They are not in
+// Defaults for the settings the admin can pre-set. They are not in
 // appSettingDefaults() for the usual reason: an absent row must resolve here,
 // not be masked by a hardcoded row.
 function leadsSettings(?mysqli $conn = null) {
+    $fallback = [
+        'dial_code' => '92',
+        'hl'        => 'en',
+        'radius_m'  => LEADS_DEFAULT_RADIUS_M,
+        'location'  => LEADS_DEFAULT_LOCATION,
+    ];
     $db = settingsConn($conn);
-    if (!$db) return ['dial_code' => '92', 'hl' => 'en', 'radius_m' => 20000];
+    if (!$db) return $fallback;
 
     $radius = (int)(overrideSetting($db, 'serpapi_radius_m') ?? 0);
+    $location = trim((string)(overrideSetting($db, 'serpapi_location') ?? ''));
     return [
         // Pakistan first, like the currency default. Used to turn a local phone
         // number into something wa.me will accept.
         'dial_code' => (string)(overrideSetting($db, 'serpapi_dial_code') ?? '92'),
         'hl'        => (string)(overrideSetting($db, 'serpapi_hl') ?? 'en'),
-        'radius_m'  => $radius > 0 ? $radius : 20000,
+        'radius_m'  => $radius > 0 ? $radius : LEADS_DEFAULT_RADIUS_M,
+        // Pre-fills the Area box and backs the search up when it is empty.
+        'location'  => $location !== '' ? $location : LEADS_DEFAULT_LOCATION,
     ];
+}
+
+// Kilometres from the form to the metres SerpApi's `m` parameter takes.
+//
+// Clamped rather than rejected: the number box already restricts the range, and
+// an admin who defeats it should get the nearest usable search, not a spent
+// credit and an error. 1 km is the floor because a smaller map height returns
+// almost nothing while still costing a credit; 200 km is the ceiling because
+// beyond that "local business you can call" stops meaning anything.
+const LEADS_MIN_RADIUS_KM = 1;
+const LEADS_MAX_RADIUS_KM = 200;
+
+function leadsRadiusKmToM($km) {
+    $km = (float)$km;
+    if ($km <= 0) return LEADS_DEFAULT_RADIUS_M;
+    $km = max(LEADS_MIN_RADIUS_KM, min(LEADS_MAX_RADIUS_KM, $km));
+    return (int)round($km * 1000);
+}
+
+// Metres back to whole kilometres, for painting a stored setting into the form.
+function leadsRadiusMToKm($m) {
+    $km = (int)round(((int)$m ?: LEADS_DEFAULT_RADIUS_M) / 1000);
+    return max(LEADS_MIN_RADIUS_KM, min(LEADS_MAX_RADIUS_KM, $km));
 }
 
 function serpApiKey(?mysqli $conn = null) {
@@ -160,7 +203,14 @@ function leadsNormalise(array $r, $dialCode = '92') {
 //   next_url    a serpapi_pagination.next URL, for page 2 onwards
 //
 // Returns ['ok' => bool, 'error' => string, 'results' => [...raw...],
-//          'next' => string|null, 'resolved_ll' => string|null].
+//          'next' => string|null, 'resolved_ll' => string|null,
+//          'location' => string, 'radius_m' => int].
+//
+// `location` and `radius_m` come back because they are not always what went in:
+// a blank area falls back to the configured default, and a followed `next` URL
+// carries the previous page's area rather than the form's. The ledger and the
+// `leads.source_location` column record what the search actually ran with, not
+// what the browser happened to send.
 //
 // When next_url is given, every other parameter is ignored: that URL already
 // carries the resolved coordinates, and rebuilding the query from the form
@@ -177,6 +227,8 @@ function leadsSearch(mysqli $conn, array $params) {
 
     $settings = leadsSettings($conn);
     $nextUrl = trim((string)($params['next_url'] ?? ''));
+    $location = '';
+    $radiusM = 0;
 
     if ($nextUrl !== '') {
         // Only ever a URL SerpApi handed us on the previous page, and it is
@@ -199,15 +251,32 @@ function leadsSearch(mysqli $conn, array $params) {
             'api_key' => $key,
         ];
 
+        // An area is not optional, and this is the whole bug this guard exists
+        // for. Without `location` SerpApi sends the query to Google with no
+        // origin at all, and Google geolocates it from the IP address that
+        // asked — SerpApi's own datacentre, in Northern Virginia. The search
+        // succeeds, returns twenty real businesses, spends a credit, and every
+        // one of them is 11,000 km from the admin who searched. It looks like
+        // working software, which is why it went unnoticed: the Area box showed
+        // a grey "Lahore, Pakistan" placeholder that reads exactly like a value.
+        //
+        // So: the typed area, else the configured default, and never nothing.
         $location = trim((string)($params['location'] ?? ''));
-        if ($location !== '') {
-            // `location` must be accompanied by `z` or `m`; without one SerpApi
-            // rejects the search. `m` (map height in metres) is used because a
-            // radius is a distance an admin can reason about and a zoom level
-            // is not.
-            $query['location'] = $location;
-            $query['m'] = max(1, (int)($params['radius_m'] ?? $settings['radius_m']));
+        if ($location === '') $location = trim((string)$settings['location']);
+        if ($location === '') {
+            return ['ok' => false, 'results' => [], 'next' => null, 'resolved_ll' => null,
+                    'error' => 'Type an area to search in — without one Google guesses the '
+                             . 'location and returns businesses from the wrong country. '
+                             . 'No credit was used.'];
         }
+
+        // `location` must be accompanied by `z` or `m`; without one SerpApi
+        // rejects the search. `m` (map height in metres) is used because a
+        // radius is a distance an admin can reason about and a zoom level
+        // is not.
+        $radiusM = max(1, (int)($params['radius_m'] ?? 0) ?: (int)$settings['radius_m']);
+        $query['location'] = $location;
+        $query['m'] = $radiusM;
 
         // Only the values SerpApi documents. A rating it does not recognise is
         // dropped rather than sent, because a rejected search still costs the
@@ -253,6 +322,11 @@ function leadsSearch(mysqli $conn, array $params) {
         // must not carry the key even though we appended one to the request.
         'next' => leadsStripKey($body['serpapi_pagination']['next'] ?? null),
         'resolved_ll' => $resolvedLl !== null ? mb_substr($resolvedLl, 0, 64) : null,
+        // SerpApi echoes the area it was asked for as `location_requested`, so a
+        // followed pagination URL can say which area page two was of.
+        'location' => mb_substr(trim((string)($body['search_parameters']['location_requested']
+            ?? $location)), 0, 200),
+        'radius_m' => (int)($body['search_parameters']['m'] ?? $radiusM),
     ];
 }
 
@@ -323,9 +397,14 @@ function leadsTestKey(mysqli $conn, $candidateKey = null) {
     $key = ($candidateKey !== null && $candidateKey !== '') ? $candidateKey : serpApiKey($conn);
     if (!is_string($key) || $key === '') return [false, 'No key to test.'];
 
+    // Run against the configured area rather than a hardcoded one, so the test
+    // proves the area works as well as the key: an area SerpApi cannot resolve
+    // fails here, once, instead of on every real search afterwards.
+    $settings = leadsSettings($conn);
     $url = SERPAPI_ENDPOINT . '?' . http_build_query([
         'engine' => 'google_maps', 'type' => 'search', 'q' => 'coffee',
-        'location' => 'Lahore, Pakistan', 'm' => 5000, 'hl' => 'en', 'api_key' => $key,
+        'location' => $settings['location'], 'm' => 5000,
+        'hl' => $settings['hl'], 'api_key' => $key,
     ]);
     [$status, $body, $err] = leadsHttpGet($url);
 
@@ -378,6 +457,13 @@ function leadsUpsert(mysqli $conn, array $normalised, $sourceQuery = null, $sour
                 types = VALUES(types), open_state = VALUES(open_state),
                 operating_hours = VALUES(operating_hours), latitude = VALUES(latitude),
                 longitude = VALUES(longitude), thumbnail = VALUES(thumbnail),
+                -- Moved forward with last_seen_at, not frozen with first_seen_at:
+                -- these two columns answer \"which search put this in front of me\",
+                -- and the search the admin just ran is the one they are reading
+                -- the table after. COALESCE so a page-2 row that arrived without
+                -- context cannot blank a column that already had some.
+                source_query = COALESCE(VALUES(source_query), source_query),
+                source_location = COALESCE(VALUES(source_location), source_location),
                 last_seen_at = NOW()";
     $stmt = $conn->prepare($sql);
 
@@ -456,6 +542,29 @@ function leadAreas(mysqli $conn, $onlyActive = true) {
     return $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
 }
 
+// The distinct categories and areas that actually produced saved leads.
+//
+// Read off `leads` rather than off `lead_categories` / `lead_areas` on purpose:
+// the filter must offer what is in the table, including a free-typed query that
+// was never a saved category, and must not offer a category nothing was ever
+// found under. Two columns, one query, so the page makes one round trip.
+function leadsSourceValues(mysqli $conn) {
+    $out = ['categories' => [], 'areas' => []];
+    $res = $conn->query(
+        "SELECT 'c' AS kind, source_query AS value, COUNT(*) AS n FROM leads
+          WHERE source_query IS NOT NULL AND source_query <> '' GROUP BY source_query
+         UNION ALL
+         SELECT 'a' AS kind, source_location AS value, COUNT(*) AS n FROM leads
+          WHERE source_location IS NOT NULL AND source_location <> '' GROUP BY source_location
+         ORDER BY kind, value"
+    );
+    while ($row = $res->fetch_assoc()) {
+        $out[$row['kind'] === 'c' ? 'categories' : 'areas'][] =
+            ['value' => $row['value'], 'n' => (int)$row['n']];
+    }
+    return $out;
+}
+
 // The saved leads, filtered. Used by both the table and the CSV export, so the
 // two can never show different rows — which is the whole reason it is one
 // function taking the same $filters the query string carries.
@@ -467,10 +576,26 @@ function leadsList(mysqli $conn, array $filters = [], $limit = 500) {
 
     $q = trim((string)($filters['q'] ?? ''));
     if ($q !== '') {
-        $where[] = '(title LIKE ? OR address LIKE ? OR types LIKE ?)';
+        // source_query and source_location are searched too, so typing "dentist"
+        // or "Lahore" finds the leads a search for that turned up even when the
+        // words appear nowhere in the business's own name or address.
+        $where[] = '(title LIKE ? OR address LIKE ? OR types LIKE ?'
+                 . ' OR source_query LIKE ? OR source_location LIKE ?)';
         $like = '%' . $q . '%';
-        $types .= 'sss';
-        array_push($args, $like, $like, $like);
+        $types .= 'sssss';
+        array_push($args, $like, $like, $like, $like, $like);
+    }
+    // Exact-match origin filters, fed by the dropdowns leadsSourceValues() fills.
+    foreach (['category' => 'source_query', 'area' => 'source_location'] as $filter => $column) {
+        $value = trim((string)($filters[$filter] ?? ''));
+        if ($value === '') continue;
+        if ($value === '-') {           // "not recorded" — the pre-fix rows
+            $where[] = "($column IS NULL OR $column = '')";
+            continue;
+        }
+        $where[] = "$column = ?";
+        $types .= 's';
+        $args[] = $value;
     }
     // 'no_website' is the interesting one and the reason this tool exists: a
     // business with no website is the easiest sale for a WhatsApp bot.

@@ -206,6 +206,71 @@ check('a maps URL with no coordinates is NULL',
     leadsResolvedLl(['search_metadata' => ['google_maps_url' => 'https://www.google.com/maps']]) === null);
 
 // ---------------------------------------------------------------------------
+group('The radius is kilometres on screen and metres on the wire');
+
+equals('5 km is 5000 m', 5000, leadsRadiusKmToM(5));
+equals('the default when nothing was typed', LEADS_DEFAULT_RADIUS_M, leadsRadiusKmToM(0));
+equals('and the default is 5 km', 5000, LEADS_DEFAULT_RADIUS_M);
+// Clamped, not rejected: an admin who defeats the number box should get the
+// nearest usable search, not a spent credit and an error.
+equals('below the floor is clamped up', 1000, leadsRadiusKmToM(0.2));
+equals('above the ceiling is clamped down', 200000, leadsRadiusKmToM(5000));
+equals('a negative falls back to the default', LEADS_DEFAULT_RADIUS_M, leadsRadiusKmToM(-8));
+
+equals('metres come back as whole kilometres', 20, leadsRadiusMToKm(20000));
+equals('the stored default reads as 5', 5, leadsRadiusMToKm(LEADS_DEFAULT_RADIUS_M));
+equals('an absent setting still reads as the default', 5, leadsRadiusMToKm(0));
+check('the round trip is lossless for whole kilometres',
+    leadsRadiusMToKm(leadsRadiusKmToM(37)) === 37);
+
+// ---------------------------------------------------------------------------
+group('A search without an area is refused, not sent');
+
+// The regression this whole change exists for. A blank `location` does not fail
+// at SerpApi: it is passed to Google with no origin, Google geolocates the
+// request to SerpApi's datacentre in Northern Virginia, and twenty American
+// businesses come back looking exactly like a working search. 138 rows in the
+// live leads table arrived that way, all of them useless, all of them paid for.
+$leads = file_get_contents(dirname(__DIR__) . '/frontend-php/includes/leads.php');
+check('leadsSearch() only ever sends `location` set',
+    // The `m` line must not be reachable without a non-empty location, so the
+    // assignment sits after the guard rather than inside an if ($location !== '').
+    !str_contains($leads, "if (\$location !== '') {"));
+check('a blank area falls back to the configured default',
+    str_contains($leads, "if (\$location === '') \$location = trim((string)\$settings['location']);"));
+check('and the search returns before the HTTP call when there is still none',
+    strpos($leads, 'No credit was used.') < strpos($leads, 'leadsHttpGet($url)'));
+check('the default area is never the empty string', LEADS_DEFAULT_LOCATION !== '');
+
+$ajax = file_get_contents(dirname(__DIR__) . '/frontend-php/ajax/leads-search.php');
+check('the endpoint refuses a blank area before spending a credit',
+    strpos($ajax, "\$location === '' && \$nextUrl === ''") < strpos($ajax, '$result = leadsSearch('));
+check('it accepts kilometres from the form', str_contains($ajax, 'leadsRadiusKmToM($input[\'radius_km\'])'));
+check('and still accepts metres, so a cached page does not silently change radius',
+    str_contains($ajax, "\$input['radius_m']"));
+
+$page = file_get_contents(dirname(__DIR__) . '/frontend-php/admin/leads.php');
+check('the Area box carries a value, not just a placeholder',
+    str_contains($page, 'value="<?= sanitize($defaultArea) ?>"'));
+check('the radius field is labelled in kilometres', str_contains($page, 'Radius (km)'));
+check('the browser refuses an empty area too',
+    str_contains($page, "locationInput.value.trim() === ''"));
+
+// ---------------------------------------------------------------------------
+group('A lead records which search found it');
+
+check('the upsert keeps source_query and source_location current',
+    str_contains($leads, 'source_query = COALESCE(VALUES(source_query), source_query)')
+    && str_contains($leads, 'source_location = COALESCE(VALUES(source_location), source_location)'));
+check('the ledger records the area the search ran with, not the one sent',
+    str_contains($ajax, '$usedLocation = (string)($result[\'location\'] ?? $location);'));
+check('the saved-leads table has a Category and an Area column',
+    str_contains($page, '<th>Category</th>') && str_contains($page, '<th>Area searched</th>'));
+check('and the CSV export carries both',
+    str_contains($page, "'Category searched', 'Area searched'"));
+check('both are filterable', str_contains($page, 'name="category"') && str_contains($page, 'name="area"'));
+
+// ---------------------------------------------------------------------------
 group('wa.me links are only built from a number we trust');
 
 equals('a good number becomes a wa.me link',
@@ -244,6 +309,11 @@ check('the leads table exists in the schema', !empty($m[1]));
 check('and has no user_id column', !empty($m[1]) && !preg_match('/\buser_id\b/', $m[1]));
 check('place_id is unique, so a repeated search does not duplicate rows',
     !empty($m[1]) && str_contains($m[1], 'UNIQUE KEY unique_place (place_id)'));
+// An empty lead_areas table is what left the Area box with nothing but a grey
+// placeholder to suggest what belongs in it.
+check('the schema seeds lead_areas, so the Area box has something to offer',
+    str_contains($schema, 'INSERT IGNORE INTO lead_areas')
+    && str_contains($schema, "'Lahore, Pakistan'"));
 
 // One credit per request, and no loop that could spend several.
 $leads = file_get_contents($app . '/includes/leads.php');

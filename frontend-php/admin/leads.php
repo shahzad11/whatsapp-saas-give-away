@@ -22,6 +22,8 @@ $configured = serpApiConfigured($conn);
 // --- Filters for the saved-leads table (and therefore for the export) -------
 $filters = [
     'q'          => trim($_GET['q'] ?? ''),
+    'category'   => trim($_GET['category'] ?? ''),
+    'area'       => trim($_GET['area'] ?? ''),
     'website'    => $_GET['website'] ?? '',
     'phone'      => $_GET['phone'] ?? '',
     'new'        => $_GET['new'] ?? '',
@@ -47,11 +49,17 @@ if (($_GET['export'] ?? '') === 'csv') {
     // with an accent or an Urdu character arrives mangled, which is the whole
     // file for some of these searches.
     fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, ['Name', 'Phone', 'WhatsApp', 'Website', 'Address', 'Rating',
-                   'Reviews', 'Type', 'First seen', 'Last seen', 'Google Maps']);
+    // Category and Area sit next to the name rather than at the end: they are
+    // what tells the reader which search a row came out of, and a caller working
+    // down the file needs that before they need the review count.
+    fputcsv($out, ['Name', 'Category searched', 'Area searched', 'Phone', 'WhatsApp',
+                   'Website', 'Address', 'Rating', 'Reviews', 'Type',
+                   'First seen', 'Last seen', 'Google Maps']);
     foreach ($rows as $r) {
         fputcsv($out, [
             $r['title'],
+            $r['source_query'] ?? '',
+            $r['source_location'] ?? '',
             // Leading apostrophe: a spreadsheet reads "923001234567" as a number
             // and renders it as 9.23E+11, which destroys every phone number in
             // the file. This is the standard way to force a text cell.
@@ -74,6 +82,12 @@ if (($_GET['export'] ?? '') === 'csv') {
 $categories = leadCategories($conn);
 $areas = leadAreas($conn);
 $saved = leadsList($conn, $filters, 500);
+$sources = leadsSourceValues($conn);
+
+// The area the search box starts on, from Settings → Lead search. Never blank:
+// an empty Area box is what spent 138 leads' worth of credits on Google's guess
+// of where SerpApi's datacentre is.
+$defaultArea = $settings['location'];
 
 // What the tool has cost so far. Shown because credits are money and the only
 // other place this is visible is SerpApi's own dashboard.
@@ -143,8 +157,13 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1" for="leadLocation">Area</label>
+                <?php // Pre-filled, not placeheld. A placeholder reads as a value:
+                      // the grey "Lahore, Pakistan" that used to sit here looked
+                      // filled in, the field went to SerpApi empty, and Google
+                      // answered from its own datacentre in Virginia. ?>
                 <input type="text" id="leadLocation" class="form-control form-control-sm"
-                       list="leadAreaList" placeholder="Lahore, Pakistan">
+                       list="leadAreaList" required
+                       value="<?= sanitize($defaultArea) ?>">
                 <datalist id="leadAreaList">
                     <?php foreach ($areas as $a): ?>
                         <option value="<?= sanitize($a['location']) ?>"><?= sanitize($a['label']) ?></option>
@@ -152,9 +171,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </datalist>
             </div>
             <div class="col-md-3">
-                <label class="form-label x-small text-muted mb-1" for="leadRadius">Radius (m)</label>
+                <label class="form-label x-small text-muted mb-1" for="leadRadius">Radius (km)</label>
                 <input type="number" id="leadRadius" class="form-control form-control-sm"
-                       min="1000" max="200000" step="1000" value="<?= (int)$settings['radius_m'] ?>">
+                       min="<?= LEADS_MIN_RADIUS_KM ?>" max="<?= LEADS_MAX_RADIUS_KM ?>" step="1"
+                       value="<?= leadsRadiusMToKm($settings['radius_m']) ?>">
+                <div class="form-text x-small">Around the area above.</div>
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1" for="leadMinRating">Minimum rating</label>
@@ -204,9 +225,40 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Search</label>
                 <input type="search" name="q" class="form-control form-control-sm"
-                       placeholder="Name, address or type" value="<?= sanitize($filters['q']) ?>">
+                       placeholder="Name, address, category or area" value="<?= sanitize($filters['q']) ?>">
             </div>
-            <div class="col-md-2">
+            <?php // Built from the values actually present in `leads`, so the two
+                  // dropdowns can only ever select something that returns rows. ?>
+            <div class="col-md-3">
+                <label class="form-label x-small text-muted mb-1">Category</label>
+                <select name="category" class="form-select form-select-sm">
+                    <option value="">All categories</option>
+                    <?php foreach ($sources['categories'] as $c): ?>
+                        <option value="<?= sanitize($c['value']) ?>"
+                            <?= $filters['category'] === $c['value'] ? 'selected' : '' ?>>
+                            <?= sanitize($c['value']) ?> (<?= $c['n'] ?>)
+                        </option>
+                    <?php endforeach; ?>
+                    <option value="-" <?= $filters['category'] === '-' ? 'selected' : '' ?>>Not recorded</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label x-small text-muted mb-1">Area</label>
+                <select name="area" class="form-select form-select-sm">
+                    <option value="">All areas</option>
+                    <?php foreach ($sources['areas'] as $a): ?>
+                        <option value="<?= sanitize($a['value']) ?>"
+                            <?= $filters['area'] === $a['value'] ? 'selected' : '' ?>>
+                            <?= sanitize($a['value']) ?> (<?= $a['n'] ?>)
+                        </option>
+                    <?php endforeach; ?>
+                    <?php // The 138 rows from before the area was recorded, and the
+                          // reason this option is not hidden: they are the ones an
+                          // admin most needs to be able to single out. ?>
+                    <option value="-" <?= $filters['area'] === '-' ? 'selected' : '' ?>>Not recorded</option>
+                </select>
+            </div>
+            <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Website</label>
                 <select name="website" class="form-select form-select-sm">
                     <option value="">Any</option>
@@ -230,7 +282,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="col-md-2">
+            <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Sort</label>
                 <select name="sort" class="form-select form-select-sm">
                     <?php foreach (['recent' => 'Recently seen', 'new' => 'Newest', 'rating' => 'Rating',
@@ -239,7 +291,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="col-md-1 d-flex">
+            <div class="col-md-2 d-flex">
                 <button class="btn btn-sm btn-primary w-100">Apply</button>
             </div>
         </form>
@@ -248,13 +300,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <table class="table align-middle mb-0">
             <thead>
                 <tr>
-                    <th>Business</th><th>Phone</th><th>Website</th>
+                    <th>Business</th><th>Category</th><th>Area searched</th>
+                    <th>Phone</th><th>Website</th>
                     <th>Rating</th><th>Seen</th><th></th>
                 </tr>
             </thead>
             <tbody>
             <?php if (!$saved): ?>
-                <tr><td colspan="6" class="text-muted small">
+                <tr><td colspan="8" class="text-muted small">
                     Nothing saved yet. Run a search above — results are kept automatically.
                 </td></tr>
             <?php endif; ?>
@@ -267,6 +320,25 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php endif; ?>
                         <?php if ($l['types']): ?>
                             <div class="text-muted x-small"><?= sanitize($l['types']) ?></div>
+                        <?php endif; ?>
+                    </td>
+                    <?php // Which search produced this row. Without these two columns a
+                          // saved list of 200 businesses is unreadable — and a lead from
+                          // the wrong country is indistinguishable from a good one. ?>
+                    <td class="small">
+                        <?php if ($l['source_query']): ?>
+                            <a class="text-decoration-none" href="<?= $self ?>?<?= sanitize(http_build_query(
+                                ['category' => $l['source_query']] + $filters)) ?>"><?= sanitize($l['source_query']) ?></a>
+                        <?php else: ?>
+                            <span class="text-muted">—</span>
+                        <?php endif; ?>
+                    </td>
+                    <td class="small">
+                        <?php if ($l['source_location']): ?>
+                            <a class="text-decoration-none" href="<?= $self ?>?<?= sanitize(http_build_query(
+                                ['area' => $l['source_location']] + $filters)) ?>"><?= sanitize($l['source_location']) ?></a>
+                        <?php else: ?>
+                            <span class="text-muted" title="Found before the area was recorded">not recorded</span>
                         <?php endif; ?>
                     </td>
                     <td class="small">
@@ -354,7 +426,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     function ensureTable() {
         if (table) return table;
         out.innerHTML = '<table class="table align-middle mb-0">'
-            + '<thead><tr><th></th><th>Business</th><th>Phone</th><th>Website</th>'
+            + '<thead><tr><th></th><th>Business</th><th>Category</th><th>Area searched</th>'
+            + '<th>Phone</th><th>Website</th>'
             + '<th>Rating</th><th>Open</th><th></th></tr></thead><tbody></tbody></table>';
         table = out.querySelector('tbody');
         return table;
@@ -388,6 +461,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         : ' <span class="badge bg-light text-muted">seen</span>') + '</div>'
             + '<div class="text-muted x-small">' + esc(r.address || '') + '</div>'
             + '<div class="text-muted x-small">' + esc(r.types || '') + '</div></td>'
+            + '<td class="small">' + esc(r.source_query || '—') + '</td>'
+            + '<td class="small">' + esc(r.source_location || '—') + '</td>'
             + '<td class="small">' + phone + '</td>'
             + '<td class="small">' + site + '</td>'
             + '<td class="small">' + rating + '</td>'
@@ -399,6 +474,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
     function run(useNext) {
         if (busy) return;
+
+        // Refused in the browser as well as on the server, because this is the
+        // only place it can be refused before a credit is at risk at all. An
+        // empty area does not fail — it succeeds against Google's guess of where
+        // the request came from, which is a datacentre on another continent.
+        var locationInput = document.getElementById('leadLocation');
+        if (!useNext && locationInput.value.trim() === '') {
+            status.innerHTML = '<span class="text-danger">Type an area to search in, '
+                + 'e.g. "Lahore, Pakistan" — without one the results come back from '
+                + 'wherever Google thinks the request came from. No credit was used.</span>';
+            locationInput.focus();
+            return;
+        }
+
         busy = true;
 
         var target = useNext ? moreBtn : btn;
@@ -410,8 +499,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         var body = {
             csrf_token: '<?= sanitize(csrfToken()) ?>',
             query: queryInput.value.trim(),
-            location: document.getElementById('leadLocation').value.trim(),
-            radius_m: parseInt(document.getElementById('leadRadius').value, 10) || 0,
+            location: locationInput.value.trim(),
+            // Kilometres. The server converts — see leadsRadiusKmToM().
+            radius_km: parseInt(document.getElementById('leadRadius').value, 10) || 0,
             min_rating: document.getElementById('leadMinRating').value,
             open_now: document.getElementById('leadOpenNow').checked,
             next_url: useNext ? nextUrl : ''
@@ -436,14 +526,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 var body = ensureTable();
                 res.results.forEach(function (r) { body.insertAdjacentHTML('beforeend', rowHtml(r)); });
 
-                status.innerHTML = '<span class="text-muted">' + res.results.length + ' result(s) — '
+                // The search that actually ran, spelled out. The area is echoed by
+                // the server rather than read back off the form, so the line says
+                // what SerpApi was asked and not what the box happens to hold now.
+                var ran = '<span class="text-muted">' + esc(res.query || '')
+                    + ' in ' + esc(res.location || '') + ', ' + esc(res.radius_km || '') + ' km — </span>';
+
+                status.innerHTML = ran + '<span class="text-muted">' + res.results.length + ' result(s), '
                     + res.new_count + ' new, ' + res.seen_count + ' already known.</span>';
 
                 nextUrl = res.next_url || null;
                 moreBtn.classList.toggle('d-none', !nextUrl);
 
                 if (!res.results.length) {
-                    status.innerHTML = '<span class="text-muted">Nothing found. '
+                    status.innerHTML = ran + '<span class="text-muted">nothing found. '
                         + 'The credit was still used — try a wider radius or a different area.</span>';
                 }
             })

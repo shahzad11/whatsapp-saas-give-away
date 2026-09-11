@@ -989,8 +989,13 @@ CREATE TABLE IF NOT EXISTS leads (
     latitude DECIMAL(10,7) DEFAULT NULL,
     longitude DECIMAL(10,7) DEFAULT NULL,
     thumbnail VARCHAR(1000) DEFAULT NULL,
-    -- Which query and area turned this up first. Context for "why is this in my
+    -- Which query and area turned this up. Context for "why is this in my
     -- list", not a foreign key: the search row may be pruned, the lead stays.
+    -- Kept current with last_seen_at rather than frozen with first_seen_at, and
+    -- shown as two columns in the saved-leads table: "which search put this in
+    -- front of me" is the question a list of 200 businesses cannot be read
+    -- without. A NULL source_location means the row predates the fix that made
+    -- an area mandatory, and the table says so rather than showing a blank.
     source_query VARCHAR(200) DEFAULT NULL,
     source_location VARCHAR(200) DEFAULT NULL,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1019,3 +1024,21 @@ INSERT IGNORE INTO lead_categories (label, query, sort_order) VALUES
     ('Law firms',             'law firm',                100),
     ('Travel agencies',       'travel agency',           110),
     ('Restaurants',           'restaurant',              120);
+
+-- A starting set of areas, insert-only for the same reason.
+--
+-- This list is not a convenience. An empty `lead_areas` left the Area box on the
+-- leads page with nothing but a grey placeholder to suggest what belongs in it,
+-- and a blank area does not fail a search — SerpApi passes it to Google with no
+-- origin, Google geolocates the request to SerpApi's own datacentre in Northern
+-- Virginia, and twenty American businesses come back looking exactly like a
+-- working search. Every area here resolves in SerpApi's location database.
+INSERT IGNORE INTO lead_areas (label, location, sort_order) VALUES
+    ('Lahore',      'Lahore, Pakistan',       10),
+    ('Karachi',     'Karachi, Pakistan',      20),
+    ('Islamabad',   'Islamabad, Pakistan',    30),
+    ('Rawalpindi',  'Rawalpindi, Pakistan',   40),
+    ('Faisalabad',  'Faisalabad, Pakistan',   50),
+    ('Multan',      'Multan, Pakistan',       60),
+    ('Peshawar',    'Peshawar, Pakistan',     70),
+    ('Dubai',       'Dubai, United Arab Emirates', 80);

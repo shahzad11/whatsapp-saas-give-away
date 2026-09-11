@@ -81,12 +81,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $serpErrors['serpapi_hl'] = 'A language code like en, ur, or en-gb.';
         }
 
-        $radius = (int)($_POST['serpapi_radius_m'] ?? 0);
-        if ($radius < 1000 || $radius > 200000) {
+        // Kilometres in the form, metres in the column. The unit changed, the
+        // stored key did not: `serpapi_radius_m` is still metres, so no migration
+        // and no instance quietly re-reading 20000 as 20000 km.
+        $radiusKm = (int)($_POST['serpapi_radius_km'] ?? 0);
+        if ($radiusKm < LEADS_MIN_RADIUS_KM || $radiusKm > LEADS_MAX_RADIUS_KM) {
             // The floor is not fussiness: SerpApi accepts 1 metre, and a search
             // with a one-metre radius silently returns almost nothing while
             // still costing a credit.
-            $serpErrors['serpapi_radius_m'] = 'Between 1000 and 200000 metres.';
+            $serpErrors['serpapi_radius_km'] = 'Between ' . LEADS_MIN_RADIUS_KM
+                . ' and ' . LEADS_MAX_RADIUS_KM . ' kilometres.';
+        }
+        $radius = leadsRadiusKmToM($radiusKm);
+
+        // The area every lead search starts from. Required, because a blank one
+        // is what makes Google answer from its own datacentre instead — the bug
+        // that filled the leads table with businesses in Virginia.
+        $serpLocation = trim((string)($_POST['serpapi_location'] ?? ''));
+        if ($serpLocation === '' || mb_strlen($serpLocation) > 200) {
+            $serpErrors['serpapi_location'] = 'An area like "Lahore, Pakistan". It cannot be empty.';
         }
 
         if ($serpErrors) {
@@ -104,10 +117,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setAppSetting($conn, 'serpapi_dial_code', $dial);
         setAppSetting($conn, 'serpapi_hl', $hl);
         setAppSetting($conn, 'serpapi_radius_m', (string)$radius);
+        setAppSetting($conn, 'serpapi_location', $serpLocation);
 
         // Never the key itself — only that one was replaced.
         logAudit($conn, 'admin.serpapi.update', 'app_settings', null, [
-            'key_replaced' => $newKey !== '', 'dial_code' => $dial, 'hl' => $hl, 'radius_m' => $radius,
+            'key_replaced' => $newKey !== '', 'dial_code' => $dial, 'hl' => $hl,
+            'radius_m' => $radius, 'location' => $serpLocation,
         ]);
         formRespond(true, 'Lead search settings saved.', $self);
     }
@@ -641,12 +656,26 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?= sErr('serpapi_hl') ?>
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label" for="serpapiRadius">Radius (m)</label>
-                    <input type="number" name="serpapi_radius_m" id="serpapiRadius"
-                           class="form-control<?= sCls('serpapi_radius_m') ?>" min="1000" max="200000" step="1000"
-                           value="<?= (int)$serp['radius_m'] ?>">
+                    <label class="form-label" for="serpapiRadius">Radius (km)</label>
+                    <input type="number" name="serpapi_radius_km" id="serpapiRadius"
+                           class="form-control<?= sCls('serpapi_radius_km') ?>"
+                           min="<?= LEADS_MIN_RADIUS_KM ?>" max="<?= LEADS_MAX_RADIUS_KM ?>" step="1"
+                           value="<?= leadsRadiusMToKm($serp['radius_m']) ?>">
                     <div class="form-text">Default search size.</div>
-                    <?= sErr('serpapi_radius_m') ?>
+                    <?= sErr('serpapi_radius_km') ?>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="serpapiLocation">Default area</label>
+                    <input type="text" name="serpapi_location" id="serpapiLocation"
+                           class="form-control<?= sCls('serpapi_location') ?>" maxlength="200" required
+                           value="<?= sanitize($serp['location']) ?>">
+                    <div class="form-text">
+                        Pre-fills the Area box on Leads, and backs up a search that arrives without one.
+                        <strong>Never leave it blank</strong> — a search with no area is answered from
+                        wherever Google thinks the request came from, which is SerpApi's datacentre,
+                        not your city.
+                    </div>
+                    <?= sErr('serpapi_location') ?>
                 </div>
             </div>
         </div>

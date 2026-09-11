@@ -54,11 +54,26 @@ if ($query === '' && $nextUrl === '') {
     echo json_encode(['ok' => false, 'error' => 'Choose a category, or type what to search for.']);
     exit;
 }
+// Neither would a blank area — worse, that one *succeeds*: Google falls back to
+// geolocating SerpApi's datacentre and returns twenty businesses in Virginia.
+// Refused here as well as in leadsSearch() so the credit is never spent, and the
+// browser is told which field is wrong rather than being shown foreign leads.
+if ($location === '' && $nextUrl === '') {
+    echo json_encode(['ok' => false, 'error' => 'Type an area to search in, e.g. "Lahore, Pakistan".']);
+    exit;
+}
+
+// The form asks for kilometres because that is the unit a human reasons in;
+// SerpApi's `m` is metres. `radius_m` is still accepted so an older cached copy
+// of the page keeps working rather than silently searching a 5 km default.
+$radiusM = isset($input['radius_km'])
+    ? leadsRadiusKmToM($input['radius_km'])
+    : ((int)($input['radius_m'] ?? 0) ?: (int)$settings['radius_m']);
 
 $params = [
     'query'      => $query,
     'location'   => $location,
-    'radius_m'   => (int)($input['radius_m'] ?? 0) ?: $settings['radius_m'],
+    'radius_m'   => $radiusM,
     'min_rating' => (string)($input['min_rating'] ?? ''),
     'open_now'   => !empty($input['open_now']),
     'next_url'   => $nextUrl,
@@ -80,13 +95,20 @@ foreach ($result['results'] as $raw) {
     if ($row !== null) $normalised[] = $row;
 }
 
-[$new, $seen, $rows] = leadsUpsert($conn, $normalised, $query ?: null, $location ?: null);
+// The area and radius the search *ran with*, which is not always the area and
+// radius the browser sent: page two carries the previous page's, and a blank one
+// falls back to the configured default. Recording the request rather than the
+// search is how 138 leads ended up in the table with no area against them at all.
+$usedLocation = (string)($result['location'] ?? $location);
+$usedRadiusM  = (int)($result['radius_m'] ?? $params['radius_m']);
+
+[$new, $seen, $rows] = leadsUpsert($conn, $normalised, $query ?: null, $usedLocation ?: null);
 
 // Written whether or not anything was found — a credit spent on nothing is
 // exactly the spend worth being able to see later.
 leadsRecordSearch($conn, [
-    'query' => $query, 'location' => $location, 'resolved_ll' => $result['resolved_ll'],
-    'radius_m' => $params['radius_m'], 'min_rating' => $params['min_rating'],
+    'query' => $query, 'location' => $usedLocation, 'resolved_ll' => $result['resolved_ll'],
+    'radius_m' => $usedRadiusM, 'min_rating' => $params['min_rating'],
     'open_now' => $params['open_now'], 'pages_fetched' => 1, 'credits_used' => 1,
     'results_count' => count($rows), 'new_count' => $new, 'seen_count' => $seen,
     'created_by' => $adminId,
@@ -94,14 +116,18 @@ leadsRecordSearch($conn, [
 
 // The audit log records that money was spent and by whom. Never the key.
 logAudit($conn, 'admin.leads.search', 'lead_search', null, [
-    'query' => $query, 'location' => $location, 'results' => count($rows),
+    'query' => $query, 'location' => $usedLocation, 'results' => count($rows),
     'new' => $new, 'credits' => 1,
 ]);
 
 // Each row is shaped for rendering here rather than in JavaScript, so the
 // wa.me rule and the "no website" rule live in PHP with the rest of them.
-$payload = array_map(function ($r) {
+$payload = array_map(function ($r) use ($query, $usedLocation) {
     return [
+        // Carried on every row so the results table can say which search each
+        // one belongs to, exactly as the saved-leads table below it does.
+        'source_query'    => $query,
+        'source_location' => $usedLocation,
         'place_id'  => $r['place_id'],
         'title'     => $r['title'],
         'address'   => $r['address'],
@@ -123,6 +149,12 @@ echo json_encode([
     'results' => $payload,
     'new_count' => $new,
     'seen_count' => $seen,
+    // Echoed so the page can state the search it actually ran — the area is the
+    // one thing an admin cannot tell from the results themselves until they have
+    // already read twenty addresses in the wrong country.
+    'query' => $query,
+    'location' => $usedLocation,
+    'radius_km' => leadsRadiusMToKm($usedRadiusM),
     // Absent when SerpApi has no further page, which is what disables the
     // "Load 20 more" button rather than letting it spend a credit on nothing.
     'next_url' => $result['next'],
