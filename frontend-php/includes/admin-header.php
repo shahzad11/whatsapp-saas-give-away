@@ -59,6 +59,12 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 <a href="<?= APP_URL ?>/admin/payments.php" class="nav-link-item <?= $currentPage === 'payments' ? 'active' : '' ?>">
                     <i class="bi bi-cash-coin"></i><span>Payments</span>
                 </a>
+                <?php // #50. Under Platform rather than Instance: it is the owner's
+                      // own prospecting list, not a setting. Nothing tenant-facing
+                      // links here and `leads` has no tenant column. ?>
+                <a href="<?= APP_URL ?>/admin/leads.php" class="nav-link-item <?= $currentPage === 'leads' ? 'active' : '' ?>">
+                    <i class="bi bi-binoculars"></i><span>Leads</span>
+                </a>
             </div>
             <div class="nav-section">
                 <span class="nav-section-title">Instance</span>

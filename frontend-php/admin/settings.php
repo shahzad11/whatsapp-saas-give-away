@@ -50,6 +50,77 @@ $self = APP_URL . '/admin/settings.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     formRequireCsrf($self);
 
+    // --- Lead generation (#50) ----------------------------------------------
+    //
+    // Its own form and its own actions, handled before the main save and
+    // exiting through formRespond() like everything else. Kept apart because
+    // the key is a secret: the instance settings form round-trips every one of
+    // its values through the page, and an API key must never be one of them.
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'save_serpapi') {
+        $serpErrors = [];
+
+        // Blank means "keep what is stored", exactly as the LLM provider and
+        // SMTP password fields work. Without that rule, opening the page and
+        // pressing Save would wipe a working key, because the field cannot be
+        // pre-filled with a secret.
+        $newKey = trim((string)($_POST['serpapi_key'] ?? ''));
+        if ($newKey !== '' && !cryptoSecretAvailable()) {
+            formRespond(false, cryptoSecretMissingMessage(), $self,
+                ['serpapi_key' => 'This instance cannot encrypt secrets, so the key was not stored.']);
+        }
+
+        $dial = preg_replace('/\D+/', '', (string)($_POST['serpapi_dial_code'] ?? ''));
+        if ($dial === '' || strlen($dial) > 4) {
+            $serpErrors['serpapi_dial_code'] = 'Digits only, e.g. 92 for Pakistan or 44 for the UK.';
+        }
+
+        $hl = strtolower(trim((string)($_POST['serpapi_hl'] ?? '')));
+        if (!preg_match('/^[a-z]{2,3}(-[a-z0-9]{2,3})?$/', $hl)) {
+            $serpErrors['serpapi_hl'] = 'A language code like en, ur, or en-gb.';
+        }
+
+        $radius = (int)($_POST['serpapi_radius_m'] ?? 0);
+        if ($radius < 1000 || $radius > 200000) {
+            // The floor is not fussiness: SerpApi accepts 1 metre, and a search
+            // with a one-metre radius silently returns almost nothing while
+            // still costing a credit.
+            $serpErrors['serpapi_radius_m'] = 'Between 1000 and 200000 metres.';
+        }
+
+        if ($serpErrors) {
+            formRespond(false, 'Please correct the highlighted fields.', $self, $serpErrors);
+        }
+
+        if ($newKey !== '') {
+            $encrypted = encryptSecret($newKey);
+            if ($encrypted === null) {
+                formRespond(false, cryptoSecretMissingMessage(), $self,
+                    ['serpapi_key' => 'The key was not saved.']);
+            }
+            setAppSetting($conn, 'serpapi_key_enc', $encrypted);
+        }
+        setAppSetting($conn, 'serpapi_dial_code', $dial);
+        setAppSetting($conn, 'serpapi_hl', $hl);
+        setAppSetting($conn, 'serpapi_radius_m', (string)$radius);
+
+        // Never the key itself — only that one was replaced.
+        logAudit($conn, 'admin.serpapi.update', 'app_settings', null, [
+            'key_replaced' => $newKey !== '', 'dial_code' => $dial, 'hl' => $hl, 'radius_m' => $radius,
+        ]);
+        formRespond(true, 'Lead search settings saved.', $self);
+    }
+
+    if ($action === 'test_serpapi') {
+        // The form's own value is tested when one was typed, so the result
+        // describes the key the admin is looking at rather than the stored one.
+        $candidate = trim((string)($_POST['serpapi_key'] ?? ''));
+        [$ok, $message] = leadsTestKey($conn, $candidate !== '' ? $candidate : null);
+        logAudit($conn, 'admin.serpapi.test', 'app_settings', null, ['ok' => $ok]);
+        formRespond($ok, $message, $self);
+    }
+
     $currency = strtoupper(trim($_POST['currency'] ?? ''));
     if (!isValidCurrency($currency) || !array_key_exists($currency, currencyFormats())) {
         $errors['currency'] = 'Select a currency from the list.';
@@ -233,6 +304,12 @@ function sCls($key) {
 }
 
 $repriceable = plansInCurrency($conn, $current['currency']);
+
+// Read for the lead-search card below. The key itself is never read for
+// display — only whether one exists, which is what the badge and the
+// placeholder need.
+$serp = leadsSettings($conn);
+$serpConfigured = serpApiConfigured($conn);
 
 $pageTitle = 'Instance Settings';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
@@ -505,6 +582,91 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
     <button type="submit" class="btn btn-primary">Save Settings</button>
 </form>
+
+<?php // Lead generation (#50). A separate form, deliberately.
+      //
+      // The settings form above round-trips every value it holds through the
+      // page on each render. An API key must never be one of those: it is
+      // stored encrypted, it is never rendered back, and a blank field means
+      // "keep what is there" — the same contract as the SMTP password and the
+      // LLM provider keys. Keeping it in its own form is what makes that rule
+      // impossible to break by adding a field to the wrong place. ?>
+<div class="card mb-4 mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Lead search (SerpApi)</span>
+        <?php if ($serpConfigured): ?>
+            <span class="badge bg-success">key stored</span>
+        <?php else: ?>
+            <span class="badge bg-secondary">not configured</span>
+        <?php endif; ?>
+    </div>
+    <form method="POST" data-ajax>
+        <?= csrfField() ?>
+        <div class="card-body">
+            <p class="text-muted small">
+                Powers <a href="<?= APP_URL ?>/admin/leads.php">Leads</a>, which finds local
+                businesses through Google Maps so you can call them. Get a key at
+                <a href="https://serpapi.com/" target="_blank" rel="noopener">serpapi.com</a>.
+                <strong>Every page of results costs one search credit.</strong>
+            </p>
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label" for="serpapiKey">API key</label>
+                    <input type="password" name="serpapi_key" id="serpapiKey"
+                           class="form-control<?= sCls('serpapi_key') ?>" autocomplete="off"
+                           placeholder="<?= $serpConfigured ? 'Stored — leave blank to keep it' : 'Paste your SerpApi key' ?>">
+                    <div class="form-text">
+                        Encrypted at rest and never shown again. Leave blank to keep the stored key.
+                    </div>
+                    <?= sErr('serpapi_key') ?>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="serpapiDial">Dial code</label>
+                    <div class="input-group">
+                        <span class="input-group-text">+</span>
+                        <input type="text" name="serpapi_dial_code" id="serpapiDial"
+                               class="form-control<?= sCls('serpapi_dial_code') ?>" maxlength="4"
+                               value="<?= sanitize($serp['dial_code']) ?>">
+                    </div>
+                    <div class="form-text">For wa.me links.</div>
+                    <?= sErr('serpapi_dial_code') ?>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="serpapiHl">Language</label>
+                    <input type="text" name="serpapi_hl" id="serpapiHl"
+                           class="form-control<?= sCls('serpapi_hl') ?>" maxlength="6"
+                           value="<?= sanitize($serp['hl']) ?>">
+                    <div class="form-text">e.g. <code>en</code></div>
+                    <?= sErr('serpapi_hl') ?>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="serpapiRadius">Radius (m)</label>
+                    <input type="number" name="serpapi_radius_m" id="serpapiRadius"
+                           class="form-control<?= sCls('serpapi_radius_m') ?>" min="1000" max="200000" step="1000"
+                           value="<?= (int)$serp['radius_m'] ?>">
+                    <div class="form-text">Default search size.</div>
+                    <?= sErr('serpapi_radius_m') ?>
+                </div>
+            </div>
+        </div>
+        <div class="card-footer d-flex gap-2 align-items-center">
+            <button type="submit" name="action" value="save_serpapi" class="btn btn-primary">
+                Save lead settings
+            </button>
+            <?php // Confirmed, because it is the only button on this page that
+                  // spends the owner's money. There is no cheaper way to prove a
+                  // key both authenticates and still has credit. ?>
+            <button type="submit" name="action" value="test_serpapi"
+                    class="btn btn-outline-secondary" data-busy-label="Testing…"
+                    data-confirm="Run a test search? This uses one SerpApi credit."
+                    <?= $serpConfigured ? '' : 'disabled' ?>>
+                Test key
+            </button>
+            <span class="text-muted x-small">A test search costs one credit.</span>
+        </div>
+    </form>
+</div>
 
 <script>
 // Reveal the relabel opt-in only when the currency actually changes. Server-side

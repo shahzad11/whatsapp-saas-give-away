@@ -892,3 +892,130 @@ SET @add_share := (
 PREPARE stmt_add_share FROM @add_share;
 EXECUTE stmt_add_share;
 DEALLOCATE PREPARE stmt_add_share;
+
+-- ---------------------------------------------------------------------------
+-- Lead generation (issue #50)
+-- ---------------------------------------------------------------------------
+--
+-- The platform owner's own prospecting tool: find local businesses through
+-- SerpApi's Google Maps engine, keep what came back, and call them.
+--
+-- Admin-only, and deliberately NOT tenant-scoped. There is no user_id on
+-- `leads`: these are the owner's prospects, not a tenant's contacts, and a
+-- tenant must never see them. Every table here is reached only from /admin.
+--
+-- This is not a CRM. There is no pipeline, no owner, no stage and no notes —
+-- only "we have seen this business, here is how to contact it, and when it
+-- first and last appeared in a search". Anything more is a product decision
+-- nobody has made yet, and columns are much easier to add than to remove.
+
+-- The searches worth keeping around, so the owner is not retyping
+-- "hair transplant clinic" every morning.
+CREATE TABLE IF NOT EXISTS lead_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    label VARCHAR(100) NOT NULL,            -- what the admin sees
+    query VARCHAR(200) NOT NULL,            -- what SerpApi is asked
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_query (query)
+) ENGINE=InnoDB;
+
+-- Saved location strings. Free-form text, because that is what SerpApi's
+-- `location` parameter takes — it resolves the text to coordinates itself.
+CREATE TABLE IF NOT EXISTS lead_areas (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    label VARCHAR(100) NOT NULL,
+    location VARCHAR(200) NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_location (location)
+) ENGINE=InnoDB;
+
+-- The ledger. Every page fetched is one SerpApi credit, and a credit is money,
+-- so what was spent and what it bought is recorded rather than inferred.
+--
+-- `resolved_ll` is stored because it is the thing a `location` text search
+-- cannot be repeated without: SerpApi turns the text into coordinates, and only
+-- the coordinates identify the search that actually ran.
+CREATE TABLE IF NOT EXISTS lead_searches (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    query VARCHAR(200) NOT NULL,
+    location VARCHAR(200) DEFAULT NULL,
+    resolved_ll VARCHAR(64) DEFAULT NULL,
+    radius_m INT DEFAULT NULL,
+    min_rating DECIMAL(2,1) DEFAULT NULL,
+    open_now TINYINT(1) NOT NULL DEFAULT 0,
+    pages_fetched INT NOT NULL DEFAULT 0,
+    credits_used INT NOT NULL DEFAULT 0,
+    results_count INT NOT NULL DEFAULT 0,
+    new_count INT NOT NULL DEFAULT 0,
+    seen_count INT NOT NULL DEFAULT 0,
+    -- SET NULL, not CASCADE: deleting an admin account must not erase the
+    -- record of credits their searches spent.
+    created_by INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_created (created_at)
+) ENGINE=InnoDB;
+
+-- One row per business, ever.
+--
+-- `place_id` is UNIQUE and is what makes a repeated search cheap in attention
+-- rather than in noise: the same clinic found by three different queries is one
+-- row whose `last_seen_at` moves. `first_seen_at` is what "new" means on the
+-- results page, and it is never updated — that is the whole point of it.
+--
+-- `phone_digits` is denormalised alongside `phone` because the two answer
+-- different questions: `phone` is what Google displayed and is what a human
+-- reads, `phone_digits` is bare E.164 and is what a wa.me link and a duplicate
+-- check need. Deriving one from the other at read time would put the dial-code
+-- rules in every caller.
+CREATE TABLE IF NOT EXISTS leads (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    place_id VARCHAR(128) NOT NULL,
+    data_cid VARCHAR(64) DEFAULT NULL,
+    title VARCHAR(255) NOT NULL,
+    address VARCHAR(500) DEFAULT NULL,
+    phone VARCHAR(64) DEFAULT NULL,
+    phone_digits VARCHAR(20) DEFAULT NULL,
+    website VARCHAR(500) DEFAULT NULL,
+    rating DECIMAL(2,1) DEFAULT NULL,
+    reviews INT DEFAULT NULL,
+    types VARCHAR(255) DEFAULT NULL,
+    open_state VARCHAR(120) DEFAULT NULL,
+    operating_hours JSON DEFAULT NULL,
+    latitude DECIMAL(10,7) DEFAULT NULL,
+    longitude DECIMAL(10,7) DEFAULT NULL,
+    thumbnail VARCHAR(1000) DEFAULT NULL,
+    -- Which query and area turned this up first. Context for "why is this in my
+    -- list", not a foreign key: the search row may be pruned, the lead stays.
+    source_query VARCHAR(200) DEFAULT NULL,
+    source_location VARCHAR(200) DEFAULT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_place (place_id),
+    INDEX idx_last_seen (last_seen_at),
+    INDEX idx_phone (phone_digits),
+    INDEX idx_title (title)
+) ENGINE=InnoDB;
+
+-- A starting set of categories, insert-only.
+--
+-- INSERT IGNORE against the UNIQUE query, for the same reason the plans seed is
+-- insert-only: this runs on every boot, and an admin who deleted a category they
+-- do not sell to must not find it back tomorrow.
+INSERT IGNORE INTO lead_categories (label, query, sort_order) VALUES
+    ('Dentists',              'dentist',                  10),
+    ('Hair transplant',       'hair transplant clinic',   20),
+    ('Eye doctors',           'eye doctor',               30),
+    ('Dermatologists',        'dermatologist',            40),
+    ('Salons',                'beauty salon',             50),
+    ('Gyms',                  'gym',                      60),
+    ('Physiotherapy',         'physiotherapy clinic',     70),
+    ('Veterinary clinics',    'veterinary clinic',        80),
+    ('Real estate agents',    'real estate agency',       90),
+    ('Law firms',             'law firm',                100),
+    ('Travel agencies',       'travel agency',           110),
+    ('Restaurants',           'restaurant',              120);
