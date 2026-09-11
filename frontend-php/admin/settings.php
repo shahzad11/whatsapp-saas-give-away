@@ -11,7 +11,6 @@ $errors = [];
 $current = [
     'currency'              => appCurrency($conn),
     'timezone'              => appTimezone($conn),
-    'allow_registration'    => allowRegistration($conn),
     'default_plan_code'     => defaultPlanCode($conn),
     'login_max_attempts'    => loginMaxAttempts($conn),
     'login_lockout_minutes' => loginLockoutMinutes($conn),
@@ -137,14 +136,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $contactPrimary = (string)($_POST['billing_contact_primary'] ?? '');
     if (!in_array($contactPrimary, $contactMethods, true)) $contactPrimary = $contactMethods[0] ?? '';
 
-    $allowRegistration = isset($_POST['allow_registration']) ? '1' : '0';
-
     if (!$errors) {
         $previousCurrency = $current['currency'];
 
         setAppSetting($conn, 'currency', $currency);
         setAppSetting($conn, 'timezone', $timezone);
-        setAppSetting($conn, 'allow_registration', $allowRegistration);
         setAppSetting($conn, 'default_plan_code', $planCode);
         setAppSetting($conn, 'login_max_attempts', (string)$maxAttempts);
         setAppSetting($conn, 'login_lockout_minutes', (string)$lockout);
@@ -159,7 +155,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         logAudit($conn, 'admin.settings.update', 'app_settings', null, [
             'currency' => $currency,
             'timezone' => $timezone,
-            'allow_registration' => $allowRegistration,
             'default_plan_code' => $planCode,
             // Which routes are open, never the address or the number: they are
             // the owner's own contact details and the audit log is read by
@@ -216,7 +211,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Keep what was typed for redisplay.
     $current = [
         'currency' => $currency, 'timezone' => $timezone,
-        'allow_registration' => $allowRegistration === '1',
         'default_plan_code' => $planCode,
         'login_max_attempts' => $maxAttempts, 'login_lockout_minutes' => $lockout,
         'payment_instructions' => $instructions,
@@ -307,32 +301,19 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4">
-        <div class="card-header">Registration</div>
+        <div class="card-header">New tenants</div>
         <div class="card-body">
-            <div class="form-check form-switch mb-3">
-                <input class="form-check-input" type="checkbox" name="allow_registration" id="allowRegistration"
-                       <?= $current['allow_registration'] ? 'checked' : '' ?>>
-                <label class="form-check-label" for="allowRegistration">Allow public sign-ups</label>
-                <div class="form-text">
-                    Off by default. With no payment wall in front of it, open signup is a liability.
-                </div>
-                <?php // The one combination that produces a dead end, and neither page
-                      // said so: sign-up is open, and the instance cannot send the
-                      // activation email the new account needs. Every registration then
-                      // succeeds and every new tenant is permanently stuck on "check
-                      // your email" — with the failure visible only in the container
-                      // log. There is no local mail transport to fall back on, by
-                      // design (see Email / SMTP), so this has to be said here. ?>
-                <?php if ($current['allow_registration'] && !smtpConfigured($conn)): ?>
-                    <div class="alert alert-danger py-2 mt-2 mb-0 small">
-                        <i class="bi bi-exclamation-triangle me-1"></i>
-                        <strong>Sign-ups are open but this instance cannot send email.</strong>
-                        Every new account needs an activation link, so nobody who registers will be
-                        able to log in. Either
-                        <a href="<?= APP_URL ?>/admin/email.php">configure outgoing email</a>
-                        or turn sign-ups off until you have.
-                    </div>
-                <?php endif; ?>
+            <?php // The "Allow public sign-ups" switch was here, and is gone (#48).
+                  //
+                  // It is not merely unticked: register.php, the allow_registration
+                  // row, the ALLOW_REGISTRATION constant and allowRegistration()
+                  // were all removed, so there is nothing left for a switch to
+                  // toggle. Tenants exist because an admin made one. ?>
+            <div class="alert alert-secondary py-2 small">
+                <i class="bi bi-shield-lock me-1"></i>
+                This instance is <strong>invite-only</strong>. There is no public sign-up form —
+                add tenants from <a href="<?= APP_URL ?>/admin/tenants.php">Tenants</a>, where you
+                can email them a password-setup link or hand over a temporary password.
             </div>
             <div class="col-md-5 px-0">
                 <label class="form-label">Default plan for new tenants</label>

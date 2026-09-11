@@ -19,9 +19,13 @@ define('MAIL_FROM_NAME', env('MAIL_FROM_NAME', APP_NAME));
 
 define('DEV_MODE', envBool('DEV_MODE', false));
 
-// Open signup is a liability on a SaaS with no payment wall in front of it.
-// Off by default; flip deliberately per environment.
-define('ALLOW_REGISTRATION', envBool('ALLOW_REGISTRATION', false));
+// ALLOW_REGISTRATION was here. It is gone, not defaulted to false (#48).
+//
+// This instance is invite-only: tenants are created by an admin on
+// admin/tenants.php and there is no public sign-up form, route or handler left
+// to enable. A constant that still existed would be a switch with nothing
+// behind it, and the next person to find it would reasonably assume flipping it
+// reopened registration.
 
 // Session cookies are only marked Secure when actually served over HTTPS,
 // otherwise local HTTP development silently loses the session.

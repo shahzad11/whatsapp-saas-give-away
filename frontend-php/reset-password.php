@@ -35,7 +35,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Passwords do not match.';
         } else {
             $hashed = password_hash($password, PASSWORD_DEFAULT);
-            $stmt = $conn->prepare("UPDATE users SET password = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?");
+            // must_change_password is cleared as well (#48). This page serves
+            // two flows now: the ordinary reset, and the password-setup
+            // invitation an admin-created tenant receives. It also catches the
+            // tenant who was given a temporary password and then used "forgot
+            // password" instead of the forced-change page — without this they
+            // would set a working password and still be sent to
+            // set-password.php, which would ask them for a temporary password
+            // that no longer opens anything.
+            $stmt = $conn->prepare(
+                "UPDATE users SET password = ?, must_change_password = 0,
+                                  reset_token = NULL, reset_expires = NULL
+                 WHERE id = ?"
+            );
             $stmt->bind_param("si", $hashed, $user['id']);
             $stmt->execute();
             $stmt->close();

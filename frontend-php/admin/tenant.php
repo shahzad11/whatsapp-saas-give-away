@@ -60,12 +60,25 @@ $audit = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
 $pageTitle = 'Tenant — ' . tenantDisplayName($tenant, $profile);
-require_once dirname(__DIR__) . '/includes/admin-header.php';
-?>
 
-<a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-link text-decoration-none mb-3 px-0">
-    <i class="bi bi-arrow-left me-1"></i>All tenants
-</a>
+// The detail, on its own, for the modal on admin/tenants.php to load (#49).
+//
+// Sent only in reply to our own fetch() — X-Requested-With is the test — so a
+// normal page load is unaffected and clicking a tenant name with JavaScript off
+// still gets the whole page. requireAdmin() has already run, from
+// admin-init.php, before the tenant was even looked up: the fragment is not a
+// second, laxer route to the same data.
+$fragment = isXhrRequest();
+
+if (!$fragment) {
+    require_once dirname(__DIR__) . '/includes/admin-header.php';
+    ?>
+    <a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-link text-decoration-none mb-3 px-0">
+        <i class="bi bi-arrow-left me-1"></i>All tenants
+    </a>
+    <?php
+}
+?>
 
 <div class="row g-4">
     <div class="col-lg-5">
@@ -200,4 +213,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 </div>
 
-<?php require_once dirname(__DIR__) . '/includes/admin-footer.php'; ?>
+<?php
+// The fragment stops here: a modal body must not be handed a </body> or a
+// second copy of the page's scripts.
+if ($fragment) exit;
+require_once dirname(__DIR__) . '/includes/admin-footer.php';
+?>

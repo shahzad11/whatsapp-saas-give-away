@@ -25,7 +25,7 @@ function appSettingDefaults() {
 // fall through to the env constant, which stays the deployment-level default.
 // Listing them here would mask the env value with a hardcoded one.
 //
-// These cannot be constants like ALLOW_REGISTRATION is, because config/app.php
+// These cannot be constants like DEFAULT_PLAN_CODE is, because config/app.php
 // runs before config/database.php — there is no connection to read at the point
 // the constants are defined. Hence accessor functions.
 
@@ -38,13 +38,13 @@ function overrideSetting(?mysqli $conn, $key) {
     return ($value === null || $value === '') ? null : $value;
 }
 
-function allowRegistration(?mysqli $conn = null) {
-    $value = overrideSetting($conn, 'allow_registration');
-    // Fails closed: no connection, no row, or an unreadable table all land on
-    // the env value, which defaults to false. Open signup must never be the
-    // result of a database problem.
-    return $value === null ? ALLOW_REGISTRATION : $value === '1';
-}
+// allowRegistration() was here (#48).
+//
+// It is not a function that returns false — it is gone, along with
+// register.php, the ALLOW_REGISTRATION constant and the `allow_registration`
+// row, which schema.sql now deletes on every apply. Public sign-up cannot be
+// reopened by a setting because there is no longer any code for a setting to
+// reach: tenants are created by an admin through createTenant().
 
 function defaultPlanCode(?mysqli $conn = null) {
     return overrideSetting($conn, 'default_plan_code') ?? DEFAULT_PLAN_CODE;
@@ -202,8 +202,8 @@ function instanceSetupSteps(mysqli $conn) {
             'done'  => $planReady > 0,
         ],
         [
-            'label' => 'Check currency, timezone and sign-up policy',
-            'why'   => 'Prices, every timestamp and whether strangers may register all come from here.',
+            'label' => 'Check currency, timezone and the default plan',
+            'why'   => 'Prices, every timestamp and the plan every new tenant starts on all come from here.',
             'url'   => APP_URL . '/admin/settings.php',
             // Saving the page once writes both rows; until then the instance is
             // running on the built-in defaults, which may be the wrong country.

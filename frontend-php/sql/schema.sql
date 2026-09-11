@@ -125,6 +125,25 @@ CREATE TABLE IF NOT EXISTS users (
     INDEX idx_status (status)
 ) ENGINE=InnoDB;
 
+-- A tenant created by an admin with a temporary password (issue #48) must
+-- replace it before they can do anything else. Enforced in requireLogin(), so
+-- it holds on every authenticated request rather than only on the login page:
+-- a temporary password that an admin read out over the phone is a shared
+-- secret, and it stops being one at first use.
+--
+-- Guarded like the plan columns above, and DEFAULT 0, so every account that
+-- already exists is unaffected.
+SET @add_must_change := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'must_change_password'
+);
+PREPARE stmt_add_must_change FROM @add_must_change;
+EXECUTE stmt_add_must_change;
+DEALLOCATE PREPARE stmt_add_must_change;
+
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -226,6 +245,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
+
+-- Public registration is gone (issue #48), and this row is how it used to be
+-- turned back on.
+--
+-- Deleted rather than left inert, and deleted on every schema apply rather than
+-- once: restoring a database dump taken while sign-up was open would otherwise
+-- carry the row back in. Nothing reads the key any more — allowRegistration()
+-- and the ALLOW_REGISTRATION constant were both removed — so this is belt and
+-- braces against a setting that must never be resurrected by configuration
+-- drift.
+DELETE FROM app_settings WHERE setting_key = 'allow_registration';
 
 -- White-label logo and favicon bytes (issue #23).
 --

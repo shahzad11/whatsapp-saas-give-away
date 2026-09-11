@@ -98,19 +98,19 @@ require_once __DIR__ . '/includes/auth-header.php';
               // revoke it; until that exists, offering the control is a lie. ?>
         <?php // Both links are always present. resend-activation.php answers
               // identically for every address, so offering it unconditionally
-              // reveals nothing — and a signup whose activation mail failed
-              // lands here from register.php, where the page has no way to
-              // know the account is unactivated. ?>
+              // reveals nothing — and it is still the way in for an account
+              // created before #48 that never got its activation mail. An
+              // admin-created tenant uses the password-setup link instead. ?>
         <div class="d-flex justify-content-between align-items-center mb-4">
             <a href="<?= APP_URL ?>/resend-activation.php" class="small text-decoration-none">Resend activation email</a>
             <a href="<?= APP_URL ?>/forgot-password.php" class="small text-decoration-none">Forgot password?</a>
         </div>
-        <button type="submit" class="btn btn-primary w-100 mb-3">Sign In</button>
-        <?php if (allowRegistration($conn)): ?>
-        <p class="text-center small text-muted mb-0">
-            Don't have an account? <a href="<?= APP_URL ?>/register.php" class="text-decoration-none">Create one</a>
-        </p>
-        <?php endif; ?>
+        <?php // No "Create one" link, and no sign-up form behind it (#48). This
+              // instance is invite-only: an admin creates the account and the
+              // tenant receives a link to set their own password. Saying
+              // "contact us for an account" here would be an invitation to email
+              // an address this page does not know. ?>
+        <button type="submit" class="btn btn-primary w-100">Sign In</button>
     </form>
 </div>
 

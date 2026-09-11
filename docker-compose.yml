@@ -79,7 +79,6 @@ services:
       MYSQL_USER: ${MYSQL_USER:?required}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
       SESSION_SECURE: ${SESSION_SECURE:-true}
-      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
       DEV_MODE: ${DEV_MODE:-false}
       DEFAULT_PLAN_CODE: ${DEFAULT_PLAN_CODE:-free}
       MAIL_FROM: ${MAIL_FROM:-noreply@${APP_HOST}}

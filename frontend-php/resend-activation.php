@@ -6,9 +6,11 @@ requireGuest();
 // stranded permanently: is_active stayed 0, the only key was in an email that
 // never arrived, and login.php just repeated "check your email".
 //
-// register.php no longer gates accounts at all when SMTP is unconfigured, so
-// this page exists for the other case — SMTP works, but that one send failed
-// (greylisting, a transient 4xx, a typo'd relay since fixed).
+// Public sign-up is gone (#48) and an admin-created tenant is never gated on
+// activation — it receives a password-setup link instead — so nothing produces
+// new unactivated accounts any more. This page stays for the ones that already
+// exist: an account registered before #48 whose activation mail was lost to
+// greylisting, a transient 4xx or a relay since fixed still has no other way in.
 
 $error = '';
 $success = '';

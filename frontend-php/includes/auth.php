@@ -19,6 +19,37 @@ function requireLogin() {
         flash('error', 'Your account is no longer active. Please contact support.');
         redirect(APP_URL . '/login.php');
     }
+
+    requirePasswordChanged($user);
+}
+
+// A tenant given a temporary password by an admin (#48) can do exactly one
+// thing until they replace it.
+//
+// Enforced here, on every authenticated request, rather than once at login. A
+// temporary password is a secret that an admin has read out or pasted into a
+// message, so it is already shared by the time it is first used; checking only
+// at the login page would let anything reached by a direct URL — an AJAX
+// endpoint, an export — be used with it indefinitely.
+//
+// The exemptions are the pages needed to comply and to leave. Without them this
+// redirects to itself forever.
+function requirePasswordChanged($user) {
+    if (empty($user['must_change_password'])) return;
+
+    $page = currentPage();
+    if (in_array($page, ['set-password', 'logout'], true)) return;
+
+    // An XHR caller cannot follow a 302 to an HTML page in any useful way — it
+    // would parse the login form as JSON and report a broken server — so it is
+    // told plainly what is wrong and where to go.
+    if (function_exists('isXhrRequest') && isXhrRequest()) {
+        jsonOut(['ok' => false, 'errors' => [],
+                 'message' => 'Set a permanent password before continuing.',
+                 'redirect' => APP_URL . '/set-password.php'], 403);
+    }
+
+    redirect(APP_URL . '/set-password.php');
 }
 
 function isAdmin() {
@@ -55,7 +86,8 @@ function getCurrentUser() {
     global $conn;
     $id = (int)$_SESSION['user_id'];
     $stmt = $conn->prepare(
-        "SELECT id, name, email, avatar, is_active, is_admin, status, plan_id, created_at
+        "SELECT id, name, email, avatar, is_active, is_admin, status, plan_id,
+                must_change_password, created_at
          FROM users WHERE id = ?"
     );
     $stmt->bind_param("i", $id);

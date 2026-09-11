@@ -178,10 +178,9 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${APP_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD}"
 ADMIN_NAME="Administrator"
 
-# Public sign-up. Off by default: there is no payment wall in front of it, so an
-# open instance is a liability. The admin dashboard can turn it on, and that
-# setting wins over this value — this is the floor a fresh install starts from.
-ALLOW_REGISTRATION="false"
+# ALLOW_REGISTRATION is deliberately absent (#48). There is no public sign-up
+# form to enable: a fresh install has one admin, created from ADMIN_EMAIL above,
+# and every tenant after that is added from /admin/tenants.php.
 
 # Marks the session cookie Secure, so it is never sent over plain HTTP. Correct
 # for every real deployment (this stack is HTTPS-only behind Traefik). Setting it

@@ -79,6 +79,38 @@ function mailPasswordReset($name, $link, $expiryHours = 1) {
     return [$html, $text];
 }
 
+// The invitation an admin-created tenant receives (#48).
+//
+// Deliberately not mailPasswordReset() with different wording. A reset says "if
+// you did not request this, ignore it" — exactly the wrong advice here, because
+// nobody requested this and ignoring it means never getting an account. The
+// recipient has to be told who set it up and what it is for, or a link asking
+// them to choose a password reads like phishing.
+//
+// The expiry is stated in days rather than hours: it is a week, and "168
+// hour(s)" is not how anyone reads a week.
+function mailTenantInvite($name, $link, $expiryHours = 168) {
+    $brand = brandName();
+    $days = max(1, (int)round($expiryHours / 24));
+    $window = $days === 1 ? '1 day' : $days . ' days';
+
+    $html = mailLayout(
+        'Set up your ' . sanitize($brand) . ' account',
+        '<p>Hello ' . sanitize($name) . ',</p>'
+        . '<p>An account has been created for you on ' . sanitize($brand)
+        . '. Choose a password to finish setting it up and sign in.</p>'
+        . mailButton($link, 'Choose my password')
+        . '<p style="margin-top:20px;color:#64748b;font-size:13px;">'
+        . 'This link can only be used once and expires in ' . sanitize($window) . '. '
+        . 'If it has already expired, ask whoever set up your account to send a new one.</p>'
+    );
+    $text = "Hello {$name},\n\nAn account has been created for you on {$brand}. "
+        . "Choose a password to finish setting it up:\n\n{$link}\n\n"
+        . "This link can only be used once and expires in {$window}. "
+        . "If it has already expired, ask whoever set up your account to send a new one.\n";
+    return [$html, $text];
+}
+
 function mailPlanExpiring($name, $planName, $endDate, $instructions, $billingUrl) {
     $days = (int)ceil((strtotime($endDate) - time()) / 86400);
     $when = $days > 0 ? "in {$days} day(s)" : 'today';

@@ -9,6 +9,16 @@
 //
 // Expects, from admin/plans.php: $editing, $chatModels, $grantedModelIds,
 // $errors (via pErr()/pCls()), and priceInputValue().
+//
+// A partial is not a route. Apache denies this whole directory, but a fragment
+// that renders admin markup must not depend on the web server being configured
+// correctly to stay admin-only (#48) — so it also refuses to run unless a page
+// that has already passed requireAdmin() included it. csrfField() only exists
+// once config/init.php has run, which is the cheapest true test of that.
+if (!function_exists('csrfField')) {
+    http_response_code(404);
+    exit;
+}
 ?>
 <form method="POST" data-ajax id="planForm">
     <?= csrfField() ?>

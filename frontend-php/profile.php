@@ -126,7 +126,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             formErrors('Passwords do not match.', $fieldErrors);
         } else {
             $hashed = password_hash($newPassword, PASSWORD_DEFAULT);
-            $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
+            // must_change_password is cleared here too, not only on
+            // set-password.php. A flagged tenant cannot reach this page today —
+            // requireLogin() sends them to set-password.php first — but a
+            // password they chose is a password they chose, whichever form took
+            // it, and leaving the flag set would loop them straight back.
+            $stmt = $conn->prepare("UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?");
             $stmt->bind_param('si', $hashed, $userId);
             $stmt->execute();
             $stmt->close();
