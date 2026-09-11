@@ -243,16 +243,7 @@ function leadsSearch(mysqli $conn, array $params) {
                 'results' => [], 'next' => null, 'resolved_ll' => null];
     }
 
-    // The resolved coordinates, so the ledger records the search that actually
-    // ran rather than the text that was typed. SerpApi echoes the parameters it
-    // used, and a `location` text has become an `ll` by then; the maps URL is
-    // the fallback for the shapes that do not echo it.
-    $resolvedLl = null;
-    if (!empty($body['search_parameters']['ll'])) {
-        $resolvedLl = (string)$body['search_parameters']['ll'];
-    } elseif (preg_match('/[?&]ll=([^&]+)/', (string)($body['search_metadata']['google_maps_url'] ?? ''), $m)) {
-        $resolvedLl = urldecode($m[1]);
-    }
+    $resolvedLl = leadsResolvedLl($body);
 
     return [
         'ok' => true,
@@ -263,6 +254,34 @@ function leadsSearch(mysqli $conn, array $params) {
         'next' => leadsStripKey($body['serpapi_pagination']['next'] ?? null),
         'resolved_ll' => $resolvedLl !== null ? mb_substr($resolvedLl, 0, 64) : null,
     ];
+}
+
+// The coordinates the search actually ran at.
+//
+// This is the thing a `location` text search cannot be repeated without, and
+// finding it is fiddlier than it looks. Verified against live responses:
+//
+//   - Passing `location=Lahore, Pakistan` does **not** produce an `ll` in
+//     `search_parameters`. SerpApi echoes `location_requested` and
+//     `location_used` instead, and the resolved coordinates appear only inside
+//     `search_metadata.google_maps_url`, in Google's own `@lat,lng,zoom` form —
+//     not as an `ll=` query parameter.
+//   - Passing `ll` directly, and following a `serpapi_pagination.next` URL,
+//     *do* echo `ll` in `search_parameters`.
+//
+// So both shapes are read, `ll` first. An earlier version looked only for
+// `ll=` in the URL, which matched neither, and every ledger row recorded NULL.
+function leadsResolvedLl(array $body) {
+    if (!empty($body['search_parameters']['ll'])) {
+        return mb_substr((string)$body['search_parameters']['ll'], 0, 64);
+    }
+
+    $url = (string)($body['search_metadata']['google_maps_url'] ?? '');
+    // @31.5546061,74.3571581,20000.0m  or  @40.745,-74.008,14z
+    if (preg_match('/@(-?\d+\.?\d*),(-?\d+\.?\d*),([\d.]+[a-z])/i', $url, $m)) {
+        return mb_substr('@' . $m[1] . ',' . $m[2] . ',' . $m[3], 0, 64);
+    }
+    return null;
 }
 
 // Removes api_key from a URL before it is sent to the browser. SerpApi does not

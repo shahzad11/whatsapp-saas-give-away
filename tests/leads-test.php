@@ -172,6 +172,40 @@ check('a URL with no key is left usable',
 check('nothing in, nothing out', leadsStripKey(null) === null && leadsStripKey('') === null);
 
 // ---------------------------------------------------------------------------
+group('The coordinates a search actually ran at are recovered');
+
+// These two fixtures are copied from real responses, because the first one is
+// exactly what the original implementation got wrong: a `location` text search
+// echoes no `ll` at all, and looking for one recorded NULL in every ledger row.
+equals('a location-text search resolves from the maps URL, not from ll',
+    '@31.5546061,74.3571581,20000.0m',
+    leadsResolvedLl([
+        'search_parameters' => [
+            'q' => 'dentist',
+            'location_requested' => 'Lahore, Pakistan',
+            'location_used' => 'Lahore,Punjab,Pakistan',
+            'm' => 20000,
+        ],
+        'search_metadata' => [
+            'google_maps_url' => 'https://www.google.com/maps/search/dentist/'
+                . '@31.5546061,74.3571581,20000.0m/data=!3m1!4b1',
+        ],
+    ]));
+
+equals('an explicit ll (and a followed next page) is used directly',
+    '@40.7455096,-74.0083012,14z',
+    leadsResolvedLl(['search_parameters' => ['ll' => '@40.7455096,-74.0083012,14z']]));
+
+equals('a zoom-style maps URL with a negative longitude',
+    '@40.745,-74.008,14z',
+    leadsResolvedLl(['search_metadata' =>
+        ['google_maps_url' => 'https://www.google.com/maps/search/x/@40.745,-74.008,14z/data=!3m1']]));
+
+check('nothing to find is NULL, not a broken string', leadsResolvedLl([]) === null);
+check('a maps URL with no coordinates is NULL',
+    leadsResolvedLl(['search_metadata' => ['google_maps_url' => 'https://www.google.com/maps']]) === null);
+
+// ---------------------------------------------------------------------------
 group('wa.me links are only built from a number we trust');
 
 equals('a good number becomes a wa.me link',
