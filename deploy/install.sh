@@ -32,13 +32,66 @@ BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 DEPLOY_ROOT="${DEPLOY_ROOT:-/opt}"
 RELOCATE="${RELOCATE:-true}"
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# --- Self-bootstrap ---------------------------------------------------------
+#
+# The documented install fetches this script alone with curl and runs it from
+# wherever it landed, e.g. /tmp/wa-install.sh. There $0's dirname is /tmp, so
+# `dirname "$0"/..` resolves REPO_ROOT to / and the relocation tar below would
+# archive the entire filesystem — /proc, /sys, /dev, the destination itself —
+# into /opt/<host>. Detect whether we sit in a real checkout (both the compose
+# file and this script at its known path, so a stray lookalike cannot pass);
+# if not, fetch the full repo and re-exec this script from inside it. curl, not
+# git: a minimal Docker host may lack git, but must have curl or the student
+# could never have fetched this script. WA_BOOTSTRAPPED breaks the loop if the
+# re-exec still does not land in a checkout.
+WA_REPO="${WA_REPO:-shahzad11/whatsapp-saas-give-away}"
+WA_REPO_REF="${WA_REPO_REF:-main}"
+WA_REPO_TARBALL="${WA_REPO_TARBALL:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ ! -f "${SCRIPT_DIR}/../docker-compose.yml" || ! -f "${SCRIPT_DIR}/../deploy/install.sh" ]]; then
+  if [[ -n "${WA_BOOTSTRAPPED:-}" ]]; then
+    echo "FATAL: bootstrap re-exec did not land inside a repo checkout (${SCRIPT_DIR})" >&2
+    exit 1
+  fi
+  BOOTSTRAP_DIR="$(mktemp -d)"
+  if [[ -n "$WA_REPO_TARBALL" ]]; then
+    TARBALL_SRC="$WA_REPO_TARBALL"
+  else
+    TARBALL_SRC="https://codeload.github.com/${WA_REPO}/tar.gz/refs/heads/${WA_REPO_REF}"
+  fi
+  echo "==> Fetching ${WA_REPO}@${WA_REPO_REF}"
+  if [[ -f "$TARBALL_SRC" ]]; then
+    cat "$TARBALL_SRC"
+  else
+    curl -fsSL -- "$TARBALL_SRC"
+  fi | tar -xzf - --strip-components=1 -C "$BOOTSTRAP_DIR" || {
+    echo "FATAL: could not download/extract ${TARBALL_SRC}" >&2
+    exit 1
+  }
+  export WA_BOOTSTRAPPED=1
+  # Invoked through bash rather than directly: tar preserves the exec bit, but a
+  # restrictive umask or a filesystem mounted noexec would otherwise strand us.
+  exec bash "$BOOTSTRAP_DIR/deploy/install.sh" "$@"
+fi
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Defence in depth: the bootstrap above should make this unreachable, but if any
+# future invocation path still resolves REPO_ROOT to / — or to anywhere that is
+# not a checkout — stop here, before the relocation tar can run with the whole
+# filesystem as its working directory.
+if [[ "$REPO_ROOT" == "/" || ! -f "${REPO_ROOT}/docker-compose.yml" ]]; then
+  echo "FATAL: ${REPO_ROOT} is not a repo checkout — refusing to continue" >&2
+  exit 1
+fi
 cd "$REPO_ROOT"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "FATAL: $1 is required" >&2; exit 1; }; }
 need docker
 need openssl
 need tar
+need curl
 
 if ! docker compose version >/dev/null 2>&1; then
   echo "FATAL: docker compose v2 is required" >&2
@@ -56,7 +109,7 @@ fi
 HOST_IS_VERBATIM=false
 if [[ -z "$DOMAIN_INPUT" && -n "$EXISTING_HOST" ]]; then
   # An existing .env already holds a fully-qualified host. Take it as-is: it may
-  # predate the app.<domain> convention (e.g. srv1931558.hstgr.cloud), and
+  # predate the app.<domain> convention (e.g. a bare srv123456.hstgr.cloud), and
   # prefixing it would repoint a live deployment at a name with no certificate.
   DOMAIN_INPUT="$EXISTING_HOST"
   HOST_IS_VERBATIM=true
@@ -190,7 +243,7 @@ SESSION_SECURE="true"
 
 DEV_MODE="false"
 
-# Plan code assigned to every new tenant. Must match a `code` in the plans table
+# Plan code assigned to every new tenant. Must match a \`code\` in the plans table
 # — the seeded plans are free / starter / business. The admin dashboard can
 # change it; a code that matches nothing leaves new tenants with no plan.
 DEFAULT_PLAN_CODE="free"
