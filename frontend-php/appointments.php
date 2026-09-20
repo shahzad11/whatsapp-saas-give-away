@@ -288,7 +288,7 @@ require_once __DIR__ . '/includes/header.php';
         <form method="get" class="row g-2 align-items-end">
             <div class="col-md-3">
                 <label class="form-label small">Status</label>
-                <select name="status" class="form-select form-select-sm">
+                <select name="status" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <?php // From the same map the badges use, so the filter and the
                           // column can never disagree about what a status is called. ?>
                     <?php foreach (APPT_STATUS_LABELS + ['all' => 'All'] as $k => $v): ?>
@@ -338,24 +338,24 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
     <div class="table-responsive">
-        <table class="table table-sm align-middle mb-0">
+        <table class="table table-sm align-middle mb-0 table-stack">
             <thead><tr><th>When</th><th>Service</th><th>Customer</th><th>Source</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
             <tbody>
             <?php if (!$appointments): ?>
-                <tr><td colspan="6" class="text-muted small p-3">Nothing matches those filters.</td></tr>
+                <tr class="is-note"><td colspan="6" class="text-muted small p-3">Nothing matches those filters.</td></tr>
             <?php endif; ?>
             <?php foreach ($appointments as $a):
                 $localWhen = convertToUserTz($a['scheduled_at'], $tz);
                 $isPast = strtotime($a['scheduled_at'] . ' UTC') < time();
             ?>
                 <tr>
-                    <td>
+                    <td data-label="When">
                         <div class="small fw-500"><?= sanitize(date('D j M Y', strtotime($localWhen))) ?></div>
                         <div class="x-small text-muted"><?= sanitize(date('H:i', strtotime($localWhen))) ?>
                             · <?= (int)$a['duration_minutes'] ?> min</div>
                     </td>
-                    <td class="small"><?= sanitize($a['service_name']) ?></td>
-                    <td class="small">
+                    <td class="small" data-label="Service"><?= sanitize($a['service_name']) ?></td>
+                    <td class="small" data-label="Customer">
                         <?= sanitize($a['customer_name'] ?: '—') ?>
                         <?php if ($a['customer_phone']): ?>
                             <div class="x-small text-muted">+<?= sanitize($a['customer_phone']) ?></div>
@@ -363,8 +363,8 @@ require_once __DIR__ . '/includes/header.php';
                     </td>
                     <?php // Where the booking came from labels the row rather than
                           // describing its state, so it is a tag, not a pill (#33 §7). ?>
-                    <td><span class="badge-tag"><?= sanitize($a['source']) ?></span></td>
-                    <td>
+                    <td data-label="Source"><span class="badge-tag"><?= sanitize($a['source']) ?></span></td>
+                    <td data-label="Status">
                         <?php // The vocabulary lives in includes/appointments.php. This
                               // used to print the stored value, so a tenant was shown the
                               // string "no_show". ?>
@@ -381,45 +381,77 @@ require_once __DIR__ . '/includes/header.php';
                                   // which loses the note and the audit trail. The href is the
                                   // anchor of the real form below, so this is still a working
                                   // link with JavaScript off. ?>
-                            <a href="#apptMoveForm" class="btn btn-outline-primary btn-sm"
-                               data-modal-target="#apptMoveModal" data-modal-title="Move appointment"
-                               data-field-id="<?= (int)$a['id'] ?>"
-                               data-field-scheduled-local="<?= sanitize(date('Y-m-d\TH:i', strtotime($localWhen))) ?>">Move</a>
-                            <?php // Only the two endings a customer would notice are confirmed.
-                                  // "Done" is the ordinary outcome and reversible with Reopen,
-                                  // so a dialog on it would only teach people to dismiss
-                                  // dialogs. data-confirm replaces an inline confirm() rather
-                                  // than joining one — both would ask twice. ?>
-                            <?php foreach ([
-                                ['completed', 'Done', 'success', ''],
-                                ['no_show', 'No-show', 'warning', 'Mark this customer as a no-show? Their reminders stop and the slot is freed.'],
-                                // #45: the customer *is* told now, so the dialog
-                                // says so — a tenant deciding whether to cancel
-                                // is deciding whether to send that message.
-                                ['cancelled', 'Cancel', 'danger', 'Cancel this appointment? The customer is told on WhatsApp and their reminders stop.'],
-                            ] as [$act, $label, $colour, $confirm]): ?>
-                                <form method="post" class="d-inline" data-ajax>
-                                    <?= csrfField() ?>
-                                    <input type="hidden" name="action" value="<?= $act ?>">
-                                    <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
-                                    <button class="btn btn-outline-<?= $colour ?> btn-sm" type="submit"
-                                        <?= $confirm === '' ? '' : 'data-confirm="' . sanitize($confirm) . '"' ?>><?= $label ?></button>
-                                </form>
-                            <?php endforeach; ?>
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown"
+                                        data-bs-popper-config='{"strategy":"fixed"}'
+                                        aria-label="Actions for this appointment">Actions</button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li>
+                                        <a class="dropdown-item" href="#apptMoveForm"
+                                           data-modal-target="#apptMoveModal" data-modal-title="Move appointment"
+                                           data-field-id="<?= (int)$a['id'] ?>"
+                                           data-field-scheduled-local="<?= sanitize(date('Y-m-d\TH:i', strtotime($localWhen))) ?>">Move</a>
+                                    </li>
+                                    <?php // Only the two endings a customer would notice are confirmed.
+                                          // "Done" is the ordinary outcome and reversible with Reopen,
+                                          // so a dialog on it would only teach people to dismiss
+                                          // dialogs. data-confirm replaces an inline confirm() rather
+                                          // than joining one — both would ask twice. ?>
+                                    <li>
+                                        <form method="post" data-ajax>
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="completed">
+                                            <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                            <button class="dropdown-item" type="submit">Done</button>
+                                        </form>
+                                    </li>
+                                    <li>
+                                        <form method="post" data-ajax>
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="no_show">
+                                            <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                            <button class="dropdown-item text-warning" type="submit"
+                                                data-confirm="Mark this customer as a no-show? Their reminders stop and the slot is freed.">No-show</button>
+                                        </form>
+                                    </li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li>
+                                        <?php // #45: the customer *is* told now, so the dialog
+                                              // says so — a tenant deciding whether to cancel
+                                              // is deciding whether to send that message. ?>
+                                        <form method="post" data-ajax>
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="cancelled">
+                                            <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                            <button class="dropdown-item text-danger" type="submit"
+                                                data-confirm="Cancel this appointment? The customer is told on WhatsApp and their reminders stop.">Cancel</button>
+                                        </form>
+                                    </li>
+                                </ul>
+                            </div>
                         <?php else: ?>
                             <?php // Not confirmed: reopening puts a booking back the way it
                                   // was, and the clash check runs on the next move anyway. ?>
-                            <form method="post" class="d-inline" data-ajax>
-                                <?= csrfField() ?>
-                                <input type="hidden" name="action" value="booked">
-                                <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
-                                <button class="btn btn-outline-secondary btn-sm" type="submit">Reopen</button>
-                            </form>
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown"
+                                        data-bs-popper-config='{"strategy":"fixed"}'
+                                        aria-label="Actions for this appointment">Actions</button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li>
+                                        <form method="post" data-ajax>
+                                            <?= csrfField() ?>
+                                            <input type="hidden" name="action" value="booked">
+                                            <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                            <button class="dropdown-item" type="submit">Reopen</button>
+                                        </form>
+                                    </li>
+                                </ul>
+                            </div>
                         <?php endif; ?>
                     </td>
                 </tr>
                 <?php if (!empty($a['notes'])): ?>
-                    <tr><td colspan="6" class="x-small text-muted pt-0">Note: <?= sanitize($a['notes']) ?></td></tr>
+                    <tr class="is-note"><td colspan="6" class="x-small text-muted pt-0">Note: <?= sanitize($a['notes']) ?></td></tr>
                 <?php endif; ?>
                 <?php // #45: a change the customer was not told about is said on
                       // the row it belongs to, not only in the toast that has
@@ -428,7 +460,7 @@ require_once __DIR__ . '/includes/header.php';
                       // there is nothing to try again.
                       $notice = $notices[(int)$a['id']] ?? null; ?>
                 <?php if ($notice): ?>
-                    <tr class="table-warning">
+                    <tr class="table-warning is-note">
                         <td colspan="6" class="x-small pt-0">
                             <i class="bi bi-exclamation-triangle me-1"></i>
                             <?php if ($notice['status'] === 'failed'): ?>

@@ -224,14 +224,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <?php // What this page is for, in one paragraph, before any of the jargon below.
       // An admin arriving here for the first time was expected to already know
       // what a provider, a model id and a base URL are. ?>
-<div class="alert alert-light border small">
-    <strong>What this page does.</strong>
+<details class="alert alert-light border small mb-3">
+    <summary class="fw-600">How this page works</summary>
     The chatbot cannot write a reply on its own — it asks an AI company (a <em>provider</em>) to do it,
     over the internet, using an account you hold with them. So there are three steps:
     add a provider's <em>API key</em> below, decide which <em>models</em> may be used, and choose which
     <a href="<?= APP_URL ?>/admin/plans.php">plans</a> may use which model. Tenants then pick from what
     their plan allows, on their own Chatbot page. You pay the provider directly for what is used.
-</div>
+</details>
 
 <div class="row g-3">
     <div class="col-lg-7">
@@ -243,6 +243,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     it is how they know the usage is yours to pay for. Keys are encrypted at rest and never
                     displayed again. Leave the key field blank to keep the stored one. A provider with no
                     key cannot be selected by any tenant. You only need one provider for the chatbot to work.
+                </p>
+                <p class="form-text">
+                    Base URL is optional — only change it if you route through a proxy or a compatible
+                    service. Test connection tries the key typed in the card, or the stored one if the
+                    field is blank — testing does not save.
                 </p>
 
                 <?php // One form per provider, each saving in place (#24). Not a modal:
@@ -293,10 +298,6 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <input type="text" name="base_url" class="form-control form-control-sm"
                                    value="<?= sanitize($p['row']['base_url'] ?? '') ?>"
                                    placeholder="<?= sanitize($p['meta']['base_url']) ?>">
-                            <div class="form-text">
-                                Leave blank. Only change this if you route through a proxy or a
-                                compatible service instead of the vendor itself.
-                            </div>
                         </div>
                     </div>
 
@@ -314,13 +315,6 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php if ($p['row']): ?>
                             <button class="btn btn-outline-secondary btn-sm" type="submit"
                                     name="action" value="test_provider">Test connection</button>
-                            <?php // Test sends whatever is typed above, falling back to the stored
-                                  // key when the field is blank. Saying so removes the doubt about
-                                  // whether a pasted key has to be saved before it can be tested. ?>
-                            <span class="form-text mb-0">
-                                Tests the key typed above, or the stored one if you leave it blank.
-                                Testing does not save.
-                            </span>
                         <?php endif; ?>
                     </div>
                 </form>
@@ -403,7 +397,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <input type="text" name="model_code" class="form-control form-control-sm"
                                placeholder="gpt-4o-mini" required>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label class="form-label small">Label</label>
                         <input type="text" name="model_label" class="form-control form-control-sm" placeholder="GPT-4o mini">
                     </div>
@@ -414,7 +408,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <option value="transcribe">transcribe</option>
                         </select>
                     </div>
-                    <div class="col-md-1">
+                    <div class="col-md-2">
                         <button class="btn btn-primary btn-sm w-100" type="submit">Add</button>
                     </div>
                 </form>

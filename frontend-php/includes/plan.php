@@ -61,7 +61,10 @@ function countWaAccounts(mysqli $conn, $userId) {
 function countContacts(mysqli $conn, $userId) {
     $stmt = $conn->prepare(
         "SELECT COUNT(*) AS c FROM wa_contacts c
-         JOIN wa_accounts a ON c.account_id = a.id WHERE a.user_id = ?"
+         JOIN wa_accounts a ON c.account_id = a.id WHERE a.user_id = ?
+           AND c.chat_id NOT IN ('status@broadcast', '0@s.whatsapp.net')
+           AND c.chat_id NOT LIKE '%@newsletter'
+           AND c.chat_id NOT LIKE '%@broadcast'"
     );
     $stmt->bind_param('i', $userId);
     $stmt->execute();

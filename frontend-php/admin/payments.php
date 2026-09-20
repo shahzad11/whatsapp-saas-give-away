@@ -351,7 +351,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
     <div class="table-responsive">
-        <table class="table align-middle mb-0">
+        <table class="table align-middle mb-0 table-stack">
             <thead>
                 <tr><th>Date</th><th>Tenant</th><th>Amount</th><th>Plan</th><th>Period</th><th>Method</th><th>Reference</th><th>Logged by</th></tr>
             </thead>
@@ -361,20 +361,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($payments as $p): ?>
                 <tr>
-                    <td class="small text-muted"><?= sanitize(date('M j, Y', strtotime($p['created_at']))) ?></td>
-                    <td class="small">
+                    <td class="small text-muted" data-label="Date"><?= sanitize(date('M j, Y', strtotime($p['created_at']))) ?></td>
+                    <td class="small" data-label="Tenant">
                         <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$p['user_id'] ?>" class="text-decoration-none">
                             <?= sanitize($p['tenant_name']) ?>
                         </a>
                     </td>
-                    <td class="small fw-500"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
-                    <td class="small"><?= sanitize($p['plan_name'] ?? '—') ?></td>
-                    <td class="small text-muted">
+                    <td class="small fw-500" data-label="Amount"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
+                    <td class="small" data-label="Plan"><?= sanitize($p['plan_name'] ?? '—') ?></td>
+                    <td class="small text-muted" data-label="Period">
                         <?= $p['period_start'] ? sanitize(date('M j', strtotime($p['period_start']))) . ' – ' . sanitize(date('M j, Y', strtotime($p['period_end']))) : '—' ?>
                     </td>
-                    <td class="small"><?= sanitize(paymentMethodLabel($p['method'])) ?></td>
-                    <td class="small text-muted"><?= sanitize($p['reference'] ?? '—') ?></td>
-                    <td class="small text-muted"><?= sanitize($p['logged_by'] ?? '—') ?></td>
+                    <td class="small" data-label="Method"><?= sanitize(paymentMethodLabel($p['method'])) ?></td>
+                    <td class="small text-muted" data-label="Reference"><?= sanitize($p['reference'] ?? '—') ?></td>
+                    <td class="small text-muted" data-label="Logged by"><?= sanitize($p['logged_by'] ?? '—') ?></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>

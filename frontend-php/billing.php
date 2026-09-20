@@ -192,20 +192,20 @@ require_once __DIR__ . '/includes/header.php';
         <div class="card table-card h-100">
             <div class="card-header"><i class="bi bi-receipt"></i>Payment history</div>
             <div class="table-responsive">
-                <table class="table align-middle mb-0">
+                <table class="table align-middle mb-0 table-stack">
                     <thead><tr><th>Date</th><th class="num">Amount</th><th>Plan</th><th>Period</th><th>Method</th></tr></thead>
                     <tbody>
                     <?php foreach ($payments as $p): ?>
                         <tr>
-                            <td class="small text-muted"><?= sanitize(formatUserDate($p['created_at'], $tz)) ?></td>
-                            <td class="small fw-500 num"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
-                            <td class="small"><?= sanitize($p['plan_name'] ?? '—') ?></td>
+                            <td class="small text-muted" data-label="Date"><?= sanitize(formatUserDate($p['created_at'], $tz)) ?></td>
+                            <td class="small fw-500 num" data-label="Amount"><?= sanitize(formatMoney((int)$p['amount_minor'], $p['currency'])) ?></td>
+                            <td class="small" data-label="Plan"><?= sanitize($p['plan_name'] ?? '—') ?></td>
                             <?php // Both are DATE columns, so no timezone conversion —
                                   // see "Paid through" above. ?>
-                            <td class="small text-muted">
+                            <td class="small text-muted" data-label="Period">
                                 <?= $p['period_start'] ? sanitize(date('M j', strtotime($p['period_start']))) . ' – ' . sanitize(date('M j, Y', strtotime($p['period_end']))) : '—' ?>
                             </td>
-                            <td class="small"><?= sanitize(paymentMethodLabel($p['method'])) ?></td>
+                            <td class="small" data-label="Method"><?= sanitize(paymentMethodLabel($p['method'])) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -218,8 +218,19 @@ require_once __DIR__ . '/includes/header.php';
 <?php endif; ?>
 
 <h5 class="mt-5 mb-3">Available Plans</h5>
+<?php
+// On a paid plan, cheaper plans are a downgrade — and with no contact route a
+// downgrade is a dead end, so they are not offered.
+$currentPrice = (int)($plan['price_cents'] ?? 0);
+$shownPlans = $plan && $currentPrice > 0
+    ? array_values(array_filter($plans, fn($p) => (int)($p['price_cents'] ?? 0) >= $currentPrice))
+    : $plans;
+?>
+<?php if (count($shownPlans) <= 1): ?>
+    <p class="text-muted small">You are on the highest plan.</p>
+<?php else: ?>
 <div class="row g-4">
-    <?php foreach ($plans as $p): ?>
+    <?php foreach ($shownPlans as $p): ?>
     <div class="col-md-4">
         <div class="card h-100 <?= ($plan && $p['id'] == $plan['id']) ? 'border-primary' : '' ?>">
             <div class="card-body d-flex flex-column">
@@ -302,10 +313,9 @@ require_once __DIR__ . '/includes/header.php';
                                   // button that opens a blank mail window (or the old
                                   // fallback: the instance's no-reply SMTP sender) is worse
                                   // than a sentence that tells the truth. ?>
-                            <button class="btn btn-outline-secondary w-100" disabled
-                                    title="No contact method has been set up on this instance yet.">
-                                Contact your administrator
-                            </button>
+                            <span class="text-muted small d-block text-center">
+                                Ask your administrator to switch you
+                            </span>
                         <?php endif; ?>
                     <?php endif; ?>
                 </div>
@@ -314,5 +324,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
     <?php endforeach; ?>
 </div>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

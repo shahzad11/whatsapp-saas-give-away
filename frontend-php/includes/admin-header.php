@@ -109,12 +109,9 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                         aria-label="Toggle navigation" aria-controls="appSidebar">
                     <i class="bi bi-list fs-4"></i>
                 </button>
-                <h5 class="mb-0"><?= sanitize($pageTitle) ?></h5>
+                <h1 class="h5 mb-0"><?= sanitize($pageTitle) ?></h1>
             </div>
             <div class="d-flex align-items-center gap-3">
-                <a href="<?= APP_URL ?>/dashboard.php" class="btn btn-sm btn-outline-secondary">
-                    <i class="bi bi-box-arrow-left me-1"></i>Exit to app
-                </a>
                 <a href="<?= APP_URL ?>/logout.php" class="btn btn-sm btn-link text-danger text-decoration-none">
                     <i class="bi bi-box-arrow-right me-1"></i>Logout
                 </a>

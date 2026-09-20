@@ -81,7 +81,12 @@ if (($_GET['export'] ?? '') === 'csv') {
 
 $categories = leadCategories($conn);
 $areas = leadAreas($conn);
-$saved = leadsList($conn, $filters, 500);
+$perPage = 25;
+$page = max(1, (int)($_GET['page'] ?? 1));
+$totalFiltered = leadsCount($conn, $filters);
+$totalPages = max(1, (int)ceil($totalFiltered / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+$saved = leadsList($conn, $filters, $perPage, ($page - 1) * $perPage);
 $sources = leadsSourceValues($conn);
 
 // The area the search box starts on, from Settings → Lead search. Never blank:
@@ -212,7 +217,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <?php // --- Saved leads ---------------------------------------------------- ?>
 <div class="card table-card">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Saved leads</span>
+        <span>Saved leads · <?= number_format($totalFiltered) ?> total</span>
         <?php // The export carries the current filters, so the file matches the
               // table. Built from the same $filters the query already used. ?>
         <a class="btn btn-sm btn-outline-secondary"
@@ -231,7 +236,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                   // dropdowns can only ever select something that returns rows. ?>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Category</label>
-                <select name="category" class="form-select form-select-sm">
+                <select name="category" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">All categories</option>
                     <?php foreach ($sources['categories'] as $c): ?>
                         <option value="<?= sanitize($c['value']) ?>"
@@ -244,7 +249,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Area</label>
-                <select name="area" class="form-select form-select-sm">
+                <select name="area" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">All areas</option>
                     <?php foreach ($sources['areas'] as $a): ?>
                         <option value="<?= sanitize($a['value']) ?>"
@@ -260,7 +265,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Website</label>
-                <select name="website" class="form-select form-select-sm">
+                <select name="website" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">Any</option>
                     <option value="no" <?= $filters['website'] === 'no' ? 'selected' : '' ?>>No website</option>
                     <option value="yes" <?= $filters['website'] === 'yes' ? 'selected' : '' ?>>Has a website</option>
@@ -268,14 +273,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-2">
                 <label class="form-label x-small text-muted mb-1">Phone</label>
-                <select name="phone" class="form-select form-select-sm">
+                <select name="phone" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">Any</option>
                     <option value="yes" <?= $filters['phone'] === 'yes' ? 'selected' : '' ?>>Has a number</option>
                 </select>
             </div>
             <div class="col-md-2">
                 <label class="form-label x-small text-muted mb-1">Rating</label>
-                <select name="min_rating" class="form-select form-select-sm">
+                <select name="min_rating" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">Any</option>
                     <?php foreach (['3.0', '3.5', '4.0', '4.5'] as $r): ?>
                         <option value="<?= $r ?>" <?= $filters['min_rating'] === $r ? 'selected' : '' ?>><?= $r ?>+</option>
@@ -284,7 +289,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Sort</label>
-                <select name="sort" class="form-select form-select-sm">
+                <select name="sort" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <?php foreach (['recent' => 'Recently seen', 'new' => 'Newest', 'rating' => 'Rating',
                                     'reviews' => 'Most reviews', 'name' => 'Name'] as $v => $l): ?>
                         <option value="<?= $v ?>" <?= $filters['sort'] === $v ? 'selected' : '' ?>><?= $l ?></option>
@@ -297,7 +302,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </form>
     </div>
     <div class="table-responsive">
-        <table class="table align-middle mb-0">
+        <table class="table align-middle mb-0 table-stack">
             <thead>
                 <tr>
                     <th>Business</th><th>Category</th><th>Area searched</th>
@@ -313,19 +318,18 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($saved as $l): ?>
                 <tr>
-                    <td>
-                        <div class="fw-500"><?= sanitize($l['title']) ?></div>
+                    <td data-label="Business">
+                        <div class="fw-500 text-truncate" style="max-width: 260px"
+                             title="<?= sanitize($l['title']) ?>"><?= sanitize($l['title']) ?></div>
                         <?php if ($l['address']): ?>
-                            <div class="text-muted x-small"><?= sanitize($l['address']) ?></div>
-                        <?php endif; ?>
-                        <?php if ($l['types']): ?>
-                            <div class="text-muted x-small"><?= sanitize($l['types']) ?></div>
+                            <div class="text-muted x-small text-truncate" style="max-width: 260px"
+                                 title="<?= sanitize($l['address']) ?>"><?= sanitize($l['address']) ?></div>
                         <?php endif; ?>
                     </td>
                     <?php // Which search produced this row. Without these two columns a
                           // saved list of 200 businesses is unreadable — and a lead from
                           // the wrong country is indistinguishable from a good one. ?>
-                    <td class="small">
+                    <td class="small" data-label="Category">
                         <?php if ($l['source_query']): ?>
                             <a class="text-decoration-none" href="<?= $self ?>?<?= sanitize(http_build_query(
                                 ['category' => $l['source_query']] + $filters)) ?>"><?= sanitize($l['source_query']) ?></a>
@@ -333,7 +337,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small">
+                    <td class="small" data-label="Area searched">
                         <?php if ($l['source_location']): ?>
                             <a class="text-decoration-none" href="<?= $self ?>?<?= sanitize(http_build_query(
                                 ['area' => $l['source_location']] + $filters)) ?>"><?= sanitize($l['source_location']) ?></a>
@@ -341,7 +345,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="text-muted" title="Found before the area was recorded">not recorded</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small">
+                    <td class="small" data-label="Phone">
                         <?php if ($l['phone']): ?>
                             <a href="tel:<?= sanitize($l['phone_digits'] ?: $l['phone']) ?>"
                                class="text-decoration-none"><?= sanitize($l['phone']) ?></a>
@@ -355,7 +359,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small">
+                    <td class="small" data-label="Website">
                         <?php // "No website" is a badge, not a blank cell: it is the
                               // strongest buying signal this tool produces, and an
                               // empty cell reads as missing data. ?>
@@ -366,7 +370,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="badge bg-warning text-dark">no website</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small">
+                    <td class="small" data-label="Rating">
                         <?php if ($l['rating']): ?>
                             <?= sanitize(number_format((float)$l['rating'], 1)) ?>
                             <span class="text-muted">(<?= number_format((int)$l['reviews']) ?>)</span>
@@ -374,7 +378,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small text-muted"><?= sanitize(timeAgo($l['last_seen_at'])) ?></td>
+                    <td class="small text-muted" data-label="Seen"><?= sanitize(timeAgo($l['last_seen_at'])) ?></td>
                     <td>
                         <a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener"
                            href="https://www.google.com/maps/place/?q=place_id:<?= rawurlencode($l['place_id']) ?>">Map</a>
@@ -384,9 +388,24 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </tbody>
         </table>
     </div>
+    <?php if ($totalPages > 1): ?>
+    <nav class="card-body border-top d-flex justify-content-between align-items-center" aria-label="Saved leads pages">
+        <?php if ($page > 1): ?>
+            <a class="btn btn-sm btn-outline-secondary" href="<?= $self ?>?<?= sanitize(http_build_query($filters + ['page' => $page - 1])) ?>">&laquo; Previous</a>
+        <?php else: ?>
+            <span></span>
+        <?php endif; ?>
+        <span class="text-muted small">Page <?= (int)$page ?> of <?= number_format($totalPages) ?></span>
+        <?php if ($page < $totalPages): ?>
+            <a class="btn btn-sm btn-outline-secondary" href="<?= $self ?>?<?= sanitize(http_build_query($filters + ['page' => $page + 1])) ?>">Next &raquo;</a>
+        <?php else: ?>
+            <span></span>
+        <?php endif; ?>
+    </nav>
+    <?php endif; ?>
     <div class="card-body border-top">
         <p class="text-muted x-small mb-0">
-            Showing up to 500. Leads are never deleted and never shown to tenants — this list is
+            Leads are never deleted and never shown to tenants — this list is
             the platform owner's, and <code>leads</code> has no tenant column at all.
         </p>
     </div>

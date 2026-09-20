@@ -296,6 +296,49 @@ function waStatusHint($status) {
     }
 }
 
+// Writes the backend's view of one session into wa_accounts. Shared by the
+// "Sync All" POST and waRefreshAccountIdentity() so the write exists once.
+function waApplyBackendStatus(mysqli $conn, int $userId, array $acc, array $resp): void {
+    $status = $resp['status'] ?? 'disconnected';
+    $phone = $resp['user']['id'] ?? null;
+    $pushName = $resp['user']['name'] ?? null;
+    $connAt = $resp['connectedAt'] ?? null;
+    if ($connAt) {
+        $connAt = date('Y-m-d H:i:s', strtotime($connAt));
+    }
+    if ($phone) {
+        $phone = explode(':', $phone)[0] ?? $phone;
+    }
+
+    $stmt = $conn->prepare("UPDATE wa_accounts SET status = ?, phone_number = ?, push_name = ?, connected_at = ? WHERE id = ? AND user_id = ?");
+    $stmt->bind_param("ssssii", $status, $phone, $pushName, $connAt, $acc['id'], $userId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Pulls status / phone / push name / connected_at from the backend for the
+// rows that have none, so a connected account never shows "-" for its own
+// number. Bounded: only rows missing data, only when the backend answers.
+function waRefreshAccountIdentity(mysqli $conn, int $userId, int $maxRows = 10): void {
+    $stmt = $conn->prepare(
+        "SELECT id, session_id FROM wa_accounts
+         WHERE user_id = ? AND status = 'connected'
+           AND (phone_number IS NULL OR phone_number = '' OR connected_at IS NULL)
+         LIMIT " . max(1, $maxRows)
+    );
+    $stmt->bind_param("i", $userId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    foreach ($rows as $acc) {
+        $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/status', null, null, 3);
+        if ($resp && ($resp['ok'] ?? false)) {
+            waApplyBackendStatus($conn, $userId, $acc, $resp);
+        }
+    }
+}
+
 function timeAgo($datetime) {
     $now = new DateTime();
     $ago = new DateTime($datetime);

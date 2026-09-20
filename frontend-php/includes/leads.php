@@ -568,8 +568,10 @@ function leadsSourceValues(mysqli $conn) {
 // The saved leads, filtered. Used by both the table and the CSV export, so the
 // two can never show different rows — which is the whole reason it is one
 // function taking the same $filters the query string carries.
-function leadsList(mysqli $conn, array $filters = [], $limit = 500) {
-    $sql = "SELECT * FROM leads";
+// The WHERE clause shared by leadsList() and leadsCount(), built once so the
+// two can never disagree about which rows a filter set selects. Returns the
+// clause without the WHERE keyword, plus the bind types and args.
+function leadsWhere(array $filters): array {
     $where = [];
     $types = '';
     $args = [];
@@ -617,7 +619,23 @@ function leadsList(mysqli $conn, array $filters = [], $limit = 500) {
         $types .= 'd';
         $args[] = $minRating;
     }
-    if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
+    return [implode(' AND ', $where), $types, $args];
+}
+
+function leadsCount(mysqli $conn, array $filters = []): int {
+    [$whereSql, $types, $args] = leadsWhere($filters);
+    $sql = 'SELECT COUNT(*) FROM leads' . ($whereSql !== '' ? ' WHERE ' . $whereSql : '');
+    $stmt = $conn->prepare($sql);
+    if ($types !== '') $stmt->bind_param($types, ...$args);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    return (int)($row[0] ?? 0);
+}
+
+function leadsList(mysqli $conn, array $filters = [], $limit = 500, $offset = 0) {
+    [$whereSql, $types, $args] = leadsWhere($filters);
+    $sql = 'SELECT * FROM leads' . ($whereSql !== '' ? ' WHERE ' . $whereSql : '');
 
     $sorts = [
         'recent'  => 'last_seen_at DESC',
@@ -628,6 +646,7 @@ function leadsList(mysqli $conn, array $filters = [], $limit = 500) {
     ];
     $sql .= ' ORDER BY ' . ($sorts[$filters['sort'] ?? 'recent'] ?? $sorts['recent']);
     $sql .= ' LIMIT ' . max(1, (int)$limit);
+    if ((int)$offset > 0) $sql .= ' OFFSET ' . (int)$offset;
 
     $stmt = $conn->prepare($sql);
     if ($types !== '') $stmt->bind_param($types, ...$args);

@@ -52,22 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         foreach ($accounts as $acc) {
             $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/status');
             if ($resp && ($resp['ok'] ?? false)) {
-                $status = $resp['status'] ?? 'disconnected';
-                $phone = $resp['user']['id'] ?? null;
-                $pushName = $resp['user']['name'] ?? null;
-                $connAt = $resp['connectedAt'] ?? null;
-                if ($connAt) {
-                    $connAt = date('Y-m-d H:i:s', strtotime($connAt));
-                }
-
-                if ($phone) {
-                    $phone = explode(':', $phone)[0] ?? $phone;
-                }
-
-                $stmt2 = $conn->prepare("UPDATE wa_accounts SET status = ?, phone_number = ?, push_name = ?, connected_at = ? WHERE id = ? AND user_id = ?");
-                $stmt2->bind_param("ssssii", $status, $phone, $pushName, $connAt, $acc['id'], $userId);
-                $stmt2->execute();
-                $stmt2->close();
+                waApplyBackendStatus($conn, $userId, $acc, $resp);
                 $synced++;
             } else {
                 $failed++;
@@ -88,6 +73,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         formRespond(false, $synced . ' synced, ' . $failed . ' could not be reached. Try again shortly.', $self);
     }
 }
+
+// Connected rows that never got their identity written back ask the backend
+// for it once here, so a linked phone does not render as "-".
+waRefreshAccountIdentity($conn, $userId);
 
 $stmt = $conn->prepare("SELECT id, session_id, label, status, phone_number, push_name, connected_at, created_at FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC");
 $stmt->bind_param("i", $userId);
@@ -130,14 +119,12 @@ require_once dirname(__DIR__) . '/includes/header.php';
 <?php else: ?>
     <div class="card table-card">
         <div class="table-responsive">
-            <table class="table">
+            <table class="table table-stack">
                 <thead>
                     <tr>
                         <th>Label</th>
-                        <th>Phone Number</th>
-                        <th>Name</th>
+                        <th>Number</th>
                         <th>Status</th>
-                        <th>Connected</th>
                         <th>Created</th>
                         <th>Actions</th>
                     </tr>
@@ -145,12 +132,26 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <tbody>
                     <?php foreach ($accounts as $acc): ?>
                     <tr data-session="<?= sanitize($acc['session_id']) ?>">
-                        <td class="fw-500"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
-                        <td><?= sanitize($acc['phone_number'] ?: '-') ?></td>
-                        <td><?= sanitize($acc['push_name'] ?: '-') ?></td>
-                        <td><span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span></td>
-                        <td class="text-muted small"><?= $acc['connected_at'] ? timeAgo($acc['connected_at']) : '-' ?></td>
-                        <td class="text-muted small"><?= timeAgo($acc['created_at']) ?></td>
+                        <td class="fw-500" data-label="Label"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
+                        <td data-label="Number">
+                            <?php if ($acc['push_name'] || $acc['phone_number']): ?>
+                                <?php if ($acc['push_name']): ?>
+                                    <div class="fw-500"><?= sanitize($acc['push_name']) ?></div>
+                                <?php endif; ?>
+                                <?php if ($acc['phone_number']): ?>
+                                    <div class="text-muted small"><?= sanitize($acc['phone_number']) ?></div>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                —
+                            <?php endif; ?>
+                        </td>
+                        <td data-label="Status">
+                            <span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span>
+                            <?php if ($acc['connected_at']): ?>
+                                <div class="x-small text-muted">since <?= timeAgo($acc['connected_at']) ?></div>
+                            <?php endif; ?>
+                        </td>
+                        <td class="text-muted small" data-label="Created"><?= timeAgo($acc['created_at']) ?></td>
                         <td>
                             <div class="d-flex gap-1">
                                 <?php // An account WhatsApp logged out, or one that gave up
@@ -172,8 +173,11 @@ require_once dirname(__DIR__) . '/includes/header.php';
                                     </button>
                                 </form>
                                 <?php endif; ?>
-                                <a href="<?= APP_URL ?>/whatsapp/chats.php?account=<?= $acc['id'] ?>" class="btn btn-sm btn-outline-primary" title="Chats">
-                                    <i class="bi bi-chat-dots"></i>
+                                <a href="<?= APP_URL ?>/whatsapp/chats.php?account=<?= $acc['id'] ?>"
+                                   class="btn btn-sm btn-outline-primary"
+                                   title="Open this account's chats"
+                                   aria-label="Open chats for <?= sanitize($acc['label'] ?: 'this account') ?>">
+                                    <i class="bi bi-chat-dots"></i><span class="d-none d-md-inline ms-1">Chats</span>
                                 </a>
                                 <form method="POST" class="d-inline" data-ajax>
                                     <?= csrfField() ?>

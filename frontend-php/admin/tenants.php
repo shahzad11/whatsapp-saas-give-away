@@ -255,7 +255,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-2">
                 <label class="form-label x-small text-muted mb-1">Status</label>
-                <select name="status" class="form-select form-select-sm">
+                <select name="status" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="">Any</option>
                     <?php foreach (['active' => 'Active', 'suspended' => 'Suspended', 'unactivated' => 'Unactivated'] as $v => $l): ?>
                         <option value="<?= $v ?>" <?= $fStatus === $v ? 'selected' : '' ?>><?= $l ?></option>
@@ -264,7 +264,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-2">
                 <label class="form-label x-small text-muted mb-1">Plan</label>
-                <select name="plan" class="form-select form-select-sm">
+                <select name="plan" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <option value="0">Any</option>
                     <?php foreach ($plans as $p): ?>
                         <option value="<?= (int)$p['id'] ?>" <?= $fPlan === (int)$p['id'] ? 'selected' : '' ?>><?= sanitize($p['name']) ?></option>
@@ -277,7 +277,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="col-md-2">
                 <label class="form-label x-small text-muted mb-1">Sort</label>
-                <select name="sort" class="form-select form-select-sm">
+                <select name="sort" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <?php foreach ([
                         'created_desc' => 'Newest first', 'created_asc' => 'Oldest first',
                         'name' => 'Name', 'login_desc' => 'Recent login', 'wa_desc' => 'Most accounts',
@@ -314,7 +314,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
     <div class="table-responsive">
-        <table class="table align-middle">
+        <table class="table align-middle table-stack">
             <thead>
                 <tr>
                     <th>Tenant</th>
@@ -331,7 +331,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($users as $u): ?>
                 <tr>
-                    <td>
+                    <td data-label="Tenant">
                         <div class="fw-500">
                             <?php // href is the full detail page, which is what a click does
                                   // with JavaScript off. With it, the same URL is fetched as a
@@ -349,7 +349,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="text-muted small"><?= sanitize($u['email']) ?></div>
                         <div class="text-muted x-small">tenant id: t<?= (int)$u['id'] ?></div>
                     </td>
-                    <td>
+                    <td data-label="Plan">
                         <form method="POST" class="d-flex gap-1" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="change_plan">
@@ -364,8 +364,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <button class="btn btn-sm btn-outline-primary">Set</button>
                         </form>
                     </td>
-                    <td><?= (int)$u['wa_count'] ?></td>
-                    <td>
+                    <td data-label="WA"><?= (int)$u['wa_count'] ?></td>
+                    <td data-label="Status">
                         <?php if (!$u['is_active']): ?>
                             <span class="badge bg-secondary">unactivated</span>
                         <?php elseif ($u['status'] === 'suspended'): ?>
@@ -374,7 +374,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="badge bg-success">active</span>
                         <?php endif; ?>
                     </td>
-                    <td class="text-muted small">
+                    <td class="text-muted small" data-label="Last Login">
                         <?= $u['last_login_at'] ? sanitize(timeAgo($u['last_login_at'])) : '—' ?>
                     </td>
                     <td>

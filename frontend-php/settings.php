@@ -215,7 +215,36 @@ foreach ($availability as $w) $hoursByDay[(int)$w['weekday']][] = $w;
 // apptDefaultAvailability() for why that distinction matters.
 $hasSchedule = $hoursByDay !== [];
 if (!$hasSchedule) $hoursByDay = apptDefaultAvailability();
-$events = $hasChatbot ? chatbotRecentEvents($conn, $userId, 15) : [];
+
+// The collapsed card headers each carry a one-line digest, so a tenant scanning
+// the page reads "Services · 3 active" rather than a bare noun.
+$activeServices = count(array_filter($services, fn($s) => !empty($s['is_active'])));
+$hoursSummary = 'Opening hours · not set';
+if ($hasSchedule) {
+    $openDays = array_filter($hoursByDay, fn($w) => $w !== []);
+    $firstWin = null;
+    $sameWindows = true;
+    foreach ($openDays as $wins) {
+        if (count($wins) !== 1) { $sameWindows = false; break; }
+        $w = $wins[0]['start_time'] . '-' . $wins[0]['end_time'];
+        if ($firstWin === null) $firstWin = $w;
+        if ($w !== $firstWin) { $sameWindows = false; break; }
+    }
+    $dayNums = array_map('intval', array_keys($openDays));
+    sort($dayNums);
+    $contiguous = true;
+    for ($i = 1; $i < count($dayNums); $i++) {
+        if ($dayNums[$i] !== $dayNums[$i - 1] + 1) { $contiguous = false; break; }
+    }
+    $names = apptWeekdayNames();
+    if ($sameWindows && $contiguous && $dayNums) {
+        $hoursSummary = 'Opening hours · ' . substr($names[$dayNums[0]], 0, 3)
+            . '–' . substr($names[end($dayNums)], 0, 3) . ' ' . $firstWin;
+    } else {
+        $hoursSummary = 'Opening hours · ' . count($dayNums) . ' days open';
+    }
+}
+$events = $hasChatbot ? chatbotRecentEvents($conn, $userId, 500) : [];
 $repliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
 // Reported through the same helper the reply path uses, so the number a tenant
 // reads here cannot disagree with the one that actually stops the bot — passing
@@ -314,7 +343,7 @@ if (empty($config['model_id']) && empty($config['byo_model_code'])) {
         . '<a href="#tab-model" data-bs-toggle="tab" data-bs-target="#tab-model">Model</a>.'];
 }
 
-$pageTitle = 'Settings';
+$pageTitle = 'Bot settings';
 require_once __DIR__ . '/includes/header.php';
 ?>
 
@@ -877,10 +906,12 @@ require_once __DIR__ . '/includes/header.php';
                         <i class="bi bi-chat-dots me-1"></i>Test your chatbot
                     </button>
                 </div>
-            </div>
-
-            <div class="mt-3">
-                <button class="btn btn-primary" type="submit">Save settings</button>
+                <?php // Sticky inside the tab card, so the button is still there
+                      // at the bottom of a 14-row knowledge base rather than a
+                      // scroll away. ?>
+                <div class="sticky-save d-flex justify-content-end">
+                    <button class="btn btn-primary" type="submit">Save settings</button>
+                </div>
             </div>
         </form>
 
@@ -900,18 +931,20 @@ require_once __DIR__ . '/includes/header.php';
 
         <?php // Separate forms, not nested ones: nesting is invalid HTML and the
               // browser silently drops the inner form's fields. ?>
-        <div class="card mt-3">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-list-check me-2"></i>Services</span>
+        <details class="card mt-3 settings-collapse" <?= $services ? '' : 'open' ?>>
+            <summary class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-check me-2"></i>Services · <?= (int)$activeServices ?> active</span>
+            </summary>
+            <div class="card-body">
                 <?php // The href is the anchor of the form below, so with JavaScript
                       // off this is still a working link to a real form (#24). ?>
-                <a href="#serviceCard" class="btn btn-sm btn-primary"
-                   data-modal-target="#serviceModal" data-modal-reset="on"
-                   data-modal-title="Add a service" data-field-service-id="">
-                    <i class="bi bi-plus-lg me-1"></i>Add service
-                </a>
-            </div>
-            <div class="card-body">
+                <div class="d-flex justify-content-end mb-2">
+                    <a href="#serviceCard" class="btn btn-sm btn-primary"
+                       data-modal-target="#serviceModal" data-modal-reset="on"
+                       data-modal-title="Add a service" data-field-service-id="">
+                        <i class="bi bi-plus-lg me-1"></i>Add service
+                    </a>
+                </div>
                 <?php if ($services): ?>
                     <table class="table table-sm align-middle mb-0">
                         <tbody>
@@ -958,10 +991,12 @@ require_once __DIR__ . '/includes/header.php';
                     <p class="text-muted small mb-0">No services yet. The bot cannot take a booking without one.</p>
                 <?php endif; ?>
             </div>
-        </div>
+        </details>
 
-        <div class="card mt-3">
-            <div class="card-header"><i class="bi bi-clock me-2"></i>Opening hours</div>
+        <details class="card mt-3 settings-collapse" <?= $hasSchedule ? '' : 'open' ?>>
+            <summary class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock me-2"></i><?= sanitize($hoursSummary) ?></span>
+            </summary>
             <div class="card-body">
                 <p class="text-muted small">
                     Bookings are only accepted inside these windows, and an appointment must
@@ -1028,7 +1063,7 @@ require_once __DIR__ . '/includes/header.php';
                     <button class="btn btn-primary btn-sm" type="submit">Save hours</button>
                 </form>
             </div>
-        </div>
+        </details>
 
         <?php // The service form, rendered once as an ordinary card and promoted
               // into a modal by forms.js (#24).
@@ -1116,28 +1151,39 @@ require_once __DIR__ . '/includes/header.php';
         </div>
 
         <div class="card">
-            <div class="card-header">Recent activity</div>
+            <div class="card-header">Last 7 days</div>
             <div class="card-body p-0">
-                <?php if (!$events): ?>
+                <?php
+                // Each row is one outcome the events table records, counted rather
+                // than listed — fifteen individual events are a log, and what a
+                // tenant checking in actually wants is the shape of the week.
+                $outcomeGroups = [];
+                $cutoff = strtotime('-7 days');
+                foreach ($events as $e) {
+                    if (strtotime($e['created_at'] . ' UTC') < $cutoff) continue;
+                    $label = chatbotOutcomeLabel($e['outcome']);
+                    if (!isset($outcomeGroups[$label])) {
+                        $outcomeGroups[$label] = ['count' => 0, 'hint' => chatbotOutcomeHint($e['outcome'])];
+                    }
+                    $outcomeGroups[$label]['count']++;
+                }
+                uasort($outcomeGroups, fn($a, $b) => $b['count'] <=> $a['count']);
+                ?>
+                <?php if (!$outcomeGroups): ?>
                     <div class="p-3 text-muted small">Nothing yet.</div>
                 <?php else: ?>
                     <ul class="list-group list-group-flush">
-                        <?php // The raw `detail` is internal text, so it moves to the row's
-                              // tooltip and the hint takes its place — same information density,
-                              // but the visible line now says what to do about it. ?>
-                        <?php foreach ($events as $e):
-                            $hint = chatbotOutcomeHint($e['outcome']); ?>
-                            <li class="list-group-item py-2" <?= !empty($e['detail']) ? 'title="' . sanitize($e['detail']) . '"' : '' ?>>
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <span class="small"><?= sanitize(chatbotOutcomeLabel($e['outcome'])) ?></span>
-                                    <span class="x-small text-muted"><?= sanitize(convertToUserTz($e['created_at'], $tz)) ?></span>
-                                </div>
-                                <?php if ($hint !== ''): ?>
-                                    <div class="x-small text-muted"><?= sanitize($hint) ?></div>
-                                <?php endif; ?>
+                        <?php foreach ($outcomeGroups as $label => $g): ?>
+                            <li class="list-group-item py-2 d-flex justify-content-between align-items-center"
+                                <?= $g['hint'] !== '' ? 'title="' . sanitize($g['hint']) . '"' : '' ?>>
+                                <span class="small"><?= sanitize($label) ?></span>
+                                <span class="badge bg-light text-dark"><?= number_format($g['count']) ?></span>
                             </li>
                         <?php endforeach; ?>
                     </ul>
+                    <div class="p-3 border-top">
+                        <a href="<?= APP_URL ?>/whatsapp/chats.php" class="small">Open chats</a>
+                    </div>
                 <?php endif; ?>
             </div>
         </div>

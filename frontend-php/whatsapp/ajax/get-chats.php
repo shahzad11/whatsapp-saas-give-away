@@ -77,6 +77,12 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
 
     foreach ($resp['chats'] as $chat) {
         $chatId = $chat['id'] ?? '';
+        // Broadcast channels and the status feed are not conversations: nobody
+        // can reply into them, so they are never stored or listed.
+        if ($chatId === 'status@broadcast' || $chatId === '0@s.whatsapp.net'
+            || str_ends_with($chatId, '@newsletter') || str_ends_with($chatId, '@broadcast')) {
+            continue;
+        }
         // displayName is the backend's resolved identity and is null when
         // genuinely unknown. Never fall back to the JID: for an @lid chat that
         // is an opaque internal id which looks like a phone number and is not.
@@ -138,7 +144,11 @@ if ($resp && !empty($resp['ok']) && !empty($resp['chats'])) {
 // but keeping the tenant predicate inside the query means this stays correct
 // even if the guard above is ever refactored away.
 $stmtFetch = $conn->prepare("SELECT chat_id, contact_name, phone_number, last_message, last_message_time, is_group, is_archived
-    FROM wa_contacts WHERE account_id = ? ORDER BY last_message_time DESC");
+    FROM wa_contacts WHERE account_id = ?
+      AND chat_id NOT IN ('status@broadcast', '0@s.whatsapp.net')
+      AND chat_id NOT LIKE '%@newsletter'
+      AND chat_id NOT LIKE '%@broadcast'
+    ORDER BY last_message_time DESC");
 $stmtFetch->bind_param("i", $accountId);
 $stmtFetch->execute();
 $result = $stmtFetch->get_result();

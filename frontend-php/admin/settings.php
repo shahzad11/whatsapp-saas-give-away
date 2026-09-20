@@ -537,7 +537,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         tenant is not already on.
                     </div>
                 </div>
-                <div class="col-md-8">
+                <div class="col-md-8" id="salesContactDetails">
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label">Sales email address</label>
@@ -710,6 +710,21 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         wrap.classList.toggle('d-none', !changed);
         if (!changed && box) box.checked = false;
     });
+})();
+
+// The sales-contact detail fields only matter when a contact method is ticked,
+// so the column is hidden until one is. Without JS it stays visible.
+(function () {
+    var details = document.getElementById('salesContactDetails');
+    var boxes = document.querySelectorAll('input[name="billing_contact_methods[]"]');
+    if (!details || !boxes.length) return;
+    function sync() {
+        var any = false;
+        boxes.forEach(function (b) { if (b.checked) any = true; });
+        details.classList.toggle('d-none', !any);
+    }
+    boxes.forEach(function (b) { b.addEventListener('change', sync); });
+    sync();
 })();
 </script>
 

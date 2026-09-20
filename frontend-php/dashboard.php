@@ -4,6 +4,10 @@ requireLogin();
 
 $userId = (int)$_SESSION['user_id'];
 
+// Connected rows that never got their identity written back ask the backend
+// for it once here, so the numbers below reflect what the phone actually is.
+waRefreshAccountIdentity($conn, $userId);
+
 $totalAccounts = 0;
 $connectedAccounts = 0;
 $disconnectedAccounts = 0;
@@ -19,11 +23,16 @@ while ($row = $result->fetch_assoc()) {
 }
 $stmt->close();
 
-$stmt = $conn->prepare("SELECT id, session_id, label, status, phone_number, push_name, connected_at, created_at FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-$stmt->bind_param("i", $userId);
-$stmt->execute();
-$recentAccounts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
+// The four KPI values, read up here so the page can decide which "needs
+// attention" items exist before it starts drawing.
+$messagesThisMonth = usageCount($conn, $userId, 'messages_sent');
+$aiRepliesThisMonth = usageCount($conn, $userId, 'chatbot_replies');
+$handoff = handoffCounts($conn, $userId);
+$handoffWaiting = $handoff['waiting'] ?? 0;
+$handoffClaimed = $handoff['claimed'] ?? 0;
+$appts = apptCounts($conn, $userId);
+$apptUpcoming = $appts['upcoming'] ?? 0;
+$apptOverdue = $appts['overdue'] ?? 0;
 
 // Hiding the tenant's own getting-started card (#33). Per tenant, unlike the
 // instance-wide one in the console: this checklist describes one account, so one
@@ -58,18 +67,20 @@ require_once __DIR__ . '/includes/header.php';
 //
 // Not shown to tenants (they cannot act on any of it) and not shown once the
 // instance is set up or the checklist has been dismissed.
-$adminSetupOutstanding = 0;
+$adminSetupLabels = [];
 if (isAdmin() && !instanceSetupDismissed($conn)) {
-    $adminSetupOutstanding = count(array_filter(instanceSetupSteps($conn), fn($s) => !$s['done']));
+    $adminSetupLabels = array_column(
+        array_filter(instanceSetupSteps($conn), fn($s) => !$s['done']),
+        'label'
+    );
 }
 ?>
-<?php if ($adminSetupOutstanding > 0): ?>
+<?php if ($adminSetupLabels): ?>
     <div class="alert alert-info d-flex justify-content-between align-items-center flex-wrap gap-2">
         <div>
             <i class="bi bi-rocket-takeoff me-1"></i>
-            <strong>This instance is not finished being set up.</strong>
-            <?= (int)$adminSetupOutstanding ?> step(s) still need an administrator — outgoing email, AI keys,
-            plans. Tenants will hit dead ends until they are done.
+            <strong>Setup is not finished.</strong>
+            Still to do: <?= sanitize(implode(', ', $adminSetupLabels)) ?>.
         </div>
         <a href="<?= APP_URL ?>/admin/index.php" class="btn btn-sm btn-primary">Open admin console</a>
     </div>
@@ -133,8 +144,8 @@ if (isAdmin() && !instanceSetupDismissed($conn)) {
       // the page's own toolbar. ?>
 <div class="page-toolbar">
     <div>
-        <p class="page-toolbar-title">Your WhatsApp accounts</p>
-        <p class="page-toolbar-subtitle">Link a phone, then send and receive from the Chats page.</p>
+        <p class="page-toolbar-title">Overview</p>
+        <p class="page-toolbar-subtitle">What is happening on your WhatsApp numbers right now.</p>
     </div>
     <div class="page-toolbar-actions">
         <a href="<?= APP_URL ?>/whatsapp/chats.php" class="btn btn-sm btn-outline-primary">
@@ -146,90 +157,125 @@ if (isAdmin() && !instanceSetupDismissed($conn)) {
     </div>
 </div>
 
-<?php // Three metrics now that the action has moved out, so the row divides
-      // evenly at every breakpoint instead of leaving a stray fourth cell. ?>
+<?php
+$accountTone = $connectedAccounts > 0 && $disconnectedAccounts === 0 ? 'success'
+    : ($disconnectedAccounts > 0 ? 'danger' : 'secondary');
+$kpis = [
+    [
+        'Connected accounts',
+        $connectedAccounts,
+        'of ' . number_format((int)$totalAccounts) . ' linked',
+        'bi-phone',
+        $accountTone,
+        APP_URL . '/whatsapp/accounts.php',
+    ],
+    [
+        'Messages this month',
+        $messagesThisMonth,
+        number_format((int)$aiRepliesThisMonth) . ' AI replies',
+        'bi-chat-dots',
+        'primary',
+        APP_URL . '/whatsapp/chats.php',
+    ],
+    [
+        'Live chats waiting',
+        $handoffWaiting,
+        number_format((int)$handoffClaimed) . ' with an agent',
+        'bi-headset',
+        $handoffWaiting > 0 ? 'warning' : 'secondary',
+        APP_URL . '/live-chats.php',
+    ],
+    [
+        'Upcoming appointments',
+        $apptUpcoming,
+        $apptOverdue > 0
+            ? number_format((int)$apptOverdue) . ' past due'
+            : 'next 30 days',
+        'bi-calendar-check',
+        $apptOverdue > 0 ? 'warning' : 'primary',
+        APP_URL . '/appointments.php',
+    ],
+];
+?>
 <div class="row g-4 mb-4">
-    <?php foreach ([
-        ['Total accounts', $totalAccounts,        'bi-phone',        'primary'],
-        ['Connected',      $connectedAccounts,    'bi-check-circle', 'success'],
-        ['Disconnected',   $disconnectedAccounts, 'bi-x-circle',     'danger'],
-    ] as [$label, $value, $icon, $tone]): ?>
-    <div class="col-sm-6 col-xl-4">
-        <div class="stat-card">
-            <div class="d-flex justify-content-between align-items-start">
-                <div>
-                    <div class="stat-label"><?= $label ?></div>
-                    <div class="stat-value"><?= number_format((int)$value) ?></div>
-                </div>
-                <div class="stat-icon" style="background:var(--<?= $tone ?>-light);color:var(--<?= $tone ?>);">
-                    <i class="bi <?= $icon ?>"></i>
+    <?php foreach ($kpis as [$label, $value, $sub, $icon, $tone, $href]): ?>
+    <div class="col-sm-6 col-xl-3">
+        <a href="<?= sanitize($href) ?>" class="text-decoration-none text-reset">
+            <div class="stat-card h-100">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-label"><?= $label ?></div>
+                        <div class="stat-value"><?= number_format((int)$value) ?></div>
+                        <div class="kpi-sub"><?= $sub ?></div>
+                    </div>
+                    <div class="stat-icon" style="background:var(--<?= $tone ?>-light);color:var(--<?= $tone ?>);">
+                        <i class="bi <?= $icon ?>"></i>
+                    </div>
                 </div>
             </div>
-        </div>
+        </a>
     </div>
     <?php endforeach; ?>
 </div>
 
+<?php
+$attention = [];
+if ($disconnectedAccounts > 0) {
+    $attention[] = [
+        $disconnectedAccounts . ' WhatsApp account(s) disconnected — the bot cannot reply on them.',
+        'Fix',
+        APP_URL . '/whatsapp/accounts.php',
+    ];
+}
+if ($handoffWaiting > 0) {
+    $attention[] = [
+        $handoffWaiting . ' customer(s) waiting for a human.',
+        'Open live chats',
+        APP_URL . '/live-chats.php',
+    ];
+}
+if ($apptOverdue > 0) {
+    $attention[] = [
+        $apptOverdue . ' appointment(s) past due with no outcome recorded.',
+        'Review',
+        APP_URL . '/appointments.php?status=booked',
+    ];
+}
+?>
+<?php if ($attention): ?>
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-exclamation-circle"></i>Needs attention</div>
+    <ul class="list-group list-group-flush">
+        <?php foreach ($attention as [$text, $action, $href]): ?>
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span><?= sanitize($text) ?></span>
+            <a href="<?= sanitize($href) ?>" class="btn btn-sm btn-outline-primary flex-shrink-0 ms-3"><?= $action ?></a>
+        </li>
+        <?php endforeach; ?>
+    </ul>
+</div>
+<?php endif; ?>
+
+<?php if ($totalAccounts === 0): ?>
 <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-phone"></i>Recent WhatsApp accounts</span>
-        <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="btn btn-sm btn-outline-primary">View all</a>
-    </div>
     <div class="card-body p-0">
-        <?php if (empty($recentAccounts)): ?>
-            <?php // #33 §8. An empty state is the page a new tenant sees first,
-                  // so it says what linking involves and how long it lasts,
-                  // rather than "get started". ?>
-            <div class="empty-state">
-                <i class="bi bi-phone d-block"></i>
-                <h5>No accounts yet</h5>
-                <p>
-                    Linking takes about a minute: you scan a QR code with the phone that
-                    holds the WhatsApp account, and it stays linked until you unlink it or
-                    the phone does.
-                </p>
-                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm">
-                    <i class="bi bi-plus-lg me-1"></i>Link account
-                </a>
-            </div>
-        <?php else: ?>
-            <div class="table-responsive table-card">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Label</th>
-                            <th>Phone</th>
-                            <th>Status</th>
-                            <th>Connected</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($recentAccounts as $acc): ?>
-                        <tr>
-                            <td class="fw-500"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
-                            <td><?= sanitize($acc['phone_number'] ?: '-') ?></td>
-                            <td><span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span></td>
-                            <td class="text-muted small"><?= $acc['connected_at'] ? timeAgo($acc['connected_at']) : '-' ?></td>
-                            <td>
-                                <?php // #33 §4. An icon on its own is a guess, and to a
-                                      // screen reader it is a link with no name at all. The
-                                      // label is visible from md up and the title and
-                                      // aria-label carry it everywhere else. ?>
-                                <a href="<?= APP_URL ?>/whatsapp/chats.php?account=<?= $acc['id'] ?>"
-                                   class="btn btn-sm btn-outline-primary"
-                                   title="Open this account's chats"
-                                   aria-label="Open chats for <?= sanitize($acc['label'] ?: 'this account') ?>">
-                                    <i class="bi bi-chat-dots"></i><span class="d-none d-md-inline ms-1">Chats</span>
-                                </a>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        <?php endif; ?>
+        <?php // #33 §8. An empty state is the page a new tenant sees first,
+              // so it says what linking involves and how long it lasts,
+              // rather than "get started". ?>
+        <div class="empty-state">
+            <i class="bi bi-phone d-block"></i>
+            <h5>No accounts yet</h5>
+            <p>
+                Linking takes about a minute: you scan a QR code with the phone that
+                holds the WhatsApp account, and it stays linked until you unlink it or
+                the phone does.
+            </p>
+            <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm">
+                <i class="bi bi-plus-lg me-1"></i>Link account
+            </a>
+        </div>
     </div>
 </div>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

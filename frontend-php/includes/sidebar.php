@@ -52,12 +52,12 @@ $brandLogo = brandLogoUrl($conn ?? null);
             <?php // #41. "Chatbot" named a third of what is behind this link: the same
                   // page configures appointment booking and human handover, and tenants
                   // were being sent to "Chatbot → Appointments" to set up a calendar.
-                  // "Settings" inside the Automation section says it without competing
+                  // "Bot settings" inside the Automation section says it without competing
                   // with Profile (personal details) or the admin console (the whole
                   // instance). 'chatbot' stays in the active-state test so the old route
                   // lights the right item for the moment it takes to redirect. ?>
             <a href="<?= APP_URL ?>/settings.php" class="nav-link-item <?= in_array($currentPage, ['settings', 'chatbot'], true) ? 'active' : '' ?>">
-                <i class="bi bi-sliders"></i><span>Settings</span>
+                <i class="bi bi-sliders"></i><span>Bot settings</span>
             </a>
             <a href="<?= APP_URL ?>/live-chats.php" class="nav-link-item <?= $currentPage === 'live-chats' ? 'active' : '' ?>">
                 <i class="bi bi-headset"></i><span>Live chats</span>

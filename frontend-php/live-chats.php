@@ -174,13 +174,13 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="list-group-item <?= $openId === (int)$h['id'] ? 'bg-light' : '' ?>">
                         <div class="d-flex justify-content-between align-items-start">
                             <div class="min-w-0">
-                                <div class="fw-500 small">
+                                <div class="fw-500 small text-break">
                                     <?= sanitize($h['customer_name'] ?: ($h['customer_phone'] ? '+' . $h['customer_phone'] : 'Unknown contact')) ?>
                                 </div>
                                 <?php if ($h['topic']): ?>
-                                    <div class="x-small text-muted text-truncate"><?= sanitize($h['topic']) ?></div>
+                                    <div class="x-small text-muted text-break"><?= sanitize($h['topic']) ?></div>
                                 <?php endif; ?>
-                                <div class="x-small text-muted">
+                                <div class="x-small text-muted text-break">
                                     <?= sanitize($h['reason'] ?: '') ?>
                                 </div>
                             </div>

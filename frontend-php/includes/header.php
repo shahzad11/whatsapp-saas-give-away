@@ -34,7 +34,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                         aria-label="Toggle navigation" aria-controls="appSidebar">
                     <i class="bi bi-list fs-4"></i>
                 </button>
-                <h5 class="mb-0"><?= sanitize($pageTitle) ?></h5>
+                <h1 class="h5 mb-0"><?= sanitize($pageTitle) ?></h1>
             </div>
             <div class="d-flex align-items-center gap-3">
                 <div class="dropdown">

@@ -23,7 +23,10 @@ $page      = max(1, (int)($_GET['page'] ?? 1));
 $perPage   = max(10, min(100, (int)($_GET['per_page'] ?? 25)));
 
 // --- Build WHERE clause ---
-$where = "WHERE wa.user_id = ?";
+$where = "WHERE wa.user_id = ?
+    AND c.chat_id NOT IN ('status@broadcast', '0@s.whatsapp.net')
+    AND c.chat_id NOT LIKE '%@newsletter'
+    AND c.chat_id NOT LIKE '%@broadcast'";
 $params = [$userId];
 $types  = "i";
 
@@ -230,13 +233,14 @@ require_once dirname(__DIR__) . '/includes/header.php';
 <?php else: ?>
     <div class="card table-card">
         <div class="table-responsive">
-            <table class="table">
+            <table class="table table-stack">
                 <thead>
                     <tr>
                         <th><a href="contacts.php<?= sortUrl('name') ?>" class="sort-header">Name <?= sortIcon('name') ?></a></th>
                         <th><a href="contacts.php<?= sortUrl('chat_id') ?>" class="sort-header">Phone Number <?= sortIcon('chat_id') ?></a></th>
-                        <th><a href="contacts.php<?= sortUrl('type') ?>" class="sort-header">Type <?= sortIcon('type') ?></a></th>
+                        <?php if (count($accounts) > 1): ?>
                         <th><a href="contacts.php<?= sortUrl('account') ?>" class="sort-header">Account <?= sortIcon('account') ?></a></th>
+                        <?php endif; ?>
                         <th>Last Message</th>
                         <th><a href="contacts.php<?= sortUrl('last_active') ?>" class="sort-header">Last Active <?= sortIcon('last_active') ?></a></th>
                     </tr>
@@ -244,7 +248,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <tbody>
                     <?php foreach ($contacts as $c): ?>
                     <tr>
-                        <td class="fw-500">
+                        <td class="fw-500" data-label="Name">
                             <?php if ($c['is_group']): ?>
                                 <i class="bi bi-people-fill text-success me-1 small"></i>
                             <?php else: ?>
@@ -261,22 +265,17 @@ require_once dirname(__DIR__) . '/includes/header.php';
                                     (bool)$c['is_group']
                                 )) ?>
                         </td>
-                        <td class="small">
+                        <td class="small" data-label="Phone Number">
                             <?php $phone = extractPhone($c['chat_id'], $c['phone_number'] ?? null); ?>
                             <?= $phone ? '+' . sanitize($phone) : '<span class="text-muted">—</span>' ?>
                         </td>
-                        <td>
-                            <?php if ($c['is_group']): ?>
-                                <span class="badge-status" style="background:var(--success-light);color:#065f46;">Group</span>
-                            <?php else: ?>
-                                <span class="badge-status" style="background:var(--info-light);color:#1e40af;">Individual</span>
-                            <?php endif; ?>
-                        </td>
-                        <td class="small"><?= sanitize($c['account_label'] ?: ('Account #' . $c['account_id'])) ?></td>
-                        <td class="text-muted small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        <?php if (count($accounts) > 1): ?>
+                        <td class="small" data-label="Account"><?= sanitize($c['account_label'] ?: ('Account #' . $c['account_id'])) ?></td>
+                        <?php endif; ?>
+                        <td class="text-muted small" data-label="Last Message" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                             <?= sanitize(mb_strimwidth($c['last_message'] ?? '', 0, 60, '...')) ?>
                         </td>
-                        <td class="text-muted small">
+                        <td class="text-muted small" data-label="Last Active">
                             <?php
                             $converted = convertToUserTz($c['last_message_time'], $userTz);
                             echo $converted ? sanitize($converted) : '-';

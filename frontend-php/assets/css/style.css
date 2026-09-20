@@ -21,6 +21,8 @@
     --danger-light: #fee2e2;
     --info: #3b82f6;
     --info-light: #dbeafe;
+    --secondary: #475569;
+    --secondary-light: #f1f5f9;
 
     /* #33 §2/§18. A type scale, so the next component does not invent another
        font-size. The ~300 existing literals are deliberately left alone:
@@ -83,7 +85,7 @@ body {
 
 .fw-500 { font-weight: 500; }
 .fw-600 { font-weight: 600; }
-.x-small { font-size: 0.7rem; }
+.x-small { font-size: 0.75rem; }
 .text-muted-light { color: #64748b; }
 
 /* ===== Accessibility ===== */
@@ -299,6 +301,7 @@ button:focus-visible,
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-width: 0;
 }
 
 .app-topbar {
@@ -316,6 +319,7 @@ button:focus-visible,
 
 .app-content {
     flex: 1;
+    min-width: 0;
     padding: var(--space-5);
 }
 
@@ -323,6 +327,7 @@ button:focus-visible,
    same weight as every card header on the page under it, so it did not read as
    the title of anything. The size is unchanged (--fs-xl is Bootstrap's own h5);
    only the weight moves, because the size was never the problem. */
+.app-topbar h1,
 .app-topbar h5 {
     font-size: var(--fs-xl);
     font-weight: var(--fw-title);
@@ -412,7 +417,7 @@ button:focus-visible,
 }
 
 .user-menu-btn::after {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
 }
 
 /* ===== Cards ===== */
@@ -434,6 +439,7 @@ button:focus-visible,
    rather than read. Tinted rather than inherited: at the header's own weight an
    icon in the text colour is just another glyph in the sentence. */
 .card-header > i:first-child,
+.card-header span > i:first-child,
 .card-header .card-header-icon {
     color: var(--primary);
     margin-right: var(--space-2);
@@ -487,7 +493,7 @@ button:focus-visible,
  * tag — which is why `.badge-tag` is separate and square-ish. */
 .badge-status {
     display: inline-block;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: var(--fw-heading);
     padding: 4px 10px;
     border-radius: 20px;
@@ -525,7 +531,7 @@ button:focus-visible,
    lifecycle, so it does not get the pill. */
 .badge-tag {
     display: inline-block;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: var(--fw-label);
     padding: 3px 7px;
     border-radius: var(--radius-sm);
@@ -674,6 +680,12 @@ button:focus-visible,
     max-width: 100%;
     width: auto;
     object-fit: contain;
+}
+
+/* Auth-card links were line-height tall — under the 32px tap floor. */
+.auth-card a:not(.btn) {
+    display: inline-block;
+    padding: 8px 0;
 }
 
 /* ===== Form Styles ===== */
@@ -893,13 +905,13 @@ button:focus-visible,
     color: #fff;
     border-radius: 10px;
     padding: 1px 8px;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 600;
 }
 
 .chat-header-archived {
     margin-left: 8px;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 500;
     color: #64748b;
     background: #e2e8f0;
@@ -980,7 +992,7 @@ button:focus-visible,
 }
 
 .chat-list-item .chat-time {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
     flex-shrink: 0;
     white-space: nowrap;
@@ -1144,7 +1156,7 @@ button:focus-visible,
 }
 
 .bubble-time {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     color: #667781;
 }
 
@@ -1555,7 +1567,7 @@ button:focus-visible,
     content: "\F282";                       /* bi-chevron-down */
     font-family: "bootstrap-icons";
     margin-left: auto;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     transition: transform 0.15s ease;
 }
 
@@ -1613,7 +1625,7 @@ button:focus-visible,
    separate block underneath, which read as another message and doubled the
    vertical cost of every reply. */
 .test-chat-meta {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     color: #667781;
     cursor: help;
 }
@@ -1732,7 +1744,7 @@ button:focus-visible,
 }
 
 .test-chat-footnote {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
     text-align: center;
 }
@@ -1819,7 +1831,7 @@ button:focus-visible,
 }
 
 .sort-header i {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
 }
 
 @media (max-width: 767.98px) {
@@ -2072,3 +2084,89 @@ button:focus-visible,
 }
 
 .handoff-thread .chat-bubble { max-width: 85%; }
+
+/* ===== Stacked tables =====
+ * Opt-in per table via .table-stack. Under 768px each row becomes a card and
+ * each cell a label:value pair, the label pulled from the cell's data-label.
+ * A cell with no data-label (actions) right-aligns instead. */
+@media (max-width: 767.98px) {
+    .table-stack thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .table-stack tbody tr {
+        display: block;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius);
+        margin: 12px;
+        padding: 8px 12px;
+        background: var(--card-bg);
+    }
+    .table-stack tbody td {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        border: 0;
+        padding: 6px 0;
+        text-align: right;
+    }
+    .table-stack tbody td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-align: left;
+    }
+    .table-stack tbody td:not([data-label]) {
+        justify-content: flex-end;
+    }
+    .table-stack tbody td:not([data-label])::before {
+        content: none;
+    }
+    .table-stack tbody tr.is-note td {
+        display: block;
+        text-align: left;
+    }
+}
+
+/* Secondary line under a KPI value (dashboard stat cards). */
+.kpi-sub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Save bar that stays in view while scrolling a long settings form. */
+.sticky-save {
+    position: sticky;
+    bottom: 0;
+    background: var(--card-bg);
+    border-top: 1px solid var(--border-color);
+    padding: 12px 16px;
+    margin: 0 -1px -1px;
+    z-index: 5;
+}
+
+/* ===== Collapsible cards (settings) ===== */
+details.settings-collapse > summary {
+    list-style: none;
+    cursor: pointer;
+}
+
+details.settings-collapse > summary::-webkit-details-marker {
+    display: none;
+}
+
+details.settings-collapse > summary::after {
+    content: "\F282";                       /* bi-chevron-down */
+    font-family: "bootstrap-icons";
+    margin-left: auto;
+    transition: transform 0.15s;
+}
+
+details[open].settings-collapse > summary::after {
+    transform: rotate(180deg);
+}

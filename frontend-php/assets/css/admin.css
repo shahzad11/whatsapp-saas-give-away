@@ -28,7 +28,7 @@
 .admin-scope-banner {
     background: var(--admin-accent);
     color: #fff;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -46,7 +46,7 @@
     border-top: 3px solid var(--admin-accent);
 }
 
-.admin-console .app-topbar h5::before {
+.admin-console .app-topbar h1::before {
     content: "Admin";
     display: inline-block;
     margin-right: 10px;
@@ -54,7 +54,7 @@
     border-radius: 4px;
     background: var(--admin-accent);
     color: #fff;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
