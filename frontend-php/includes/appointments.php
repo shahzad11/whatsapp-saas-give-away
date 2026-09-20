@@ -1084,6 +1084,11 @@ function apptSetStatus(mysqli $conn, $userId, $id, $status) {
     $changed = $stmt->affected_rows > 0;
     $stmt->close();
 
+    // #47: a status change is a new revision of the calendar event — including
+    // a reinstatement (cancelled → booked), which must update the customer's
+    // card, not sit alongside it.
+    if ($changed) apptBumpIcsSequence($conn, $userId, $id);
+
     // A cancelled appointment must not go on reminding anyone. `sending` is
     // included as well as `pending`: a row claimed a moment ago by a tick that is
     // still running would otherwise be the one reminder a cancellation misses.
@@ -1111,6 +1116,9 @@ function apptReschedule(mysqli $conn, $userId, $id, DateTime $utc) {
     $stmt->close();
 
     if ($changed) {
+        // #47: a new time is a new revision of the calendar event.
+        apptBumpIcsSequence($conn, $userId, $id);
+
         // The old reminders were computed from the old time; drop and rebuild.
         $stmt = $conn->prepare("DELETE FROM appointment_reminders WHERE appointment_id = ?");
         $stmt->bind_param('i', $id);
@@ -1847,6 +1855,17 @@ function apptRetryNotice(mysqli $conn, $userId, $appointmentId) {
 
     $appt = apptById($conn, $userId, $appointmentId);
     if (!$notice || !$appt) return ['status' => 'none', 'detail' => 'there is nothing waiting to be sent'];
+
+    // #47: a calendar card is a document, not a text — re-sending its stored
+    // body would deliver the caption alone with nothing attached. The method
+    // lives in the fingerprint ('ics:PUBLISH:3'), and the card is rebuilt so the
+    // .ics the customer gets reflects the diary as it stands now.
+    if (str_starts_with((string)$notice['kind'], 'calendar_')) {
+        $party = substr((string)$notice['kind'], strlen('calendar_'));
+        $method = explode(':', (string)$notice['fingerprint'])[1] ?? 'PUBLISH';
+        $results = apptSendCalendarCards($conn, $userId, $appt, $method, 'retry', $party);
+        return $results[$party] ?? ['status' => 'none', 'detail' => 'there is nothing waiting to be sent'];
+    }
 
     return apptSendNotice(apptNoticeDeps($conn, $userId, $appt),
         (string)$notice['kind'], (string)$notice['fingerprint'], (string)$notice['body']);

@@ -1,0 +1,171 @@
+<?php
+// The booking-claim guard and the reply-delay setting, without a database
+// (#46, #51).
+//
+// Run with:  php tests/chatbot-guard-test.php
+//
+// #46 is the "the bot said confirmed and nothing was booked" incident: the
+// model claimed a booking in plain prose without emitting the action line, and
+// answered "is it booked?" from chat history with a weekday/date pair that did
+// not agree with itself. The helpers under test are deliberately pure — they
+// judge text, and they answer from a row passed in — so the failure mode they
+// exist to catch can be replayed here as data.
+//
+// No framework and no database, like appointments-test.php.
+
+require_once __DIR__ . '/../frontend-php/includes/functions.php';
+require_once __DIR__ . '/../frontend-php/includes/appointments.php';
+require_once __DIR__ . '/../frontend-php/includes/chatbot.php';
+
+$passed = 0;
+$failed = 0;
+
+function check($name, $condition, $detail = '') {
+    global $passed, $failed;
+    if ($condition) {
+        $passed++;
+        echo "  ok   {$name}\n";
+        return;
+    }
+    $failed++;
+    echo "  FAIL {$name}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
+}
+
+function equals($name, $expected, $actual) {
+    check($name, $expected === $actual,
+        'expected ' . var_export($expected, true) . ', got ' . var_export($actual, true));
+}
+
+function group($title) {
+    echo "\n{$title}\n";
+}
+
+// --- #46: does the prose claim a booking exists? -----------------------------
+
+group('A sentence that asserts a booking is a claim');
+
+foreach ([
+    'Done! Your appointment is confirmed.',
+    "I've booked you in for 11:00.",
+    "You're all set for Saturday.",
+    'Your booking is confirmed for Sat 11 Sep 2026 at 11:00.',
+    'Great choice — I have scheduled it for you. It is booked.',
+    'Your slot is reserved.',
+    'Done',
+    'All done',
+    'All set',
+] as $text) {
+    check("claims: {$text}", chatbotClaimsBooking($text));
+}
+
+group('Negations, conditions and future promises are not claims');
+
+foreach ([
+    'Your appointment is not yet booked.',
+    'Once you confirm, I will book it.',
+    'Shall I book that for you?',
+    'Please confirm the time.',
+    "I'll confirm your appointment for 11:00 — one moment please.",
+    'I will confirm once the system answers.',
+    'We cannot book that day.',
+    "It isn't confirmed yet.",
+    'Would you like me to book it?',
+    // A bare "done" mid-sentence is ordinary prose, not a claim.
+    'The consultation is done in person.',
+    'Well done, see you then.',
+] as $text) {
+    check("not a claim: {$text}", !chatbotClaimsBooking($text));
+}
+
+// --- #46: is the customer asking whether a booking exists? -------------------
+
+group('A status question is recognised');
+
+foreach ([
+    'is my appointment booked?',
+    'did you book it',
+    'can you check the system',
+    'is it confirmed?',
+    'have you booked my slot',
+    'when is my appointment?',
+] as $text) {
+    check("asks: {$text}", chatbotAsksBookingStatus($text));
+}
+
+group('Agreement is not a status question');
+
+foreach ([
+    'confirm it',
+    'yes please confirm',
+    'book it for 11',
+    // An availability question, not a status question.
+    'can you check the calendar for Monday',
+] as $text) {
+    check("not a status question: {$text}", !chatbotAsksBookingStatus($text));
+}
+
+// --- #46: the claim sentences go, the rest stays ------------------------------
+
+group('Stripping keeps the honest prose');
+
+$stripped = chatbotStripBookingClaims('Great choice! Done! Your appointment is confirmed. See you then.');
+check('keeps the greeting', str_contains($stripped, 'Great choice!'));
+check('keeps the sign-off', str_contains($stripped, 'See you then.'));
+check('drops the claim', !str_contains($stripped, 'confirmed'));
+
+// --- #46: the line the truth check appends ------------------------------------
+
+group('The truth line reads the booking, or says there is none');
+
+$row = ['service_name' => 'Consultation', 'scheduled_at' => '2026-09-12 06:00:00'];
+$line = chatbotBookingTruthLine($row, 'Asia/Karachi', []);
+check('names the service', str_contains($line, 'Consultation'));
+// 06:00 UTC is 11:00 in Karachi, and 12 Sep 2026 is a Saturday — the pair is
+// generated from one timestamp, so it cannot disagree with itself the way the
+// model's did.
+check('weekday and date come from the stored instant',
+    str_contains($line, 'Sat 12 Sep 2026, 11:00'), $line);
+
+check('no booking says so plainly',
+    str_contains(chatbotBookingTruthLine(null, 'Asia/Karachi', []), 'Nothing is booked yet'));
+
+// --- #46: the live repro, replayed -------------------------------------------
+//
+// The sequence that produced the incident: the model wrote "I'll confirm your
+// appointment …" (a hedge, not a claim) and then "Done! Your appointment is
+// confirmed." (a claim), with no action line and no row in the diary. What the
+// customer must now receive is the corrected composition — claim sentences
+// stripped, truth appended — built from the same helpers the handler calls.
+
+group('The live repro ends with the truth, not the claim');
+
+$modelProse = "I'll confirm your appointment for Saturday at 11:00 — one moment please. "
+    . 'Done! Your appointment is confirmed.';
+// What the handler does when nothing was applied and no row exists.
+$final = trim(chatbotStripBookingClaims($modelProse)
+    . "\n\n" . chatbotBookingTruthLine(null, 'Asia/Karachi', []));
+
+check('the customer is told nothing was booked', str_contains($final, 'Nothing is booked yet'));
+check('and is never told it was confirmed', !str_contains($final, 'is confirmed'));
+check('the hedged sentence is kept — it was true', str_contains($final, 'one moment please'));
+
+// --- #51: the reply-delay choices ---------------------------------------------
+
+group('The delay dropdown offers the documented range');
+
+$choices = chatbotReplyDelayChoices();
+check('the default is one of the choices', isset($choices[300]));
+equals('the shortest wait is one second', 1, array_key_first($choices));
+equals('the longest is an hour', 3600, array_key_last($choices));
+
+group('A stored value is normalised, never trusted');
+
+equals('the default passes through', 300, chatbotNormaliseReplyDelay(300));
+equals('as a string too', 60, chatbotNormaliseReplyDelay('60'));
+equals('a value the list does not offer becomes the default', 300, chatbotNormaliseReplyDelay(42));
+equals('zero is not a way to disable it through a crafted POST', 300, chatbotNormaliseReplyDelay(0));
+equals('nor is a missing field', 300, chatbotNormaliseReplyDelay(null));
+equals('and something huge is not a way to park replies for days', 300, chatbotNormaliseReplyDelay(999999));
+
+echo "\n{$passed} passed, {$failed} failed\n";
+exit($failed ? 1 : 0);

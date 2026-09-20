@@ -70,8 +70,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ['change' => $action, 'result' => $result['status'], 'detail' => $result['detail']]);
             }
 
+            // #47: the calendar card follows the same change — CANCEL for a
+            // cancellation, PUBLISH for a reinstatement, and nothing for the
+            // internal-only states (completed, no_show) the customer is not
+            // told about either. A card that fails never rolls the change back;
+            // it is logged and said so in the flash.
+            $calNote = '';
+            if ($action === 'cancelled' || ($action === 'booked' && $appt['status'] === 'cancelled')) {
+                $cal = apptSendCalendarCards($conn, $userId, $appt,
+                    $action === 'cancelled' ? 'CANCEL' : 'PUBLISH');
+                logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$id,
+                    ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']]);
+                if (in_array($cal['customer']['status'], ['failed', 'skipped'], true)) {
+                    $calNote = ' Calendar event: not delivered — ' . ($cal['customer']['detail'] ?: 'the card did not go out') . '.';
+                }
+            }
+
             [$message, $variant] = apptNoticeSummary($prefix, $result);
-            formRespond(true, $message, $backTo, [], ['variant' => $variant]);
+            formRespond(true, $message . $calNote, $backTo, [], ['variant' => $variant]);
         }
         // apptSetStatus() only reports false for an id that is not this tenant's
         // or a status it does not know, and both used to redirect in silence.
@@ -149,8 +165,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ['change' => 'rescheduled', 'result' => $result['status'], 'detail' => $result['detail']]);
         }
 
+        // #47: an updated card for the new time, to both parties.
+        $cal = apptSendCalendarCards($conn, $userId, $appt, 'PUBLISH');
+        logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$id,
+            ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']]);
+        $calNote = in_array($cal['customer']['status'], ['failed', 'skipped'], true)
+            ? ' Calendar event: not delivered — ' . ($cal['customer']['detail'] ?: 'the card did not go out') . '.'
+            : '';
+
         [$message, $variant] = apptNoticeSummary('Appointment moved.', $result);
-        formRespond(true, $message, $self, [], ['variant' => $variant]);
+        formRespond(true, $message . $calNote, $self, [], ['variant' => $variant]);
     }
 
     if ($action === 'create') {
@@ -209,7 +233,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         logAudit($conn, 'appointment.booked', 'appointment', (string)$newId, ['via' => 'dashboard']);
-        formRespond(true, 'Appointment added.', $self);
+
+        // #47: the card goes even for a booking typed in by hand — the customer
+        // may have no chat, in which case the customer copy records 'skipped'
+        // exactly like a text notice would, and the tenant copy goes to the
+        // linked account's own number when there is one.
+        $cal = apptSendCalendarCards($conn, $userId, ['id' => $newId], 'PUBLISH');
+        logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$newId,
+            ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']]);
+        $calNote = in_array($cal['customer']['status'], ['failed', 'skipped'], true)
+            ? ' Calendar event: not delivered — ' . ($cal['customer']['detail'] ?: 'the card did not go out') . '.'
+            : '';
+
+        formRespond(true, 'Appointment added.' . $calNote, $self);
     }
 }
 
@@ -391,6 +427,14 @@ require_once __DIR__ . '/includes/header.php';
                                            data-modal-target="#apptMoveModal" data-modal-title="Move appointment"
                                            data-field-id="<?= (int)$a['id'] ?>"
                                            data-field-scheduled-local="<?= sanitize(date('Y-m-d\TH:i', strtotime($localWhen))) ?>">Move</a>
+                                    </li>
+                                    <?php // #47: the tenant's own copy of the calendar card. The
+                                          // WhatsApp one can have nowhere to go — a manual booking
+                                          // on an unlinked account sends nothing — so this is the
+                                          // fallback that always works. ?>
+                                    <li>
+                                        <a class="dropdown-item" href="appointment-ics.php?id=<?= (int)$a['id'] ?>">
+                                            <i class="bi bi-calendar-plus me-1"></i>Add to calendar</a>
                                     </li>
                                     <?php // Only the two endings a customer would notice are confirmed.
                                           // "Done" is the ordinary outcome and reversible with Reopen,

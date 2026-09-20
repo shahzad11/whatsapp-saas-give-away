@@ -52,6 +52,7 @@ function chatbotDefaultConfig($userId) {
         'handoff_notify_email' => null,
         'handoff_share_number' => 0,
         'handoff_share_message' => '',
+        'reply_delay_seconds' => 300,
     ];
 }
 
@@ -91,6 +92,36 @@ function chatbotToneChoices() {
         'formal'       => 'Formal',
         'casual'       => 'Casual',
     ];
+}
+
+// #51: how long the bot waits before answering. Instant, identical replies are
+// the pattern WhatsApp's anti-spam flags, so the delay is a safety setting, not
+// a cosmetic one — and the choices are a fixed list rather than a free number
+// for the same reason the slot length is a dropdown: it is a choice between a
+// few sensible waits, not an arbitrary count of seconds.
+function chatbotReplyDelayChoices(): array {
+    return [
+        1    => '1 second',
+        5    => '5 seconds',
+        10   => '10 seconds',
+        30   => '30 seconds',
+        60   => '1 minute',
+        120  => '2 minutes',
+        180  => '3 minutes',
+        300  => '5 minutes',
+        600  => '10 minutes',
+        900  => '15 minutes',
+        1800 => '30 minutes',
+        3600 => '60 minutes',
+    ];
+}
+
+// Anything the dropdown does not offer — a crafted POST, a column written by an
+// older version — resolves to the safe default rather than to zero, which would
+// silently switch the delay off.
+function chatbotNormaliseReplyDelay($value): int {
+    $v = (int)$value;
+    return array_key_exists($v, chatbotReplyDelayChoices()) ? $v : 300;
 }
 
 // Only known columns are written, and each is clamped: max_tokens and
@@ -150,6 +181,10 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $shareNum   = !empty($in['handoff_share_number']) ? 1 : 0;
     $shareMsg   = mb_substr(trim((string)($in['handoff_share_message'] ?? '')), 0, 500);
 
+    // #51: a fixed list, normalised like the slot length — unknown becomes the
+    // default, never zero.
+    $delay      = chatbotNormaliseReplyDelay($in['reply_delay_seconds'] ?? null);
+
     if ($byoCode !== null && !llmIsKnownProvider($byoCode)) $byoCode = null;
 
     // `greeting` is deliberately not written. The column exists but there is no
@@ -166,8 +201,8 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             appointment_slot_minutes, reminder_minutes, booking_confirmation,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
             handoff_notify_number, handoff_notify_email,
-            handoff_share_number, handoff_share_message)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            handoff_share_number, handoff_share_message, reply_delay_seconds)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -188,7 +223,8 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             handoff_notify_number = VALUES(handoff_notify_number),
             handoff_notify_email = VALUES(handoff_notify_email),
             handoff_share_number = VALUES(handoff_share_number),
-            handoff_share_message = VALUES(handoff_share_message)"
+            handoff_share_message = VALUES(handoff_share_message),
+            reply_delay_seconds = VALUES(reply_delay_seconds)"
     );
     // The type string is derived from the values, not written by hand. This
     // statement binds 28 columns and the hand-written string had drifted by one
@@ -200,7 +236,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
         $apptOn, $lead, $horizon, $slot, $reminders, $confirm,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
-        $shareNum, $shareMsg,
+        $shareNum, $shareMsg, $delay,
     ];
     $types = '';
     foreach ($params as $p) $types .= is_int($p) ? 'i' : 's';
@@ -425,6 +461,16 @@ function chatbotSystemPrompt(array $config, array $context = []) {
             . "Never mention that line. Do not promise a specific response time.";
     }
 
+    // #46: the one-shot correction after a draft that claimed a booking without
+    // sending the booking line. Deliberately blunt — the retry exists because
+    // the gentler rule #10 was already ignored once.
+    if (($context['nudge'] ?? '') === 'booking_line_missing') {
+        $parts[] = "Your previous draft claimed a booking was made without sending the booking line, "
+            . "so nothing was booked. Either end this message with the exact booking line for the "
+            . "service and time the customer agreed to, or — if anything is missing — ask for it. "
+            . "Do not claim anything is booked or confirmed.";
+    }
+
     // #44: who wrote the software. Hardcoded here and nowhere else — there is no
     // tenant field, no admin setting, no database row and no config API for it,
     // so it cannot be edited, disabled or read back out. Deliberately the *last*
@@ -582,6 +628,107 @@ function chatbotExtractAction($text) {
     if (!is_array($decoded) || empty($decoded['action'])) return [$clean, null];
 
     return [$clean, $decoded];
+}
+
+// --- Booking claims the model must not be allowed to make (#46) --------------
+//
+// Prompt rule #10 already tells the model never to claim a confirmation, and a
+// real model still does it — the live repro ended with "Done! Your appointment
+// is confirmed." sent to a customer whose booking did not exist. So the claim
+// is checked in PHP, sentence by sentence: an assertion inside a hedge
+// ("not yet booked", "once you confirm") is not a claim, and a claim anywhere
+// in the reply taints only its own sentence, not the rest.
+
+// One sentence asserting a booking exists. "Confirmed" and friends, none of
+// them inside a hedge or a question about the future.
+function chatbotBookingClaimSentence($sentence) {
+    // A sentence that is nothing but the claim — "Done!", "All set" — needs no
+    // verb phrase at all. Kept separate because the bare word "done" inside a
+    // longer sentence is ordinary prose ("the consultation is done in person").
+    $trimmed = trim($sentence);
+    $isClaim = (bool)preg_match('/^(done|all done|booked|confirmed|all set)$/i', $trimmed);
+
+    $claim = '/\b('
+        . 'confirmed'
+        . '|is booked|been booked'
+        . '|booked (you|your|it) in'
+        . '|has been (booked|scheduled|reserved)'
+        . '|(your|the) (appointment|booking|slot) is (booked|confirmed|set|reserved|scheduled|secured)'
+        . '|you\'?re (all )?(set|booked)|you are (all )?(set|booked)'
+        . '|all set'
+        . '|successfully (booked|scheduled|reserved)'
+        . '|i\'?ve (booked|scheduled|reserved)|i have (booked|scheduled|reserved)'
+        . '|reservation is confirmed'
+        . ')/i';
+    if (!$isClaim && !preg_match($claim, $sentence)) return false;
+
+    // A claim-shaped word inside a negation, a condition or a promise of a
+    // *future* confirmation is the model being careful, not lying.
+    $hedge = '/\b('
+        . 'not (yet )?(booked|confirmed|scheduled|reserved|set)'
+        . '|isn\'?t|hasn\'?t|haven\'?t|cannot|can\'?t|unable'
+        . '|once|will be|would be'
+        . '|to confirm|please confirm|can you confirm|shall i|would you like me to'
+        . '|i\'?ll (confirm|book|schedule|reserve)|i will (confirm|book|schedule|reserve)'
+        . ')/i';
+    return !preg_match($hedge, $sentence);
+}
+
+function chatbotClaimsBooking($text): bool {
+    foreach (preg_split('/[.!?\n]+/', (string)$text) ?: [] as $sentence) {
+        if (chatbotBookingClaimSentence($sentence)) return true;
+    }
+    return false;
+}
+
+// The *customer* asking whether a booking exists — the other half of the live
+// repro. The model answered "is it booked?" from chat history, so the question
+// is detected in PHP and answered from the database instead.
+//
+// "Confirm it" and "yes, please confirm" are agreement — the customer approving
+// a proposal — and deliberately do not match: those are answered by booking,
+// not by a status report.
+function chatbotAsksBookingStatus($text): bool {
+    $pattern = '/\b('
+        . '(is|has) (it|that|my (appointment|booking|slot)) (been )?(booked|confirmed|done|in the system|saved|scheduled)'
+        . '|did you book|have you booked'
+        . '|is (it|that|this) confirmed'
+        . '|check (the )?(system|booking|appointment)'
+        . '|am i booked'
+        . '|do i have (a|an) (booking|appointment)'
+        . '|what(\'s| is) my (appointment|booking)'
+        . '|when is my (appointment|booking)'
+        . ')/i';
+    return (bool)preg_match($pattern, (string)$text);
+}
+
+// Removes the sentences that claim a booking and keeps the rest — the model's
+// "great choice" and "see you then" are fine; only the lie has to go.
+function chatbotStripBookingClaims($text): string {
+    $kept = [];
+    foreach (preg_split('/([.!?\n]+)/', (string)$text, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [] as $piece) {
+        if (!chatbotBookingClaimSentence($piece)) $kept[] = $piece;
+    }
+    // A dropped sentence leaves its terminator behind ("Great choice! Done!" →
+    // "Great choice!!"), so runs of punctuation collapse back to one mark.
+    $joined = implode('', $kept);
+    $joined = preg_replace('/[.!?]\K(\s*[.!?])+/', '', $joined);
+    return trim(preg_replace('/[ \t]+/', ' ', $joined));
+}
+
+// The only confirmation that can be trusted, because it is generated from the
+// appointments table rather than remembered from the conversation. The weekday
+// comes out of the same timestamp as the date, so the pair can never disagree —
+// which is precisely what the model got wrong when it answered from history.
+function chatbotBookingTruthLine(?array $existing, $timezone, array $config): string {
+    if ($existing) {
+        try { $tz = new DateTimeZone($timezone ?: 'UTC'); } catch (Exception $e) { $tz = new DateTimeZone('UTC'); }
+        $when = (new DateTime((string)$existing['scheduled_at'], new DateTimeZone('UTC')))
+            ->setTimezone($tz)->format('D j M Y, H:i');
+        return 'Your booking is in our system: ' . $existing['service_name'] . ' on ' . $when . '.';
+    }
+    return 'Nothing is booked yet — no appointment has been saved. Tell me the service, '
+        . 'date and time you would like and I will book it.';
 }
 
 // Builds the message list: system prompt, then the recent turns, oldest first.
@@ -749,7 +896,13 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
 //
 // Every exit records why, because the failure mode of a chatbot is silence and
 // silence with no explanation is unsupportable. Returns the outcome string.
-function chatbotHandleInbound(mysqli $conn, array $msg) {
+//
+// $deferred marks the second pass of a delayed reply (#51): the pending queue
+// stored the whole inbound message and this function is called on it again,
+// so every gate below — handoff, hours, quota, phrase match — is re-evaluated
+// against the moment the reply is actually sent, not the moment it arrived.
+// The only thing a deferred run skips is being queued again.
+function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
     $sessionId = (string)($msg['sessionId'] ?? '');
     $chatId    = (string)($msg['chatId'] ?? '');
     $messageId = (string)($msg['messageId'] ?? '');
@@ -779,6 +932,36 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     $skip = chatbotSkipReason($config, $msg);
     if ($skip !== null) return $log($skip);
+
+    // #51: the reply delay. The message is parked in chatbot_pending_replies —
+    // one row per chat, so a burst of messages coalesces into a single reply
+    // and each new message pushes the wait forward. A random jitter of up to
+    // 20% of the delay (capped at 45s) is added: a bot that answers at exactly
+    // the same interval every time looks as mechanical as one that answers
+    // instantly.
+    //
+    // Delays under a minute are honoured inside this request — the inbound
+    // endpoint already runs with ignore_user_abort and a 180s ceiling — while
+    // minute-scale delays are left for the reminder tick to drain. Parking
+    // happens before the open-handoff gate on purpose: the deferred run
+    // re-checks it when the reply is due, so a message that arrives while a
+    // person is mid-conversation is still silenced then.
+    $delay = (int)($config['reply_delay_seconds'] ?? 0);
+    if (!$deferred && $delay > 0) {
+        $jitter = random_int(0, min((int)round($delay * 0.2), 45));
+        $dueAtUtc = gmdate('Y-m-d H:i:s', time() + $delay + $jitter);
+        chatbotQueuePendingReply($conn, $userId, $chatId, $msg, $dueAtUtc);
+
+        if ($delay >= 60) {
+            return $log('deferred', ['detail' => $delay . 's']);
+        }
+        $outcome = chatbotWaitAndDrain($conn, $userId, $chatId);
+        // null means the row was superseded by a newer message (its due_at was
+        // pushed past now) or claimed by the tick — either way this process
+        // must not also answer.
+        if ($outcome === null) return $log('deferred', ['detail' => 'superseded']);
+        return $outcome;
+    }
 
     // Read once. This used to be queried here and again when the context was
     // assembled, which was two round trips for one immutable answer — and two
@@ -900,11 +1083,40 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // The model may have proposed a booking. It is stripped from the reply
     // before anything is sent — the customer must never see the protocol — and
     // then carried out (or refused) against the real calendar.
-    [$replyText, $action] = chatbotExtractAction($reply['text']);
+    [$modelProse, $action] = chatbotExtractAction($reply['text']);
+
+    // #46: one bounded retry. A draft that asserts a booking exists without
+    // emitting the booking line booked nothing, so the model is told that and
+    // asked once more — most times it then sends the line properly and the
+    // booking happens for real instead of being corrected after the fact. Only
+    // when there was no action at all: a reply that already carried one is not
+    // second-guessed.
+    $retried = false;
+    if ($appointments !== null && $action === null && chatbotClaimsBooking($modelProse)) {
+        $retry = chatbotGenerateReply($conn, $userId, $config, $history, $text,
+            $context + ['nudge' => 'booking_line_missing']);
+        $retried = true;
+        if (!empty($retry['ok'])) {
+            [$retryProse, $retryAction] = chatbotExtractAction($retry['text']);
+            // Only a booking line redeems the draft: the nudge asked for exactly
+            // that, and adopting a different action (or none) would be a second
+            // guess at what the customer meant.
+            if (($retryAction['action'] ?? '') === 'book') {
+                $modelProse = $retryProse;
+                $action = $retryAction;
+                $reply = $retry;   // usage/latency logged should be the call used
+            }
+        }
+    }
+
+    $actionResult = '';
     $actionOutcome = null;
+    // Set by chatbotApplyAction only when a booking row was actually written —
+    // a refusal line counts as a result but not as a booking (#46).
+    $applied = false;
     // A handoff action needs no appointment context; a booking one does.
     if ($action !== null && ($appointments !== null || ($action['action'] ?? '') === 'handoff')) {
-        $result = chatbotApplyAction($conn, $userId, $config, $action, [
+        $actionResult = chatbotApplyAction($conn, $userId, $config, $action, [
             'timezone' => $appointments['timezone'] ?? $timezone,
             'account_id' => (int)$account['id'],
             'chat_id' => $chatId,
@@ -913,9 +1125,8 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
             'topic' => $text,
             'handoff_enabled' => !empty($config['handoff_enabled']),
             'customer_phone' => chatbotPhoneFromJid($chatId),
-        ]);
-        if ($result !== '') {
-            $replyText = trim($replyText . "\n\n" . $result);
+        ], $applied);
+        if ($actionResult !== '') {
             $actionOutcome = $action['action'];
         }
     }
@@ -925,13 +1136,48 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
     // the prompt, because the prompt already says not to and a real model still
     // does it. Skipped entirely when the model *did* ask — which is the normal
     // case, and then this costs one string comparison.
+    //
+    // It runs on the model's prose, not the composed reply: the sentences it
+    // strips are the ones quoting times, and the action result appended below —
+    // a confirmation or a refusal — is exactly the fresh answer that must not be
+    // eaten.
     if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
-        $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $text, $replyText, $timezone);
+        $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $text, $modelProse, $timezone);
         if ($rechecked !== null) {
-            $replyText = $rechecked;
+            $modelProse = $rechecked;
             $actionOutcome = 'availability re-check';
         }
     }
+
+    // #46: the truth check. When no booking write succeeded, two things must
+    // never reach the customer unexamined: the model claiming one did, and the
+    // customer asking whether one exists. Both are answered from the
+    // appointments table, which is the only source that knows.
+    $truthLine = '';
+    // $applied covers cancel as well as book and reschedule: a successful
+    // cancel's "Cancelled: …" line is already the truth, so "Nothing is booked
+    // yet" must not follow it.
+    $bookingSucceeded = $applied;
+    if ($appointments !== null && !$bookingSucceeded
+        && (chatbotClaimsBooking($modelProse) || chatbotAsksBookingStatus($text))) {
+        // The claim sentences go even when a refusal line is also being sent —
+        // "confirmed!" followed by "that time is taken" contradicts itself.
+        $modelProse = chatbotStripBookingClaims($modelProse);
+        // ...but the truth line is skipped when a refused book already says it:
+        // "sorry, that time was taken" followed by "nothing is booked yet"
+        // would say the same thing twice.
+        if ($actionResult === '' || ($action['action'] ?? '') !== 'book') {
+            $truthLine = chatbotBookingTruthLine(apptNextForChat($conn, $userId, $chatId), $timezone, $config);
+        }
+        $actionOutcome = $actionOutcome ?: 'truth check';
+    }
+
+    // Prose first, then the system's own lines: the action result (a
+    // confirmation, a refusal, a diary answer) and the truth check.
+    $replyText = trim(implode("\n\n", array_filter(
+        [$modelProse, $actionResult, $truthLine],
+        function ($s) { return trim((string)$s) !== ''; }
+    )));
 
     if (trim($replyText) === '') $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
 
@@ -942,12 +1188,163 @@ function chatbotHandleInbound(mysqli $conn, array $msg) {
 
     incrementUsage($conn, $userId, 'chatbot_replies');
     return $log('replied', [
-        'detail' => $actionOutcome ? 'appointment ' . $actionOutcome : null,
+        'detail' => $actionOutcome
+            ? 'appointment ' . $actionOutcome . ($retried ? ' (after retry)' : '')
+            : null,
         'model_id' => $reply['model_id'] ?? null,
         'prompt_tokens' => $reply['usage']['prompt'] ?? null,
         'completion_tokens' => $reply['usage']['completion'] ?? null,
         'latency_ms' => $reply['latency_ms'] ?? null,
     ]);
+}
+
+// --- The reply-delay queue (#51) --------------------------------------------
+//
+// One row per (user, chat) in chatbot_pending_replies. The unique key is what
+// makes a burst of messages produce a single reply: each new message overwrites
+// the payload and pushes due_at forward, so only the newest message is ever
+// answered and the wait always measured from the last thing the customer said.
+
+// Parks the message. The whole $msg is stored, not a half-processed state,
+// because the deferred run must re-evaluate everything from the top — an open
+// handoff, the active hours, the quota — against when the reply goes out.
+function chatbotQueuePendingReply(mysqli $conn, $userId, $chatId, array $msg, $dueAtUtc) {
+    $stmt = $conn->prepare(
+        "INSERT INTO chatbot_pending_replies (user_id, chat_key, payload, due_at)
+         VALUES (?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+            payload = VALUES(payload), due_at = VALUES(due_at), claimed_at = NULL"
+    );
+    $key = chatbotChatKey($chatId);
+    $payload = json_encode($msg);
+    $stmt->bind_param('isss', $userId, $key, $payload, $dueAtUtc);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Claims this chat's due row. The conditional UPDATE is the lock: it only wins
+// when the row is still due and still unclaimed, so a second process — or this
+// same request after a newer message pushed due_at forward — cannot make two
+// replies go out for one chat. Returns the decoded payload, or null when the
+// row was superseded or already taken.
+function chatbotClaimPendingReply(mysqli $conn, $userId, $chatId) {
+    $stmt = $conn->prepare(
+        "UPDATE chatbot_pending_replies SET claimed_at = UTC_TIMESTAMP()
+         WHERE user_id = ? AND chat_key = ?
+           AND due_at <= UTC_TIMESTAMP() AND claimed_at IS NULL"
+    );
+    $key = chatbotChatKey($chatId);
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $won = $stmt->affected_rows > 0;
+    $stmt->close();
+    if (!$won) return null;
+
+    $stmt = $conn->prepare(
+        "SELECT payload FROM chatbot_pending_replies WHERE user_id = ? AND chat_key = ?"
+    );
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    $payload = json_decode((string)($row['payload'] ?? ''), true);
+    return is_array($payload) ? $payload : null;
+}
+
+function chatbotDeletePendingReply(mysqli $conn, $userId, $chatId) {
+    // `claimed_at IS NOT NULL` is load-bearing: a message that arrived while we
+    // were answering the previous one resets claimed_at via the upsert, and an
+    // unconditional delete would then throw that newer, unanswered message away.
+    $stmt = $conn->prepare(
+        "DELETE FROM chatbot_pending_replies WHERE user_id = ? AND chat_key = ? AND claimed_at IS NOT NULL"
+    );
+    $key = chatbotChatKey($chatId);
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Sub-minute delays are waited out inside the inbound request — the tick only
+// runs every 60s and "10 seconds" must mean ten seconds. Returns the deferred
+// run's outcome, or null when the row was superseded or claimed elsewhere;
+// the caller logs that case.
+//
+// The sleep is capped at 75s: set_time_limit(180) on the inbound endpoint has
+// to also cover the model call and the send that follow, and a longer wait
+// would risk the process being killed between claim and reply.
+function chatbotWaitAndDrain(mysqli $conn, $userId, $chatId) {
+    $stmt = $conn->prepare(
+        "SELECT due_at FROM chatbot_pending_replies WHERE user_id = ? AND chat_key = ?"
+    );
+    $key = chatbotChatKey($chatId);
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) return null;
+
+    $wait = strtotime($row['due_at'] . ' UTC') - time();
+    if ($wait > 0) sleep(min($wait, 75));
+
+    $payload = chatbotClaimPendingReply($conn, $userId, $chatId);
+    if ($payload === null) return null;
+
+    $outcome = chatbotHandleInbound($conn, $payload, true);
+    chatbotDeletePendingReply($conn, $userId, $chatId);
+    return $outcome;
+}
+
+// The tick's half of the delay (#51): anything due is claimed one row at a time
+// and answered, newest-message-wins by construction of the table. A claim older
+// than five minutes is treated as abandoned — the process that took it died
+// between claiming and replying — so a stuck row cannot silence a chat for
+// good.
+function chatbotDrainPendingReplies(mysqli $conn, $budgetSeconds = 20): array {
+    $started = microtime(true);
+    $out = ['processed' => 0, 'outcomes' => []];
+
+    while (microtime(true) - $started < $budgetSeconds) {
+        $stmt = $conn->prepare(
+            "SELECT id, user_id, chat_key, payload FROM chatbot_pending_replies
+             WHERE due_at <= UTC_TIMESTAMP()
+               AND (claimed_at IS NULL OR claimed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 MINUTE))
+             ORDER BY due_at ASC LIMIT 1"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) break;
+
+        $stmt = $conn->prepare(
+            "UPDATE chatbot_pending_replies SET claimed_at = UTC_TIMESTAMP()
+             WHERE id = ?
+               AND (claimed_at IS NULL OR claimed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 MINUTE))"
+        );
+        $id = (int)$row['id'];
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        $won = $stmt->affected_rows > 0;
+        $stmt->close();
+        if (!$won) continue;
+
+        $payload = json_decode((string)$row['payload'], true);
+        if (is_array($payload)) {
+            $outcome = chatbotHandleInbound($conn, $payload, true);
+            $out['outcomes'][$outcome] = ($out['outcomes'][$outcome] ?? 0) + 1;
+            $out['processed']++;
+        }
+
+        // Same lost-message guard as chatbotDeletePendingReply: a row rewritten
+        // by a newer inbound while we processed has claimed_at = NULL again and
+        // must survive this delete.
+        $stmt = $conn->prepare("DELETE FROM chatbot_pending_replies WHERE id = ? AND claimed_at IS NOT NULL");
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        $stmt->close();
+    }
+
+    return $out;
 }
 
 // --- What the model is told about this tenant (#34) -------------------------
@@ -1077,7 +1474,13 @@ function chatbotAppointmentContext(mysqli $conn, $userId, array $config, $timezo
 // Returns a short line to append to the reply, so the customer always learns the
 // real outcome. The model's own prose is written as "submitting", which is why a
 // refusal here reads as a correction rather than a contradiction.
-function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action, array $ctx) {
+//
+// $applied is set to true only when a booking was actually written (#46). A
+// non-empty return is not evidence of that: a refused booking also returns a
+// line — the refusal the customer reads. The caller needs the distinction to
+// know whether "your appointment is confirmed" in the model's prose is a fact
+// or a claim it has to remove.
+function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action, array $ctx, &$applied = false) {
     $timezone = $ctx['timezone'];
     $tz = new DateTimeZone($timezone);
     $services = apptServices($conn, $userId, true);
@@ -1139,9 +1542,15 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
                 'source' => 'chatbot',
             ]);
             if (!$id) return apptRefusalLine($why);
+            $applied = true;
             logAudit($conn, 'appointment.booked', 'appointment', (string)$id, ['via' => 'chatbot'], $userId);
 
             $booked = apptById($conn, $userId, $id);
+            // #47: the calendar card follows the booking. A card that fails is
+            // logged, never rolled back — the booking is real either way.
+            $cal = apptSendCalendarCards($conn, $userId, $booked, 'PUBLISH', 'chatbot');
+            logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$id,
+                ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']], $userId);
             $confirm = trim((string)($config['booking_confirmation'] ?? ''));
             $when = $fmt($booked['scheduled_at']);
             return $confirm !== ''
@@ -1151,8 +1560,13 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
         case 'cancel':
             $existing = $ctx['chat_id'] ? apptNextForChat($conn, $userId, $ctx['chat_id']) : null;
             if (!$existing) return "I could not find a booking to cancel.";
+            $applied = true;
             apptSetStatus($conn, $userId, (int)$existing['id'], 'cancelled');
             logAudit($conn, 'appointment.cancelled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
+            // #47: the cancellation card, same reasoning as the booking's.
+            $cal = apptSendCalendarCards($conn, $userId, $existing, 'CANCEL', 'chatbot');
+            logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$existing['id'],
+                ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']], $userId);
 
             $reply = "Cancelled: {$existing['service_name']} on " . $fmt($existing['scheduled_at']) . '.';
             // #45: this reply *is* the customer being told, so it is recorded as
@@ -1170,8 +1584,14 @@ function chatbotApplyAction(mysqli $conn, $userId, array $config, array $action,
             [$utc, $why] = apptRescheduleSlot($conn, $userId, $config, $action['datetime'] ?? '',
                 $timezone, (int)$existing['id']);
             if (!$utc) return apptRefusalLine($why);
+            $applied = true;
 
             logAudit($conn, 'appointment.rescheduled', 'appointment', (string)$existing['id'], ['via' => 'chatbot'], $userId);
+            // #47: the same event updated, not a second one — SEQUENCE bumped
+            // inside apptReschedule() is what makes the new card replace it.
+            $cal = apptSendCalendarCards($conn, $userId, $existing, 'PUBLISH', 'chatbot');
+            logAudit($conn, 'appointment.calendar_sent', 'appointment', (string)$existing['id'],
+                ['customer' => $cal['customer']['status'], 'tenant' => $cal['tenant']['status']], $userId);
 
             $reply = "Moved: {$existing['service_name']} is now " . $fmt($utc->format('Y-m-d H:i:s')) . '.';
             // Recorded for the same reason as the cancellation above (#45).
@@ -1268,6 +1688,26 @@ function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId,
     return true;
 }
 
+// A document attachment — the calendar card (#47) is the only caller today.
+// Same endpoint family and same metering as a text reply: a document the
+// tenant sent is a message the tenant sent, and a delivered one still marks
+// the conversation read for the same reason a text reply does.
+function chatbotSendDocument(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $bytes, $filename, $mime, $caption) {
+    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
+        . '/chats/' . urlencode($chatId) . '/media', [
+        'kind' => 'document',
+        'data' => base64_encode($bytes),
+        'mimetype' => $mime,
+        'fileName' => $filename,
+        'caption' => $caption,
+    ], $tenantId, 30);
+
+    if (!$resp || empty($resp['ok'])) return false;
+    incrementUsage($conn, $userId, 'messages_sent');
+    chatbotMarkChatRead($tenantId, $sessionId, $chatId);
+    return true;
+}
+
 // Best effort, and silent about it. The reply is already delivered; a read
 // receipt that did not go through is cosmetic, and turning it into a failure
 // would make the reply path report an error for something the customer will
@@ -1327,6 +1767,7 @@ function chatbotAccountForSession(mysqli $conn, $sessionId) {
 function chatbotOutcomeLabel($outcome) {
     return [
         'replied'              => 'Replied',
+        'deferred'             => 'Waiting to reply',
         'skipped_group'        => 'Skipped — group chat',
         'skipped_archived'     => 'Skipped — archived chat',
         'skipped_own_message'  => 'Skipped — own message',
@@ -1371,5 +1812,6 @@ function chatbotOutcomeHint($outcome) {
         'handoff'           => 'Someone asked for a person. Open Live chats to reply.',
         'skipped_disabled'  => 'The chatbot was switched off when this arrived.',
         'skipped_notify_number' => 'That is the number your handover alerts go to, so the bot never answers it.',
+        'deferred'          => 'Held back by the reply delay; the answer goes out when the delay ends.',
     ][$outcome] ?? '';
 }

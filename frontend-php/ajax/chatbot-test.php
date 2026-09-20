@@ -349,6 +349,22 @@ if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
     }
 }
 
+// #46: the same truth check the live path runs — a console that let "Done! Your
+// appointment is confirmed." stand would show the tenant a reply the customer
+// would never receive. It applies where no action was emitted, which is the
+// case the guard exists for; an emitted book action is previewed above instead.
+// $chatId is null here as everywhere else in this file, so "the customer's
+// existing booking" is what a brand-new customer's would be: none.
+if ($appointments !== null && $action === null
+    && (chatbotClaimsBooking($replyText) || chatbotAsksBookingStatus($message))) {
+    $replyText = chatbotStripBookingClaims($replyText);
+    $replyText = trim($replyText . "\n\n" . chatbotBookingTruthLine(null, $timezone, $config));
+    $note('turn', 'info',
+        'The assistant claimed a booking without sending the booking line, so nothing would '
+        . 'have been booked. A customer would get the corrected reply shown, saying what is '
+        . 'actually in the diary.');
+}
+
 // Mirrors the live path's last resort: a reply that is nothing but an action line
 // leaves no words for the customer.
 if (trim($replyText) === '') {

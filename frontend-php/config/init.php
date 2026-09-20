@@ -44,5 +44,6 @@ require_once $basePath . '/includes/llm.php';
 // appointments before chatbot: the chatbot's booking prompt and its action
 // handler are built from the appointment layer.
 require_once $basePath . '/includes/appointments.php';
+require_once $basePath . '/includes/calendar.php';
 require_once $basePath . '/includes/handoff.php';
 require_once $basePath . '/includes/chatbot.php';

@@ -197,6 +197,8 @@ function leadsNormalise(array $r, $dialCode = '92') {
 // $params:
 //   query       required search text ("dentist")
 //   location    free-form area text ("Lahore, Pakistan")
+//   lat, lng    a map pin (#52). Present together, they replace `location`
+//               entirely — SerpApi cannot take both on one search.
 //   radius_m    map height in metres, encoded as SerpApi's `m`
 //   min_rating  2.0 – 4.5, or null
 //   open_now    bool
@@ -218,6 +220,89 @@ function leadsNormalise(array $r, $dialCode = '92') {
 // follows `next` rather than incrementing `start` — a `location` text is
 // resolved to an `ll` by SerpApi, and only the returned URL knows what it
 // resolved to.
+// Builds the SerpApi query for a first-page search (#52).
+//
+// Split out of leadsSearch() so the "where does this search happen" rule is
+// testable without a database or a network. There are exactly two origins a
+// search can have:
+//
+//   - **A map pin** (`lat` + `lng` both supplied): SerpApi's google_maps engine
+//     takes `lat`/`lon`/`m` as the origin — and CANNOT combine them with
+//     `location`, so when a pin is present it wins outright, even over a typed
+//     area that was left filled in. The location label returned for the ledger
+//     is "@lat,lng", which is also what leadsResolvedLl() emits, so a pin
+//     search and a text search are distinguishable in `leads.source_location`.
+//   - **A typed area**, else the configured default. Never nothing: without an
+//     origin SerpApi sends the query to Google with no `location` at all, and
+//     Google geolocates it from the IP address that asked — SerpApi's own
+//     datacentre, in Northern Virginia. The search succeeds, returns twenty
+//     real businesses, spends a credit, and every one of them is 11,000 km
+//     from the admin who searched. It looks like working software, which is
+//     why it went unnoticed: the Area box showed a grey "Lahore, Pakistan"
+//     placeholder that reads exactly like a value.
+//
+// `m` (map height in metres) accompanies either origin — without `z` or `m`
+// SerpApi rejects the search — and a radius is a distance an admin can reason
+// about while a zoom level is not.
+//
+// Returns ['ok' => true, 'query' => [...], 'location' => string,
+//          'radius_m' => int] or ['ok' => false, 'error' => string].
+// `api_key` is deliberately absent from the query: it is appended by
+// leadsSearch(), so this helper never handles the credential.
+function leadsSearchQuery(array $params, array $settings) {
+    $query = [
+        'engine' => 'google_maps',
+        'type'   => 'search',
+        'q'      => (string)($params['query'] ?? ''),
+        'hl'     => $settings['hl'],
+    ];
+
+    $radiusM = max(1, (int)($params['radius_m'] ?? 0) ?: (int)$settings['radius_m']);
+
+    $lat = trim((string)($params['lat'] ?? ''));
+    $lng = trim((string)($params['lng'] ?? ''));
+    if ($lat !== '' && $lng !== '') {
+        // A pin must be a real point on the planet; a dragged marker only ever
+        // produces one, so anything else arrived by hand-editing the request.
+        if (!is_numeric($lat) || !is_numeric($lng)
+            || (float)$lat < -90 || (float)$lat > 90
+            || (float)$lng < -180 || (float)$lng > 180) {
+            return ['ok' => false, 'error' => 'The map pin has invalid coordinates.'];
+        }
+        // Six decimals is ~0.1 m — finer than a click can express, and matches
+        // the precision leadsResolvedLl() sees echoed back.
+        $lat = round((float)$lat, 6);
+        $lng = round((float)$lng, 6);
+        $query['lat'] = $lat;
+        $query['lon'] = $lng;
+        $query['m'] = $radiusM;
+        $location = '@' . $lat . ',' . $lng;
+    } else {
+        // So: the typed area, else the configured default, and never nothing —
+        // unless a pin took over above.
+        $location = trim((string)($params['location'] ?? ''));
+        if ($location === '') $location = trim((string)$settings['location']);
+        if ($location === '') {
+            return ['ok' => false, 'error' => 'Type an area or drop a pin on the map — without one Google guesses the '
+                             . 'location and returns businesses from the wrong country. '
+                             . 'No credit was used.'];
+        }
+        $query['location'] = $location;
+        $query['m'] = $radiusM;
+    }
+
+    // Only the values SerpApi documents. A rating it does not recognise is
+    // dropped rather than sent, because a rejected search still costs the
+    // round trip and confuses the admin about which field was wrong.
+    $minRating = (string)($params['min_rating'] ?? '');
+    if (in_array($minRating, ['2.0', '2.5', '3.0', '3.5', '4.0', '4.5'], true)) {
+        $query['min_rating'] = $minRating;
+    }
+    if (!empty($params['open_now'])) $query['open_state'] = 'now';
+
+    return ['ok' => true, 'query' => $query, 'location' => $location, 'radius_m' => $radiusM];
+}
+
 function leadsSearch(mysqli $conn, array $params) {
     $key = serpApiKey($conn);
     if (!is_string($key) || $key === '') {
@@ -243,51 +328,18 @@ function leadsSearch(mysqli $conn, array $params) {
         // The next URL carries every search parameter but not the key.
         $url = $nextUrl . '&api_key=' . urlencode($key);
     } else {
-        $query = [
-            'engine' => 'google_maps',
-            'type'   => 'search',
-            'q'      => (string)$params['query'],
-            'hl'     => $settings['hl'],
-            'api_key' => $key,
-        ];
-
-        // An area is not optional, and this is the whole bug this guard exists
-        // for. Without `location` SerpApi sends the query to Google with no
-        // origin at all, and Google geolocates it from the IP address that
-        // asked — SerpApi's own datacentre, in Northern Virginia. The search
-        // succeeds, returns twenty real businesses, spends a credit, and every
-        // one of them is 11,000 km from the admin who searched. It looks like
-        // working software, which is why it went unnoticed: the Area box showed
-        // a grey "Lahore, Pakistan" placeholder that reads exactly like a value.
-        //
-        // So: the typed area, else the configured default, and never nothing.
-        $location = trim((string)($params['location'] ?? ''));
-        if ($location === '') $location = trim((string)$settings['location']);
-        if ($location === '') {
+        $built = leadsSearchQuery($params, $settings);
+        if (!$built['ok']) {
             return ['ok' => false, 'results' => [], 'next' => null, 'resolved_ll' => null,
-                    'error' => 'Type an area to search in — without one Google guesses the '
-                             . 'location and returns businesses from the wrong country. '
-                             . 'No credit was used.'];
+                    'error' => $built['error']];
         }
+        $location = $built['location'];
+        $radiusM = $built['radius_m'];
+        // The key is appended here rather than inside leadsSearchQuery(), so the
+        // pure helper — and anything that ever logs its output — never sees it.
+        $built['query']['api_key'] = $key;
 
-        // `location` must be accompanied by `z` or `m`; without one SerpApi
-        // rejects the search. `m` (map height in metres) is used because a
-        // radius is a distance an admin can reason about and a zoom level
-        // is not.
-        $radiusM = max(1, (int)($params['radius_m'] ?? 0) ?: (int)$settings['radius_m']);
-        $query['location'] = $location;
-        $query['m'] = $radiusM;
-
-        // Only the values SerpApi documents. A rating it does not recognise is
-        // dropped rather than sent, because a rejected search still costs the
-        // round trip and confuses the admin about which field was wrong.
-        $minRating = (string)($params['min_rating'] ?? '');
-        if (in_array($minRating, ['2.0', '2.5', '3.0', '3.5', '4.0', '4.5'], true)) {
-            $query['min_rating'] = $minRating;
-        }
-        if (!empty($params['open_now'])) $query['open_state'] = 'now';
-
-        $url = SERPAPI_ENDPOINT . '?' . http_build_query($query);
+        $url = SERPAPI_ENDPOINT . '?' . http_build_query($built['query']);
     }
 
     [$status, $body, $err] = leadsHttpGet($url);

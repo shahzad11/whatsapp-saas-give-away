@@ -323,5 +323,63 @@ check('curl never follows a redirect with the key in the query string',
     str_contains($leads, 'CURLOPT_FOLLOWLOCATION => false'));
 
 // ---------------------------------------------------------------------------
+group('leadsSearchQuery() builds the origin a search runs with (#52)');
+
+// A settings array shaped exactly like leadsSettings() returns.
+$leadsSettings = ['dial_code' => '92', 'hl' => 'en', 'radius_m' => 5000,
+                  'location' => 'Lahore, Pakistan'];
+
+// A pin replaces the area outright: SerpApi's google_maps engine cannot take
+// `lat`/`lon` together with `location`, so the query must carry one or the
+// other, never both.
+$pin = leadsSearchQuery(['query' => 'dentist', 'lat' => '31.5204', 'lng' => '74.3587',
+                         'radius_m' => 20000], $leadsSettings);
+check('a pin builds ok', $pin['ok'] === true);
+equals('lat goes to SerpApi as lat', 31.5204, $pin['query']['lat']);
+equals('lng goes as lon', 74.3587, $pin['query']['lon']);
+equals('the radius is m in metres', 20000, $pin['query']['m']);
+check('and no location text is sent with it', !isset($pin['query']['location']));
+// The '@lat,lng' label is what the ledger and leads.source_location record —
+// the same shape leadsResolvedLl() recovers from a response.
+equals('the recorded origin is the @-label', '@31.5204,74.3587', $pin['location']);
+
+// No pin: the typed area goes out as `location`, exactly as before.
+$typed = leadsSearchQuery(['query' => 'dentist', 'location' => 'Gujranwala',
+                           'radius_m' => 10000], $leadsSettings);
+check('a typed area builds ok', $typed['ok'] === true);
+equals('it is sent as location', 'Gujranwala', $typed['query']['location']);
+check('and still carries m', $typed['query']['m'] === 10000);
+check('no pin means no lat/lon', !isset($typed['query']['lat']) && !isset($typed['query']['lon']));
+
+// A coordinate outside the planet is a hand-edited request, not a map click.
+$bad = leadsSearchQuery(['query' => 'dentist', 'lat' => '95', 'lng' => '74.35'], $leadsSettings);
+check('latitude 95 is refused', $bad['ok'] === false);
+equals('with the pin error', 'The map pin has invalid coordinates.', $bad['error']);
+check('longitude beyond 180 is refused too',
+    leadsSearchQuery(['query' => 'x', 'lat' => '30', 'lng' => '181'], $leadsSettings)['ok'] === false);
+check('a non-numeric pin is refused',
+    leadsSearchQuery(['query' => 'x', 'lat' => 'abc', 'lng' => '74'], $leadsSettings)['ok'] === false);
+// Half a pin is no pin: it falls back to the typed area rather than guessing.
+$half = leadsSearchQuery(['query' => 'dentist', 'lat' => '31.5', 'lng' => '',
+                          'location' => 'Lahore'], $leadsSettings);
+check('a lone lat falls back to the typed area',
+    $half['ok'] === true && ($half['query']['location'] ?? '') === 'Lahore' && !isset($half['query']['lat']));
+
+// The pin wins over a typed area still sitting in the box — the input is only
+// disabled in the browser, and a request can carry both regardless.
+$both = leadsSearchQuery(['query' => 'dentist', 'location' => 'Gujranwala',
+                          'lat' => '31.5', 'lng' => '74.3'], $leadsSettings);
+check('a pin beats the typed area',
+    $both['ok'] === true && isset($both['query']['lat']) && !isset($both['query']['location']));
+
+// Nothing anywhere — no pin, no typed area, no configured default — is the
+// Virginia-datacentre bug, refused before a credit exists to be spent.
+$none = leadsSearchQuery(['query' => 'dentist'],
+    array_merge($leadsSettings, ['location' => '']));
+check('no origin at all is refused', $none['ok'] === false);
+check('and the message offers the pin as the other way in',
+    str_contains($none['error'], 'pin on the map') && str_contains($none['error'], 'No credit was used'));
+
+// ---------------------------------------------------------------------------
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

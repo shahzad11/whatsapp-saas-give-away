@@ -47,6 +47,7 @@ $missed = 0;
 $retrying = 0;
 $deferred = 0;
 $due = [];
+$repliesDrained = ['processed' => 0, 'outcomes' => []];
 
 // The whole pass is wrapped because the caller is a machine that only sees a
 // status code. A bare 500 from a database that has not run the current
@@ -55,6 +56,13 @@ $due = [];
 // the message. Reported rather than swallowed: a tick that could not run must
 // not look like a tick with nothing to do.
 try {
+
+    // #51: delayed chatbot replies that have come due. This tick is the only
+    // scheduler the stack has — reusing it rather than adding a second one
+    // keeps the backend unchanged. Its 60-second granularity is fine for the
+    // minute-scale delays the setting offers; sub-minute delays are honoured
+    // inside the inbound request instead and never reach this table.
+    $repliesDrained = chatbotDrainPendingReplies($conn, 15);
 
     // Housekeeping first, so the batch below sees a truthful table.
     //
@@ -224,6 +232,7 @@ echo json_encode([
     'recovered'  => $recovered,
     'swept'      => $missedSwept,
     'deferred'   => $deferred,
+    'replies_processed' => $repliesDrained['processed'],
     'elapsed_ms' => $elapsedMs,
     'health'     => $health,
 ]);

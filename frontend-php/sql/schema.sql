@@ -821,6 +821,64 @@ EXECUTE stmt_add_slot;
 DEALLOCATE PREPARE stmt_add_slot;
 
 -- ---------------------------------------------------------------------------
+-- Reply delay (issue #51)
+-- ---------------------------------------------------------------------------
+
+-- How long the bot waits before answering. Instant, identical replies are the
+-- pattern WhatsApp's anti-spam flags, so the wait is configurable per tenant
+-- (the dropdown offers a fixed list, normalised in chatbotNormaliseReplyDelay).
+-- Five minutes is the safe default for a column added to tenants who never
+-- asked for one.
+SET @add_delay := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs ADD COLUMN reply_delay_seconds INT NOT NULL DEFAULT 300',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'reply_delay_seconds'
+);
+PREPARE stmt_add_delay FROM @add_delay;
+EXECUTE stmt_add_delay;
+DEALLOCATE PREPARE stmt_add_delay;
+
+-- Replies parked until their delay elapses. One row per chat — the unique key
+-- is the coalescing rule: a burst of messages from the same customer overwrites
+-- the payload and pushes due_at forward, so only the newest message is answered
+-- and the wait restarts with each new message. `claimed_at` is the lock that
+-- keeps an in-request wait and the reminder tick from both answering; a claim
+-- older than five minutes is treated as abandoned and reclaimed.
+CREATE TABLE IF NOT EXISTS chatbot_pending_replies (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    chat_key CHAR(64) NOT NULL,            -- sha256(chat jid), same as chatbot_events.chat_key (chatbotChatKey())
+    payload JSON NOT NULL,                 -- the exact $msg array chatbotHandleInbound() received, latest message wins
+    due_at DATETIME NOT NULL,              -- UTC
+    claimed_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_chat (user_id, chat_key),
+    INDEX idx_due (due_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------------
+-- Calendar cards (issue #47)
+-- ---------------------------------------------------------------------------
+
+-- iCalendar SEQUENCE: bumped on every reschedule, cancel and reinstate so the
+-- card a calendar app receives for a changed booking updates the event it
+-- already has instead of duplicating it.
+SET @add_ics_seq := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE appointments ADD COLUMN ics_sequence INT NOT NULL DEFAULT 0',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointments' AND COLUMN_NAME = 'ics_sequence'
+);
+PREPARE stmt_add_ics_seq FROM @add_ics_seq;
+EXECUTE stmt_add_ics_seq;
+DEALLOCATE PREPARE stmt_add_ics_seq;
+
+-- ---------------------------------------------------------------------------
 -- Human handoff (issue #16)
 -- ---------------------------------------------------------------------------
 

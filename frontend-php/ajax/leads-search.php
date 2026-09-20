@@ -48,6 +48,11 @@ $settings = leadsSettings($conn);
 $query    = trim((string)($input['query'] ?? ''));
 $location = trim((string)($input['location'] ?? ''));
 $nextUrl  = trim((string)($input['next_url'] ?? ''));
+// The map pin (#52). Passed through as strings; leadsSearchQuery() owns the
+// numeric and range checks, exactly as it owns the empty-area one.
+$pinLat = trim((string)($input['lat'] ?? ''));
+$pinLng = trim((string)($input['lng'] ?? ''));
+$hasPin = $pinLat !== '' && $pinLng !== '';
 
 // A blank query would search for nothing and still cost a credit.
 if ($query === '' && $nextUrl === '') {
@@ -58,8 +63,9 @@ if ($query === '' && $nextUrl === '') {
 // geolocating SerpApi's datacentre and returns twenty businesses in Virginia.
 // Refused here as well as in leadsSearch() so the credit is never spent, and the
 // browser is told which field is wrong rather than being shown foreign leads.
-if ($location === '' && $nextUrl === '') {
-    echo json_encode(['ok' => false, 'error' => 'Type an area to search in, e.g. "Lahore, Pakistan".']);
+// A dropped pin is itself an origin, so it satisfies this guard on its own.
+if ($location === '' && $nextUrl === '' && !$hasPin) {
+    echo json_encode(['ok' => false, 'error' => 'Type an area to search in or drop a pin on the map.']);
     exit;
 }
 
@@ -77,6 +83,8 @@ $params = [
     'min_rating' => (string)($input['min_rating'] ?? ''),
     'open_now'   => !empty($input['open_now']),
     'next_url'   => $nextUrl,
+    'lat'        => $pinLat,
+    'lng'        => $pinLng,
 ];
 
 $result = leadsSearch($conn, $params);
@@ -158,4 +166,7 @@ echo json_encode([
     // Absent when SerpApi has no further page, which is what disables the
     // "Load 20 more" button rather than letting it spend a credit on nothing.
     'next_url' => $result['next'],
+    // Echoed so the map can pan to where a typed-area search actually resolved
+    // (#52); '@lat,lng' when the pin did the searching.
+    'resolved_ll' => $result['resolved_ll'],
 ]);

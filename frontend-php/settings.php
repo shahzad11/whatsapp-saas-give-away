@@ -497,12 +497,24 @@ require_once __DIR__ . '/includes/header.php';
 
                 <div class="tab-pane fade p-3" id="tab-behaviour">
                     <div class="row g-3">
-                        <div class="col-md-6">
+                        <div class="col-md-3">
                             <label class="form-label">Tone</label>
                             <?= helpTip('How the bot sounds to customers, for example friendly or formal.') ?>
                             <select name="tone" class="form-select">
                                 <?php foreach (chatbotToneChoices() as $key => $label): ?>
                                     <option value="<?= sanitize($key) ?>" <?= ($config['tone'] ?? '') === $key ? 'selected' : '' ?>>
+                                        <?= sanitize($label) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Reply delay</label>
+                            <?= helpTip('How long the bot waits before answering, so replies do not look automatic. Instant, identical replies are a pattern WhatsApp can flag. 5 minutes is the safe default.') ?>
+                            <select name="reply_delay_seconds" class="form-select">
+                                <?php $delaySaved = chatbotNormaliseReplyDelay($config['reply_delay_seconds'] ?? 300);
+                                foreach (chatbotReplyDelayChoices() as $seconds => $label): ?>
+                                    <option value="<?= (int)$seconds ?>" <?= $delaySaved === (int)$seconds ? 'selected' : '' ?>>
                                         <?= sanitize($label) ?>
                                     </option>
                                 <?php endforeach; ?>

@@ -94,6 +94,19 @@ $sources = leadsSourceValues($conn);
 // of where SerpApi's datacentre is.
 $defaultArea = $settings['location'];
 
+// Where the map opens (#52): the last search that resolved coordinates, which
+// is almost always the part of the world the admin is prospecting in. Without
+// one the world view is the honest answer — anything else would be a guess.
+$lastLl = (string)($conn->query(
+    "SELECT resolved_ll FROM lead_searches
+     WHERE resolved_ll IS NOT NULL AND resolved_ll != ''
+     ORDER BY id DESC LIMIT 1"
+)->fetch_row()[0] ?? '');
+$mapStart = null;   // [lat, lng] when the last search left coordinates to open on
+if (preg_match('/@(-?\d+\.?\d*),(-?\d+\.?\d*)/', $lastLl, $m)) {
+    $mapStart = [(float)$m[1], (float)$m[2]];
+}
+
 // What the tool has cost so far. Shown because credits are money and the only
 // other place this is visible is SerpApi's own dashboard.
 $spend = $conn->query(
@@ -105,6 +118,14 @@ $totalLeads = (int)($conn->query("SELECT COUNT(*) FROM leads")->fetch_row()[0] ?
 $pageTitle = 'Leads';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
+<?php // Leaflet, only on this page (#52): it is the one screen with a map, and
+      // admin-header.php has no per-page asset hook, so the tags live here. The
+      // integrity hashes are Leaflet's own, from leafletjs.com/download.html.
+      // z-index:0 keeps Leaflet's panes (which run to z-index 1000) under
+      // Bootstrap's dropdowns and modals without touching the shared sheet. ?>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>#leadMap { z-index: 0; }</style>
 
 <?php if (!$configured): ?>
     <div class="alert alert-warning">
@@ -180,7 +201,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <input type="number" id="leadRadius" class="form-control form-control-sm"
                        min="<?= LEADS_MIN_RADIUS_KM ?>" max="<?= LEADS_MAX_RADIUS_KM ?>" step="1"
                        value="<?= leadsRadiusMToKm($settings['radius_m']) ?>">
-                <div class="form-text x-small">Around the area above.</div>
+                <div class="form-text x-small">Around the area or pin — also the circle shown on the map.</div>
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1" for="leadMinRating">Minimum rating</label>
@@ -200,6 +221,28 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="col-md-6 d-flex gap-2 justify-content-end">
                 <button id="leadSearchBtn" class="btn btn-sm btn-primary" <?= $configured ? '' : 'disabled' ?>>
                     <i class="bi bi-search me-1"></i>Search — 1 credit
+                </button>
+            </div>
+        </div>
+
+        <?php // The map pin (#52): the alternative origin to the Area box. A
+              // click drops a draggable marker, the hidden inputs carry its
+              // coordinates to ajax/leads-search.php, and the circle previews
+              // the same radius the search will run with — so the map never
+              // promises a wider net than the credit buys. ?>
+        <div class="mt-3">
+            <div id="leadMap" style="height:320px" class="rounded border w-100"></div>
+            <input type="hidden" id="leadLat" value="">
+            <input type="hidden" id="leadLng" value="">
+            <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                <span id="leadPinStatus" class="small text-muted">
+                    Click the map to drop a pin instead of typing an area.
+                </span>
+                <button type="button" id="leadPinLocate" class="btn btn-outline-secondary btn-sm ms-auto">
+                    <i class="bi bi-geo-alt me-1"></i>Use my location
+                </button>
+                <button type="button" id="leadPinClear" class="btn btn-outline-secondary btn-sm d-none">
+                    Clear pin
                 </button>
             </div>
         </div>
@@ -411,6 +454,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 </div>
 
+<?php // Loaded here rather than in admin-footer.php so the rest of the console
+      // never downloads it. Before the inline script, which uses `L` at init. ?>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJRZfuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 // Search is deliberately hand-written rather than a data-ajax form: every
 // request costs a credit, so it must come from a click and never from a form
@@ -424,6 +471,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     var out = document.getElementById('leadResults');
     var category = document.getElementById('leadCategory');
     var queryInput = document.getElementById('leadQuery');
+    var locationInput = document.getElementById('leadLocation');
+    var radiusInput = document.getElementById('leadRadius');
 
     var nextUrl = null;
     var busy = false;
@@ -498,8 +547,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         // only place it can be refused before a credit is at risk at all. An
         // empty area does not fail — it succeeds against Google's guess of where
         // the request came from, which is a datacentre on another continent.
-        var locationInput = document.getElementById('leadLocation');
-        if (!useNext && locationInput.value.trim() === '') {
+        if (!useNext && !pinSet() && locationInput.value.trim() === '') {
             status.innerHTML = '<span class="text-danger">Type an area to search in, '
                 + 'e.g. "Lahore, Pakistan" — without one the results come back from '
                 + 'wherever Google thinks the request came from. No credit was used.</span>';
@@ -518,13 +566,16 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         var body = {
             csrf_token: '<?= sanitize(csrfToken()) ?>',
             query: queryInput.value.trim(),
-            location: locationInput.value.trim(),
+            // A pin is the whole origin — SerpApi rejects lat/lon combined with
+            // a location text, so the typed area is kept in the box but not sent.
+            location: pinSet() ? '' : locationInput.value.trim(),
             // Kilometres. The server converts — see leadsRadiusKmToM().
-            radius_km: parseInt(document.getElementById('leadRadius').value, 10) || 0,
+            radius_km: parseInt(radiusInput.value, 10) || 0,
             min_rating: document.getElementById('leadMinRating').value,
             open_now: document.getElementById('leadOpenNow').checked,
             next_url: useNext ? nextUrl : ''
         };
+        if (pinSet()) { body.lat = latInput.value; body.lng = lngInput.value; }
 
         fetch('<?= APP_URL ?>/ajax/leads-search.php', {
             method: 'POST',
@@ -548,8 +599,21 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 // The search that actually ran, spelled out. The area is echoed by
                 // the server rather than read back off the form, so the line says
                 // what SerpApi was asked and not what the box happens to hold now.
+                // A pin search records its origin as '@lat,lng' — right for the
+                // ledger, meaningless as a sentence, so it reads as a pin here.
+                var ranLocation = (res.location || '');
+                ranLocation = ranLocation.charAt(0) === '@' ? 'at the map pin' : 'in ' + ranLocation;
                 var ran = '<span class="text-muted">' + esc(res.query || '')
-                    + ' in ' + esc(res.location || '') + ', ' + esc(res.radius_km || '') + ' km — </span>';
+                    + ' ' + esc(ranLocation) + ', ' + esc(res.radius_km || '') + ' km — </span>';
+
+                // A typed-area search pans the map to where SerpApi resolved it,
+                // so the admin can see which "Lahore" the credit actually went
+                // to. A set pin is the origin itself — panning would move the
+                // marker's context under it, so it stays put.
+                if (res.resolved_ll && !pinSet()) {
+                    var ll = /^@(-?\d+\.?\d*),(-?\d+\.?\d*)/.exec(res.resolved_ll);
+                    if (ll) map.setView([parseFloat(ll[1]), parseFloat(ll[2])], 11);
+                }
 
                 status.innerHTML = ran + '<span class="text-muted">' + res.results.length + ' result(s), '
                     + res.new_count + ' new, ' + res.seen_count + ' already known.</span>';
@@ -572,6 +636,108 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 target.innerHTML = label;
             });
     }
+
+    // --- The map pin (#52) -------------------------------------------------
+    //
+    // The pin and the Area box are two spellings of the same thing — where the
+    // search happens — so they are never sent together: while a pin is set the
+    // Area input is disabled and its value kept but unsubmitted. The circle is
+    // the Radius field in metres, so the preview is the exact `m` SerpApi gets.
+    var latInput = document.getElementById('leadLat');
+    var lngInput = document.getElementById('leadLng');
+    var pinStatus = document.getElementById('leadPinStatus');
+    var pinClear = document.getElementById('leadPinClear');
+    var pinLocate = document.getElementById('leadPinLocate');
+
+    // The last search's resolved coordinates, else a world view.
+    var mapStart = <?= $mapStart !== null ? json_encode($mapStart) : 'null' ?>;
+    var map = L.map('leadMap').setView(mapStart || [20, 0], mapStart ? 11 : 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    var marker = null;
+    var circle = null;
+    var areaPlaceholder = locationInput.placeholder;
+
+    function pinSet() {
+        return latInput.value !== '' && lngInput.value !== '';
+    }
+
+    function radiusKm() {
+        return parseInt(radiusInput.value, 10) || 0;
+    }
+
+    function pinStatusText(lat, lng) {
+        pinStatus.textContent = 'Pin: ' + lat.toFixed(4) + ', ' + lng.toFixed(4)
+            + ' · searching within ' + radiusKm() + ' km';
+    }
+
+    function setPin(lat, lng) {
+        if (!marker) {
+            marker = L.marker([lat, lng], { draggable: true }).addTo(map);
+            marker.on('dragend', function () {
+                var p = marker.getLatLng();
+                setPin(p.lat, p.lng);
+            });
+        } else {
+            marker.setLatLng([lat, lng]);
+        }
+        latInput.value = lat.toFixed(6);
+        lngInput.value = lng.toFixed(6);
+        updateCircle();
+        pinStatusText(lat, lng);
+        pinClear.classList.remove('d-none');
+        // Disabled, not cleared: the typed value is kept so clearing the pin
+        // restores the search exactly as it was.
+        locationInput.disabled = true;
+        locationInput.placeholder = 'Using the map pin';
+    }
+
+    function updateCircle() {
+        if (!marker) return;
+        var metres = radiusKm() * 1000;
+        if (!circle) {
+            circle = L.circle(marker.getLatLng(), { radius: metres }).addTo(map);
+        } else {
+            circle.setLatLng(marker.getLatLng());
+            circle.setRadius(metres);
+        }
+    }
+
+    function clearPin() {
+        if (marker) { map.removeLayer(marker); marker = null; }
+        if (circle) { map.removeLayer(circle); circle = null; }
+        latInput.value = '';
+        lngInput.value = '';
+        locationInput.disabled = false;
+        locationInput.placeholder = areaPlaceholder;
+        pinClear.classList.add('d-none');
+        pinStatus.textContent = 'Click the map to drop a pin instead of typing an area.';
+    }
+
+    map.on('click', function (e) {
+        setPin(e.latlng.lat, e.latlng.lng);
+    });
+    radiusInput.addEventListener('input', function () {
+        updateCircle();
+        if (marker) {
+            var p = marker.getLatLng();
+            pinStatusText(p.lat, p.lng);
+        }
+    });
+    pinClear.addEventListener('click', clearPin);
+    pinLocate.addEventListener('click', function () {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(function (pos) {
+            setPin(pos.coords.latitude, pos.coords.longitude);
+            map.setView([pos.coords.latitude, pos.coords.longitude], 11);
+        }, function () {
+            // Denial is a shrug, not an error: the pin can still be dropped
+            // by hand, so the note stays muted.
+            pinStatus.textContent = 'Location unavailable — drop the pin by hand instead.';
+        });
+    });
 
     btn.addEventListener('click', function () { nextUrl = null; run(false); });
     moreBtn.addEventListener('click', function () { run(true); });
