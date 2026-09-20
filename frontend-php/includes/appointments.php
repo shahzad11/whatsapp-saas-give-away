@@ -1646,7 +1646,10 @@ function apptSendNotice(array $deps, $kind, $fingerprint, $text) {
         return ['status' => 'failed', 'detail' => $detail];
     }
 
-    ($deps['mark'])($noticeId, 'sent', null);
+    // A send closure may return a string instead of bare true — the calendar
+    // sender uses it to record which form went out ('native event' vs 'ics
+    // fallback'), so the notice row says what the customer actually received.
+    ($deps['mark'])($noticeId, 'sent', is_string($ok) ? $ok : null);
     return ['status' => 'sent', 'detail' => ''];
 }
 

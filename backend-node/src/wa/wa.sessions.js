@@ -2036,3 +2036,41 @@ export async function sendSessionMedia(tenantId, sessionId, chatId, upload) {
     return { ok: false, error: err.message }
   }
 }
+
+// A native WhatsApp event card (#47). Baileys encodes `event` into
+// eventMessage (lib/Utils/messages.js): startDate/endDate as epoch seconds,
+// isCancelled. No location field: the pin proto wants real coordinates and the
+// PHP side already puts the address text into the description.
+export async function sendSessionEvent(tenantId, sessionId, chatId, event) {
+  const { session: s, error } = sendableSession(tenantId, sessionId)
+  if (error) return { ok: false, error }
+
+  try {
+    const sent = await s.sock.sendMessage(chatId, {
+      event: {
+        name: event.name,
+        description: event.description || undefined,
+        startDate: new Date(event.startMs),
+        endDate: event.endMs ? new Date(event.endMs) : undefined,
+        isCancelled: !!event.cancelled,
+        extraGuestsAllowed: false
+      }
+    })
+
+    // Recorded like any other outbound so the chat UI shows a bubble. There is
+    // no text on the wire, so the stored text is a placeholder for the thread.
+    recordOutgoing(s, {
+      id: sent.key.id,
+      chatId,
+      fromMe: true,
+      text: `Event: ${event.name}`,
+      mediaType: 'event',
+      time: new Date().toISOString(),
+      rawMessage: sent.message ? unwrapMessage(sent.message) : undefined
+    })
+
+    return { ok: true, messageId: sent.key.id }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+}

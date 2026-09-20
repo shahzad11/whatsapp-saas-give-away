@@ -148,5 +148,39 @@ check('the caption names service and local time',
 check('a cancel caption says so', str_contains(
     apptIcsCaption(appt(), 'CANCEL', 'Asia/Karachi'), 'Cancelled: Consultation'));
 
+// ---------------------------------------------------------------------------
+group('The native event payload mirrors the card');
+
+// The same booking facts as the .ics, in the shape the backend's /event
+// endpoint takes: epoch milliseconds, a cancelled flag, no phone or notes.
+$payload = apptEventPayload(appt(), opts());
+equals('name is service and business', 'Consultation — Bright Clinic', $payload['name']);
+equals('startMs is the UTC instant in milliseconds',
+    strtotime('2026-09-12 06:00:00 UTC') * 1000, $payload['startMs']);
+equals('endMs adds the duration', $payload['startMs'] + 45 * 60 * 1000, $payload['endMs']);
+check('not cancelled on PUBLISH', $payload['cancelled'] === false);
+check('cancelled on CANCEL',
+    apptEventPayload(appt(), opts(['method' => 'CANCEL']))['cancelled'] === true);
+check('description carries the same lines as the .ics',
+    str_contains($payload['description'], 'Service: Consultation')
+    && str_contains($payload['description'], 'With: Bright Clinic')
+    && str_contains($payload['description'], 'Customer: Aisha'));
+// The event wire has no location field — a pin proto without coordinates
+// renders a Null Island map — so the address is a description line instead,
+// right after 'With:'.
+check('the address is a Where line in the description',
+    str_contains($payload['description'], "\nWhere: 12 Main St, Lahore\n")
+    && !array_key_exists('locationName', $payload));
+// The privacy rule is the card's: nothing the customer never consented to
+// share appears in either form of the message.
+check('no phone or notes anywhere in the payload',
+    !str_contains(json_encode($payload), '923001234567')
+    && !str_contains(json_encode($payload), 'quiet room'));
+
+$noBusiness = apptEventPayload(appt(), opts(['business_name' => '', 'business_address' => '']));
+equals('no business means the bare service name', 'Consultation', $noBusiness['name']);
+check('and no Where line without an address',
+    !str_contains($noBusiness['description'], 'Where:'));
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

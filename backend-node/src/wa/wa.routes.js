@@ -1,5 +1,5 @@
 import express from 'express'
-import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia, markChatRead } from './wa.controller.js'
+import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia, sendEvent, markChatRead } from './wa.controller.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
 export const waRouter = express.Router()
@@ -52,4 +52,7 @@ waRouter.get('/sessions/:sessionId/chats/:chatId/messages', poll, getMessages)
 waRouter.get('/sessions/:sessionId/messages/:messageId/media', general, downloadMedia)
 waRouter.post('/sessions/:sessionId/chats/:chatId/messages', send, sendMessage)
 waRouter.post('/sessions/:sessionId/chats/:chatId/media', upload, sendMedia)
+// The appointment event card goes out in the same burst pattern as the .ics it
+// replaces, so it shares the upload bucket rather than competing with chat.
+waRouter.post('/sessions/:sessionId/chats/:chatId/event', upload, sendEvent)
 waRouter.post('/sessions/:sessionId/chats/:chatId/read', receipt, markChatRead)

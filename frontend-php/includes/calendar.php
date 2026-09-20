@@ -198,15 +198,33 @@ function apptSendCalendarCards(mysqli $conn, $userId, array $appt, $method, $cha
     $filename = apptIcsFilename($appt);
     $fingerprint = 'ics:' . $method . ':' . (int)($appt['ics_sequence'] ?? 0);
 
-    $depsFor = function (callable $channelFn) use ($conn, $userId, $appt, $channelName, $ics, $filename) {
+    $eventOpts = [
+        'method' => $method,
+        'business_name' => (string)($profile['company_name'] ?? ''),
+        'business_address' => $address,
+        'contact_line' => 'Reply on WhatsApp to reschedule or cancel.',
+    ];
+
+    $depsFor = function (callable $channelFn) use ($conn, $userId, $appt, $channelName, $ics, $filename, $method, $eventOpts) {
         return [
             'claim' => fn($kind, $fingerprint, $body) => apptClaimNotice($conn, $userId, (int)$appt['id'],
                 $kind, $fingerprint, $body, $channelName),
             'mark' => fn($noticeId, $status, $detail) => apptMarkNotice($conn, $noticeId, $status, $detail),
             'channel' => $channelFn,
             'quota' => function () use ($conn, $userId) { [$ok] = checkMessageQuota($conn, $userId); return $ok; },
-            'send' => fn(array $channel, $text) => chatbotSendDocument($conn, $userId, 't' . $userId,
-                $channel['session_id'], $channel['chat_id'], $ics, $filename, 'text/calendar', $text),
+            // The native event card is preferred — it is what WhatsApp renders
+            // as a tappable appointment — with the .ics document as the
+            // fallback for a backend that cannot carry one. A string return is
+            // which form went out; apptSendNotice records it as the detail.
+            'send' => function (array $channel, $text) use ($conn, $userId, $appt, $method, $eventOpts, $ics, $filename) {
+                if (apptSendNativeEvent($conn, $userId, 't' . $userId,
+                        $channel['session_id'], $channel['chat_id'], $appt, $method, $eventOpts)) {
+                    return 'native event';
+                }
+                return chatbotSendDocument($conn, $userId, 't' . $userId,
+                    $channel['session_id'], $channel['chat_id'], $ics, $filename, 'text/calendar', $text)
+                    ? 'ics fallback' : false;
+            },
         ];
     };
 
@@ -232,4 +250,61 @@ function apptSendCalendarCards(mysqli $conn, $userId, array $appt, $method, $cha
     }
 
     return $results;
+}
+
+// The payload for a native WhatsApp event message (#47 follow-up). Pure, so
+// the field maths are testable: name/description are the same composition the
+// .ics carries (SUMMARY and DESCRIPTION), and times are epoch milliseconds —
+// what the backend's `event` content takes, converted here because the wire
+// format belongs to the caller, not to Baileys.
+//
+// $opts: method ('PUBLISH'|'CANCEL'), business_name, business_address (one
+// line, may be ''), contact_line. No phone or notes — the same privacy rule
+// the .ics follows.
+function apptEventPayload(array $appt, array $opts): array {
+    $business = trim((string)($opts['business_name'] ?? ''));
+    $contact = trim((string)($opts['contact_line'] ?? ''));
+    $service = (string)($appt['service_name'] ?? '');
+
+    // scheduled_at is UTC, exactly as apptIcsBuild() treats it.
+    $start = new DateTime((string)$appt['scheduled_at'], new DateTimeZone('UTC'));
+    $end = (clone $start)->modify('+' . max(1, (int)($appt['duration_minutes'] ?? 30)) . ' minutes');
+
+    $description = ['Service: ' . $service];
+    if ($business !== '') $description[] = 'With: ' . $business;
+    // No location field on the wire: the proto's pin wants coordinates, and an
+    // address-only pin would render as a map of Null Island. The address goes
+    // in the description instead — the .ics keeps its LOCATION line because a
+    // calendar file does take a bare address.
+    $address = trim((string)($opts['business_address'] ?? ''));
+    if ($address !== '') $description[] = 'Where: ' . $address;
+    $customer = trim((string)($appt['customer_name'] ?? ''));
+    if ($customer !== '') $description[] = 'Customer: ' . $customer;
+    if ($contact !== '') {
+        $description[] = '';
+        $description[] = $contact;
+    }
+
+    return [
+        'name' => $service . ($business !== '' ? ' — ' . $business : ''),
+        'description' => implode("\n", $description),
+        'startMs' => $start->getTimestamp() * 1000,
+        'endMs' => $end->getTimestamp() * 1000,
+        'cancelled' => (($opts['method'] ?? 'PUBLISH') === 'CANCEL'),
+    ];
+}
+
+// Sends the native event card through the backend's /event endpoint. It lives
+// here with the rest of the calendar-card code so the feature is
+// self-contained; its shape mirrors chatbotSendDocument() deliberately — same
+// callBackendApi() hop, same metering, same mark-read.
+function apptSendNativeEvent(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, array $appt, $method, array $opts): bool {
+    $payload = apptEventPayload($appt, $opts + ['method' => $method]);
+    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
+        . '/chats/' . urlencode($chatId) . '/event', $payload, $tenantId, 30);
+
+    if (!$resp || empty($resp['ok'])) return false;
+    incrementUsage($conn, $userId, 'messages_sent');
+    chatbotMarkChatRead($tenantId, $sessionId, $chatId);
+    return true;
 }

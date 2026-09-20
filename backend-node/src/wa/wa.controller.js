@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, markSessionChatRead, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
+import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, sendSessionEvent, markSessionChatRead, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -238,6 +238,48 @@ export async function sendMedia(req, res, next) {
       mime: typeof mimetype === 'string' ? mimetype : null,
       filename: typeof fileName === 'string' ? fileName : null,
       caption: typeof caption === 'string' ? caption.trim() : ''
+    })
+
+    if (!result.ok) {
+      return res.status(400).json(result)
+    }
+
+    return res.json(result)
+  } catch (e) {
+    next(e)
+  }
+}
+
+// A native WhatsApp event message (#47). Same authenticated internal hop as
+// the media endpoint — the PHP side sends one first and keeps its .ics
+// document as the fallback, so the bounds here are the contract the frontend
+// builds its payload against.
+export async function sendEvent(req, res, next) {
+  try {
+    const { sessionId, chatId } = req.params
+    const { name, description, startMs, endMs, cancelled } = req.body || {}
+
+    if (typeof name !== 'string' || name.trim() === '' || name.length > 200) {
+      return res.status(400).json({ ok: false, error: 'Event name is required (200 chars max)' })
+    }
+    if (!Number.isInteger(startMs) || startMs <= 0) {
+      return res.status(400).json({ ok: false, error: 'startMs must be a positive integer' })
+    }
+    if (endMs !== undefined && endMs !== null
+        && (!Number.isInteger(endMs) || endMs <= startMs)) {
+      return res.status(400).json({ ok: false, error: 'endMs must be an integer after startMs' })
+    }
+    if (description !== undefined && description !== null
+        && (typeof description !== 'string' || description.length > 1000)) {
+      return res.status(400).json({ ok: false, error: 'description must be a string of at most 1000 chars' })
+    }
+
+    const result = await sendSessionEvent(req.tenantId, sessionId, chatId, {
+      name: name.trim(),
+      description: typeof description === 'string' ? description : '',
+      startMs,
+      endMs: typeof endMs === 'number' ? endMs : null,
+      cancelled: !!cancelled
     })
 
     if (!result.ok) {
