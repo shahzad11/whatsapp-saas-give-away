@@ -254,6 +254,15 @@ $replyQuotaExhausted = !$replyQuotaOk;
 $usingOwnKey = !empty($config['byo_provider_code']) && !empty($config['byo_api_key_encrypted']) && $canByo;
 $tz = getUserTimezone($conn, $userId);
 
+// The two reads behind the right rail's "AI performance" card. Per-conversation
+// aggregates, not a count of the $events list — chatbotRecentEvents() clamps to
+// 100 rows, so summing it would understate a busy tenant's week.
+$perf  = $hasChatbot ? chatbotPerformance($conn, $userId, 7) : null;
+$daily = $hasChatbot ? chatbotDailyHandled($conn, $userId, $tz, 7) : [];
+// For the rail's Appointments card. Skipped entirely on plans without booking,
+// which is also the condition that renders the card.
+$apptCountSummary = ($hasChatbot && $canAppointments) ? apptCounts($conn, $userId) : null;
+
 // #26. Two separate facts, and the Handover tab needs both: whether an admin
 // fallback exists (so a tenant leaving the field blank can be told where alerts
 // go), and which number would actually be used (so the "share it with the
@@ -344,6 +353,24 @@ if (empty($config['model_id']) && empty($config['byo_model_code'])) {
 }
 
 $pageTitle = 'Bot settings';
+
+// The topbar pill says the bot's *real* state, because "switched on" and
+// "actually answering" are different things: an enabled bot with no connected
+// account answers nothing, and the tenant needs to know which they are looking
+// at. The Test button targets the modal that only exists in the $hasChatbot
+// branch, so both are gated on it — a plan without the chatbot gets neither.
+if ($hasChatbot) {
+    if (empty($config['is_enabled'])) {
+        $topbarBadge = ['label' => 'Bot off', 'class' => 'badge-neutral'];
+    } elseif ($accountsConnected === 0) {
+        $topbarBadge = ['label' => 'Not reachable', 'class' => 'badge-warn'];
+    } else {
+        $topbarBadge = ['label' => 'Bot active', 'class' => 'badge-ok'];
+    }
+    $topbarActions = '<button type="button" class="btn btn-sm btn-outline-primary"'
+        . ' data-bs-toggle="modal" data-bs-target="#testChatModal">'
+        . '<i class="bi bi-chat-dots me-1"></i>Test bot</button>';
+}
 require_once __DIR__ . '/includes/header.php';
 ?>
 
@@ -359,6 +386,8 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 <?php else: ?>
+
+<p class="page-lede">Configure your AI assistant, automate conversations and manage appointments.</p>
 
 <?php // Stated once, at the top, before any of the settings below matter. ?>
 <?php if ($accountsLinked === 0): ?>
@@ -392,20 +421,50 @@ require_once __DIR__ . '/includes/header.php';
             <?= csrfField() ?>
             <input type="hidden" name="action" value="save">
 
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="form-check form-switch">
+            <?php // The hero card: switch, state sentence and status in one row.
+                  // The title IS the switch's <label for>, so the control keeps its
+                  // accessible name and clicking the sentence toggles it. The status
+                  // column repeats the topbar pill's three states — "switched on" and
+                  // "actually answering" differ when no account is connected.
+                  $botLive = !empty($config['is_enabled']) && $accountsConnected > 0;
+                  if (empty($config['is_enabled'])) {
+                      $botState = 'is-off';
+                      $botStateLabel = 'Off';
+                      $botTitle = 'AI auto-replies are switched off';
+                      $botSub = 'Customers are not getting automatic replies. Switch this on when you are ready.';
+                  } elseif ($accountsConnected === 0) {
+                      $botState = 'is-warn';
+                      $botStateLabel = 'Not reachable';
+                      $botTitle = 'AI auto-replies are enabled';
+                      $botSub = 'Replies are on, but no WhatsApp account is connected, so nothing is being answered.';
+                  } else {
+                      $botState = 'is-live';
+                      $botStateLabel = 'Active';
+                      $botTitle = 'AI auto-replies are enabled';
+                      $botSub = 'Your bot is automatically replying to customer messages and handling common queries.';
+                  } ?>
+            <div class="card bot-hero mb-3<?= $botLive ? ' is-live' : '' ?>">
+                <div class="card-body bot-hero-body">
+                    <div class="bot-hero-icon"><i class="bi bi-robot"></i></div>
+                    <div class="bot-hero-copy">
+                        <label class="bot-hero-title" for="is_enabled"><?= sanitize($botTitle) ?></label>
+                        <?= helpTip('The bot replies only in one-to-one chats. It never replies in group chats, archived chats, or to your own number.') ?>
+                        <div class="bot-hero-sub"><?= sanitize($botSub) ?></div>
+                    </div>
+                    <div class="form-check form-switch bot-hero-switch">
                         <input class="form-check-input" type="checkbox" name="is_enabled" value="1" id="is_enabled"
                             <?= $config['is_enabled'] ? 'checked' : '' ?>>
-                        <label class="form-check-label fw-500" for="is_enabled">
-                            Reply automatically with AI
-                        </label>
-                        <?= helpTip('The bot replies only in one-to-one chats. It never replies in group chats, archived chats, or to your own number.') ?>
+                    </div>
+                    <div class="bot-hero-status">
+                        <div class="bot-hero-status-label">Bot status</div>
+                        <div class="bot-hero-status-value">
+                            <span class="bot-dot <?= $botState ?>"></span><?= sanitize($botStateLabel) ?>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <ul class="nav nav-tabs" role="tablist">
+            <ul class="nav nav-tabs settings-tabs" role="tablist">
                 <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-kb" type="button">Knowledge base</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-model" type="button">Model</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-behaviour" type="button">Behaviour</button></li>
@@ -414,7 +473,10 @@ require_once __DIR__ . '/includes/header.php';
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-test" type="button">Test</button></li>
             </ul>
 
-            <div class="tab-content card border-top-0">
+            <?php // `card` with its top border back on: the tabs are now a bare
+                  // underline strip rather than a boxed header welded to this card,
+                  // so removing the border would leave the content floating. ?>
+            <div class="tab-content card">
                 <div class="tab-pane fade show active p-3" id="tab-kb">
                     <label class="form-label">What the bot knows about your business</label>
                     <?= helpTip('Write everything a customer might ask about: opening hours, prices, services, address, policies. The bot answers only from this text. If something is not here, it says it does not know rather than guessing.') ?>
@@ -711,24 +773,44 @@ require_once __DIR__ . '/includes/header.php';
                             <?= helpTip('When to send the customer a WhatsApp reminder before their appointment. Tick more than one to remind twice; tick none for no reminders.') ?>
                             <input type="hidden" name="reminder_minutes_present" value="1">
                             <div class="d-flex flex-wrap gap-2">
+                                <?php // Pure-CSS chips: the input stays in the tab order
+                                      // (never display:none) and the pill is its <label>,
+                                      // so the checked state is a :checked sibling rule —
+                                      // no JavaScript, and a keyboard user still gets the
+                                      // app's one focus ring on the hidden input. ?>
                                 <?php foreach ($reminderChoices as $minutes => $label): ?>
-                                    <div class="form-check form-check-inline me-0">
-                                        <input class="form-check-input" type="checkbox" name="reminder_minutes[]"
-                                               id="remind_<?= (int)$minutes ?>" value="<?= (int)$minutes ?>"
-                                               <?= in_array((int)$minutes, $reminderSaved, true) ? 'checked' : '' ?>>
-                                        <label class="form-check-label small" for="remind_<?= (int)$minutes ?>">
-                                            <?= sanitize($label) ?>
-                                        </label>
-                                    </div>
+                                    <input class="chip-input" type="checkbox" name="reminder_minutes[]"
+                                           id="remind_<?= (int)$minutes ?>" value="<?= (int)$minutes ?>"
+                                           <?= in_array((int)$minutes, $reminderSaved, true) ? 'checked' : '' ?>>
+                                    <label class="chip" for="remind_<?= (int)$minutes ?>">
+                                        <?= sanitize($label) ?>
+                                    </label>
                                 <?php endforeach; ?>
                             </div>
                         </div>
                         <div class="col-12">
-                            <label class="form-label small">Confirmation wording</label>
+                            <label class="form-label small" for="bookingConfirm">Confirmation wording</label>
                             <?= helpTip('The message the customer receives once a booking is confirmed. {service} becomes the service name and {when} the date and time.') ?>
-                            <input type="text" name="booking_confirmation" class="form-control form-control-sm"
-                                   value="<?= sanitize($config['booking_confirmation'] ?? '') ?>"
-                                   placeholder="Confirmed: {service} on {when}.">
+                            <?php // maxlength matches the truncation in chatbotSaveConfig()
+                                  // (500 chars) exactly, so the field refuses what the server
+                                  // would silently cut. The counter is server-rendered correct
+                                  // on load; forms.js only keeps it in step while typing.
+                                  $bookingConfirmValue = (string)($config['booking_confirmation'] ?? ''); ?>
+                            <textarea name="booking_confirmation" id="bookingConfirm" rows="3"
+                                      maxlength="500" data-char-count="bookingConfirmCount"
+                                      class="form-control form-control-sm"
+                                      placeholder="Confirmed: {service} on {when}."><?= sanitize($bookingConfirmValue) ?></textarea>
+                            <div class="d-flex justify-content-between align-items-start gap-2 mt-1">
+                                <?php // Only the two variables the consumer actually
+                                      // substitutes ({service}, {when}) are listed. Anything
+                                      // else — the mockup showed {name} — would be sent to a
+                                      // customer as literal text. ?>
+                                <div class="form-text mb-0">
+                                    You can use <code>{service}</code> for the service name and
+                                    <code>{when}</code> for the date and time.
+                                </div>
+                                <span id="bookingConfirmCount" class="char-count"><?= mb_strlen($bookingConfirmValue) ?>/500</span>
+                            </div>
                         </div>
                     </div>
                     <div class="alert alert-light border small">
@@ -1104,6 +1186,115 @@ require_once __DIR__ . '/includes/header.php';
 
     <div class="col-lg-4">
         <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-graph-up"></i>AI performance</span>
+                <?php // A label, not a dropdown: there is no endpoint behind a
+                      // period switch, and a control that does nothing is worse
+                      // than text that says what the window is. ?>
+                <span class="text-muted x-small fw-normal">Last 7 days</span>
+            </div>
+            <div class="card-body">
+                <div class="perf-grid">
+                    <div class="perf-metric">
+                        <div class="perf-icon is-primary"><i class="bi bi-chat-dots"></i></div>
+                        <div>
+                            <div class="perf-value"><?= number_format($perf['conversations']) ?></div>
+                            <div class="perf-label">Conversations handled</div>
+                        </div>
+                    </div>
+                    <div class="perf-metric">
+                        <div class="perf-icon is-success"><i class="bi bi-check-circle"></i></div>
+                        <div>
+                            <div class="perf-value"><?= number_format($perf['resolved']) ?></div>
+                            <div class="perf-label">Resolved automatically</div>
+                        </div>
+                    </div>
+                    <div class="perf-metric">
+                        <div class="perf-icon is-warning"><i class="bi bi-headset"></i></div>
+                        <div>
+                            <div class="perf-value"><?= number_format($perf['handed']) ?></div>
+                            <?php // "to you": one user is one tenant in this app —
+                                  // there is no team to hand to. ?>
+                            <div class="perf-label">Handed over to you</div>
+                        </div>
+                    </div>
+                    <div class="perf-metric">
+                        <div class="perf-icon is-info"><i class="bi bi-lightning-charge"></i></div>
+                        <div>
+                            <div class="perf-value"><?= $perf['automation_rate'] === null ? '—' : $perf['automation_rate'] . '%' ?></div>
+                            <div class="perf-label">Automation rate</div>
+                        </div>
+                    </div>
+                </div>
+
+                <?php // Hand-rolled, not a chart library: seven bars do not need a
+                      // dependency. Heights are percentages of the week's busiest
+                      // day; an empty week still gets a floor so the axis reads as
+                      // a chart rather than a blank. ?>
+                <?php $dailyMax = $daily ? max(array_column($daily, 'count')) : 0; ?>
+                <?php // role="img" lifts the whole chart out of the accessibility
+                      // tree as one object — so the series has to live in the
+                      // container's own label. A per-bar aria-label underneath a
+                      // role="img" parent is never announced, which is why the
+                      // bars carry only a title (the mouse tooltip) instead.
+                      $sparkLabel = 'Conversations per day for the last 7 days: '
+                          . implode('. ', array_map(fn($d) => $d['label'] . ', ' . $d['count'], $daily)); ?>
+                <div class="perf-spark" role="img"
+                     aria-label="<?= sanitize($sparkLabel) ?>">
+                    <?php foreach ($daily as $d): ?>
+                        <?php $barH = $dailyMax > 0 ? max(8, (int)round($d['count'] / $dailyMax * 100)) : 4; ?>
+                        <div class="perf-spark-col">
+                            <div class="perf-spark-bar<?= $d['count'] === 0 ? ' is-zero' : '' ?>"
+                                 style="height: <?= $barH ?>%"
+                                 title="<?= sanitize($d['label'] . ' · ' . $d['count'] . ' conversations') ?>"></div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php // Only the ends are labelled: seven captions under seven bars
+                      // is noise, and the tooltip on each bar already carries the
+                      // day. ?>
+                <div class="perf-spark-axis">
+                    <span><?= sanitize($daily[0]['label'] ?? '') ?></span>
+                    <span><?= sanitize($daily[count($daily) - 1]['label'] ?? '') ?></span>
+                </div>
+
+                <div class="form-text mt-3">
+                    A conversation counts once in the window however many replies it took,
+                    and the resolved/handed-over split is per conversation — so those two
+                    numbers always add up to the total.
+                </div>
+            </div>
+        </div>
+
+        <?php if ($canAppointments): ?>
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-calendar-check"></i>Appointments</div>
+                <div class="card-body">
+                    <div class="perf-grid">
+                        <div class="perf-metric">
+                            <div class="perf-icon is-primary"><i class="bi bi-calendar-check"></i></div>
+                            <div>
+                                <div class="perf-value"><?= number_format($apptCountSummary['upcoming'] ?? 0) ?></div>
+                                <div class="perf-label">Upcoming</div>
+                            </div>
+                        </div>
+                        <div class="perf-metric">
+                            <div class="perf-icon is-warning"><i class="bi bi-clock-history"></i></div>
+                            <div>
+                                <div class="perf-value"><?= number_format($apptCountSummary['overdue'] ?? 0) ?></div>
+                                <?php // apptStatusLabel()'s own name for a past booking
+                                      // with no recorded result — a second word for one
+                                      // state ("Pending") would just be a new name to learn. ?>
+                                <div class="perf-label">Awaiting outcome</div>
+                            </div>
+                        </div>
+                    </div>
+                    <a href="<?= APP_URL ?>/appointments.php" class="small d-inline-block mt-2">View all appointments →</a>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <div class="card mb-3">
             <div class="card-header">This month</div>
             <div class="card-body">
                 <div class="d-flex justify-content-between">
@@ -1139,7 +1330,7 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
 
-        <div class="card">
+        <div class="card mb-3">
             <div class="card-header">Last 7 days</div>
             <div class="card-body p-0">
                 <?php
@@ -1174,6 +1365,25 @@ require_once __DIR__ . '/includes/header.php';
                         <a href="<?= APP_URL ?>/whatsapp/chats.php" class="small">Open chats</a>
                     </div>
                 <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="card help-card">
+            <div class="card-body">
+                <div class="d-flex align-items-start gap-2">
+                    <i class="bi bi-lightbulb help-card-icon"></i>
+                    <div>
+                        <div class="fw-600 small">Need help setting this up?</div>
+                        <p class="text-muted small mb-2">
+                            The safest way to check your bot is to talk to it yourself — the
+                            test console runs the real pipeline and sends nothing to WhatsApp.
+                        </p>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                data-bs-toggle="modal" data-bs-target="#testChatModal">
+                            <i class="bi bi-chat-dots me-1"></i>Test bot
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

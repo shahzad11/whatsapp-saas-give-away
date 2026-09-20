@@ -251,13 +251,19 @@ button:focus-visible,
 }
 
 /* The active row differed from its neighbours by a 3px bar and a background one
-   step off the sidebar's own — findable only by looking for it. The icon carries
-   the state too now, which is what the eye lands on first. */
+   step off the sidebar's own — findable only by looking for it. The filled
+   indigo pill is what the eye lands on first. border-left keeps the primary
+   colour so the geometry does not shift 3px against inactive neighbours. */
 .nav-link-item.active {
-    color: var(--sidebar-text-active);
-    background: var(--sidebar-active);
+    color: #fff;
+    background: var(--primary);
     border-left-color: var(--primary);
     font-weight: var(--fw-heading);
+}
+
+.nav-link-item.active:hover {
+    color: #fff;
+    background: var(--primary-hover);
 }
 
 .nav-link-item i {
@@ -267,7 +273,7 @@ button:focus-visible,
 }
 
 .nav-link-item.active i {
-    color: var(--sidebar-text-active);
+    color: #fff;
 }
 
 .sidebar-footer {
@@ -2177,3 +2183,353 @@ details[open].settings-collapse > summary::after {
 .help-tip:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: 2px; border-radius: 50%; }
 .tooltip { --bs-tooltip-max-width: 280px; }
 .tooltip-inner { text-align: left; }
+
+/* ===== Bot settings redesign ===== */
+
+/* The one-line description under the page title, so the page does not open on
+   a wall of alerts with no context. */
+.page-lede {
+    color: var(--text-secondary);
+    font-size: var(--fs-base);
+    margin-bottom: var(--space-4);
+}
+
+/* The waiting count on Live chats: pushed to the right edge of the link. On
+   the active (indigo) row it inverts, or it would be indigo on indigo. */
+.nav-badge {
+    margin-left: auto;
+    background: var(--primary);
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-heading);
+    line-height: 1.4;
+}
+
+.nav-link-item.active .nav-badge {
+    background: #fff;
+    color: var(--primary);
+}
+
+/* Plan + usage card in the sidebar footer. Styled for the dark rail — a white
+   card inside it would read as a popup, not as chrome. */
+.sidebar-plan {
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: var(--fs-xs);
+}
+
+.sidebar-plan-name {
+    color: #fff;
+    font-weight: var(--fw-heading);
+    margin-bottom: var(--space-2);
+}
+
+.sidebar-plan-row {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-2);
+    color: var(--sidebar-text);
+    margin-bottom: var(--space-1);
+}
+
+.sidebar-plan-nums {
+    color: #cbd5e1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.sidebar-plan-meter {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+    margin-bottom: var(--space-2);
+}
+
+.sidebar-plan-meter-fill {
+    height: 100%;
+    border-radius: 2px;
+}
+
+/* Indigo-300 rather than --primary: #4f46e5 on the near-black rail fails the
+   contrast a link needs. */
+.sidebar-plan-link {
+    display: inline-block;
+    color: #a5b4fc;
+    font-weight: var(--fw-label);
+    margin-top: var(--space-1);
+    text-decoration: none;
+}
+
+.sidebar-plan-link:hover { color: #fff; }
+
+/* The bot's hero card: switch, state sentence and status in one row, so the
+   first thing on the page answers "is it on, and is it actually answering". */
+.bot-hero.is-live {
+    border-color: var(--success);
+}
+
+.bot-hero-body {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+}
+
+.bot-hero-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-lg);
+    background: var(--primary-light);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    flex-shrink: 0;
+}
+
+.bot-hero-copy {
+    flex: 1;
+    min-width: 200px;
+}
+
+/* The title is the switch's <label>, so it is clickable — the pointer says so.
+   inline-block rather than block: the help icon that follows it stays on the
+   same line, but the margin now actually applies (a label is inline). */
+.bot-hero-title {
+    display: inline-block;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-heading);
+    color: var(--text-primary);
+    cursor: pointer;
+    margin-bottom: 2px;
+}
+
+.bot-hero-sub {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+}
+
+.bot-hero-switch {
+    margin: 0;
+    padding-left: 2.5em;               /* keep Bootstrap's switch geometry */
+}
+
+.bot-hero-status {
+    text-align: right;
+    border-left: 1px solid var(--border-color);
+    padding-left: var(--space-4);
+}
+
+.bot-hero-status-label {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.bot-hero-status-value {
+    font-weight: var(--fw-heading);
+    font-size: var(--fs-sm);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Same three states as the topbar pill and the test modal's dot: green means a
+   real customer would be answered now, amber means on-but-unreachable, grey off. */
+.bot-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+.bot-dot.is-live { background: var(--success); }
+.bot-dot.is-warn { background: var(--warning); }
+.bot-dot.is-off  { background: #94a3b8; }
+
+@media (max-width: 575.98px) {
+    .bot-hero-status {
+        border-left: none;
+        padding-left: 0;
+        text-align: left;
+        width: 100%;
+    }
+}
+
+/* Underline tabs rather than Bootstrap's boxed strip: the tab list sits on the
+   page, the card below is a separate surface, and a welded box between them
+   read as one misdrawn panel. Every link carries the 2px underline in
+   transparent so the active state swaps colour, not geometry. */
+.settings-tabs {
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: var(--space-3);
+}
+
+.settings-tabs .nav-link {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--text-secondary);
+    font-weight: var(--fw-label);
+    padding: 10px 14px;
+    margin-bottom: -1px;
+}
+
+.settings-tabs .nav-link:hover {
+    color: var(--primary);
+    border-bottom-color: var(--primary-light);
+}
+
+.settings-tabs .nav-link.active {
+    color: var(--primary);
+    background: transparent;
+    border-bottom-color: var(--primary);
+    font-weight: var(--fw-heading);
+}
+
+/* Reminder choice chips (settings.php, Appointments tab). The input stays
+   rendered and focusable — clipped, never display:none — so the pill's checked
+   state can be a pure :checked sibling rule and a keyboard user still gets the
+   app's one focus ring on the input itself. */
+.chip-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+.chip {
+    display: inline-block;
+    padding: 6px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-label);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    margin-bottom: 0;
+}
+
+.chip:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.chip-input:checked + .chip {
+    background: var(--primary-light);
+    border-color: var(--primary);
+    color: var(--primary);
+    font-weight: var(--fw-heading);
+}
+
+.chip-input:focus-visible + .chip {
+    box-shadow: var(--focus-ring);
+}
+
+.char-count {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* AI performance card: four metrics in a 2×2 grid, each an icon tile against
+   the palette's existing --* / --*-light pairs. */
+.perf-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+}
+
+.perf-metric {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.perf-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.perf-icon.is-primary { background: var(--primary-light); color: var(--primary); }
+.perf-icon.is-success { background: var(--success-light); color: var(--success); }
+.perf-icon.is-warning { background: var(--warning-light); color: var(--warning); }
+.perf-icon.is-info    { background: var(--info-light);    color: var(--info); }
+
+.perf-value {
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-title);
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+}
+
+.perf-label {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+
+/* The week in bars. Hand-rolled, not a chart library: seven bars do not need a
+   dependency. The bar carries both the height and the tooltip; the column only
+   exists to give each bar an equal share of the row. */
+.perf-spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 56px;
+    margin-top: var(--space-4);
+}
+
+.perf-spark-col {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    min-width: 0;
+}
+
+.perf-spark-bar {
+    width: 100%;
+    background: var(--primary);
+    border-radius: 3px 3px 0 0;
+    min-height: 2px;
+}
+
+.perf-spark-bar.is-zero { background: var(--border-color); }
+
+.perf-spark-axis {
+    display: flex;
+    justify-content: space-between;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    margin-top: var(--space-1);
+}
+
+.help-card-icon {
+    color: var(--warning);
+    font-size: var(--fs-lg);
+    margin-top: 1px;
+}

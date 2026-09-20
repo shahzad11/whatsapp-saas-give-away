@@ -800,6 +800,103 @@ function chatbotRecentEvents(mysqli $conn, $userId, $limit = 20) {
     return $rows;
 }
 
+// Headline numbers for the settings page's performance card. These are their
+// own aggregate queries rather than a count of the $events list above because
+// chatbotRecentEvents() clamps to 100 rows — counting it would understate a
+// busy tenant's week, and a card that silently under-reports is worse than no
+// card.
+//
+// Counted per *conversation* (chat_key), not per event: a chat is resolved or
+// handed over as a whole, so resolved + handed must equal conversations
+// exactly. Summing events would mix units and let the card contradict itself.
+//
+// $days is interpolated rather than bound, the same way chatbotRecentEvents()
+// handles its LIMIT — the int cast and clamp above make the value safe.
+function chatbotPerformance(mysqli $conn, $userId, $days = 7) {
+    $days = max(1, min(90, (int)$days));
+    $stmt = $conn->prepare(
+        "SELECT
+            COUNT(*)            AS conversations,
+            SUM(handed = 0)     AS resolved,
+            SUM(handed = 1)     AS handed
+         FROM (
+            SELECT chat_key, MAX(outcome = 'handoff') AS handed
+              FROM chatbot_events
+             WHERE user_id = ?
+               AND outcome IN ('replied', 'handoff')
+               AND chat_key IS NOT NULL
+               AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL " . $days . " DAY)
+             GROUP BY chat_key
+         ) t"
+    );
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    $conversations = (int)($row['conversations'] ?? 0);
+    $resolved      = (int)($row['resolved'] ?? 0);
+    $handed        = (int)($row['handed'] ?? 0);
+
+    return [
+        'conversations'    => $conversations,
+        'resolved'         => $resolved,
+        'handed'           => $handed,
+        // null, not 0: "no conversations yet" and "0% automated" are different
+        // facts and the card renders them differently (— versus 0%).
+        'automation_rate'  => $conversations > 0 ? (int)round($resolved / $conversations * 100) : null,
+    ];
+}
+
+// The daily series behind the performance card's sparkline, bucketed into the
+// tenant's own days — "yesterday" in UTC can be the day before for them, and a
+// chart that disagrees with the dates the tenant sees everywhere else reads as
+// wrong. Same interpolated-$days convention as chatbotPerformance() above.
+function chatbotDailyHandled(mysqli $conn, $userId, $timezone, $days = 7) {
+    $days = max(1, min(90, (int)$days));
+    $tz = new DateTimeZone($timezone);
+    // A numeric offset, never a zone NAME: CONVERT_TZ with a named zone returns
+    // NULL unless the MySQL timezone tables have been loaded, which they are not
+    // in the mysql:8.4 image — the bars would silently all vanish. The offset is
+    // today's, so an event either side of a DST change inside the window can land
+    // in the neighbouring day; that is the accepted cost of not needing tz tables.
+    $offsetSeconds = $tz->getOffset(new DateTime('now', new DateTimeZone('UTC')));
+    $sign = $offsetSeconds < 0 ? '-' : '+';
+    $offset = sprintf('%s%02d:%02d', $sign, intdiv(abs($offsetSeconds), 3600), intdiv(abs($offsetSeconds) % 3600, 60));
+
+    $stmt = $conn->prepare(
+        "SELECT DATE(CONVERT_TZ(created_at, '+00:00', ?)) AS d, COUNT(*) AS c
+           FROM chatbot_events
+          WHERE user_id = ?
+            AND outcome IN ('replied', 'handoff')
+            AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL " . $days . " DAY)
+          GROUP BY d
+          ORDER BY d"
+    );
+    $stmt->bind_param('si', $offset, $userId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $byDay = [];
+    foreach ($rows as $r) {
+        if ($r['d'] === null) continue;   // defensive: CONVERT_TZ failure
+        $byDay[$r['d']] = (int)$r['c'];
+    }
+
+    // Filled forwards from $days-1 ago to today in the tenant's own timezone, so
+    // a quiet day renders as a zero bar rather than being missing from the chart.
+    $out = [];
+    $cursor = new DateTime('now', $tz);
+    $cursor->modify('-' . ($days - 1) . ' days');
+    for ($i = 0; $i < $days; $i++) {
+        $key = $cursor->format('Y-m-d');
+        $out[] = ['label' => $cursor->format('M j'), 'count' => $byDay[$key] ?? 0];
+        $cursor->modify('+1 day');
+    }
+    return $out;
+}
+
 // --- The pipeline -----------------------------------------------------------
 
 // Generates a reply without sending it. Shared by the live handler and the

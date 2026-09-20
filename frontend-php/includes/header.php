@@ -37,6 +37,24 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 <h1 class="h5 mb-0"><?= sanitize($pageTitle) ?></h1>
             </div>
             <div class="d-flex align-items-center gap-3">
+                <?php // Optional page-supplied chrome. Both default to absent so every
+                      // other page's topbar is unchanged. $topbarBadge is a state pill
+                      // (label + one of the existing badge-* classes); $topbarActions is
+                      // raw markup authored by the page itself — the same pattern as
+                      // settings.php's $testGaps[]['html'] — echoed unescaped, so it must
+                      // only ever contain the page's own HTML, never user input. ?>
+                <?php $topbarBadge = $topbarBadge ?? null; $topbarActions = $topbarActions ?? null; ?>
+                <?php if ($topbarBadge): ?>
+                    <span class="badge-status <?= sanitize($topbarBadge['class'] ?? 'badge-neutral') ?>"><?= sanitize($topbarBadge['label'] ?? '') ?></span>
+                <?php endif; ?>
+                <?php if ($topbarActions): ?>
+                    <?php // Hidden under md: a row of buttons would crowd the page title
+                          // off a narrow bar, and the action has its own in-page control
+                          // (settings.php's Test tab) so nothing becomes unreachable. ?>
+                    <div class="d-none d-md-flex align-items-center gap-2">
+                        <?= $topbarActions ?>
+                    </div>
+                <?php endif; ?>
                 <div class="dropdown">
                     <button class="btn btn-link dropdown-toggle user-menu-btn" data-bs-toggle="dropdown">
                         <div class="user-avatar-sm">

@@ -4,6 +4,29 @@ $currentPage = $currentPage ?? currentPage();
 // their own mark does not want ours next to it.
 $brandName = $brandName ?? brandName($conn ?? null);
 $brandLogo = brandLogoUrl($conn ?? null);
+
+// Sidebar.php renders on every tenant page, so both reads below are guarded on
+// the pieces actually existing — a page without a session or without the
+// handoff include must still render the nav.
+$navWaiting = 0;
+if (isset($conn) && !empty($_SESSION['user_id']) && function_exists('handoffCounts')) {
+    $navWaiting = (int)(handoffCounts($conn, (int)$_SESSION['user_id'])['waiting'] ?? 0);
+}
+
+// The plan + usage card in the footer. This costs ~3 cheap indexed queries per
+// tenant page render — realistically 2, because getUserPlan() is statically
+// cached after the page's own first call. That is the accepted price of a meter
+// that is always in view; nothing heavier may be added here.
+$sidebarPlan = null;
+$sidebarRepliesUsed = $sidebarRepliesLimit = null;
+$sidebarAccountsUsed = $sidebarAccountsLimit = null;
+if (isset($conn) && !empty($_SESSION['user_id']) && function_exists('getUserPlan')) {
+    $sidebarPlan = getUserPlan($conn, (int)$_SESSION['user_id']);
+    $sidebarRepliesUsed   = usageCount($conn, (int)$_SESSION['user_id'], 'chatbot_replies');
+    $sidebarRepliesLimit  = planLimit($sidebarPlan, 'max_chatbot_replies');
+    $sidebarAccountsUsed  = countWaAccounts($conn, (int)$_SESSION['user_id']);
+    $sidebarAccountsLimit = planLimit($sidebarPlan, 'max_wa_accounts');
+}
 ?>
 <aside class="app-sidebar" id="appSidebar" aria-label="Main navigation">
     <div class="sidebar-brand">
@@ -61,6 +84,14 @@ $brandLogo = brandLogoUrl($conn ?? null);
             </a>
             <a href="<?= APP_URL ?>/live-chats.php" class="nav-link-item <?= $currentPage === 'live-chats' ? 'active' : '' ?>">
                 <i class="bi bi-headset"></i><span>Live chats</span>
+                <?php // A count of conversations waiting on a person, not of unread
+                      // messages — it is the queue the link opens. Hidden at zero:
+                      // a "0" badge reads as broken, not as good news. The words after
+                      // the number are for screen readers, which would otherwise
+                      // announce a bare digit. ?>
+                <?php if ($navWaiting > 0): ?>
+                    <span class="nav-badge"><?= (int)$navWaiting ?><span class="visually-hidden"> waiting for a reply</span></span>
+                <?php endif; ?>
             </a>
             <a href="<?= APP_URL ?>/appointments.php" class="nav-link-item <?= $currentPage === 'appointments' ? 'active' : '' ?>">
                 <i class="bi bi-calendar-check"></i><span>Appointments</span>
@@ -88,6 +119,37 @@ $brandLogo = brandLogoUrl($conn ?? null);
               // requireAdmin() runs on every /admin/ request. ?>
     </nav>
     <div class="sidebar-footer">
+        <?php if ($sidebarPlan): ?>
+            <div class="sidebar-plan">
+                <div class="sidebar-plan-name"><?= sanitize($sidebarPlan['name'] ?? 'Plan') ?> plan</div>
+                <div class="sidebar-plan-row">
+                    <span>AI replies</span>
+                    <span class="sidebar-plan-nums">
+                        <?= number_format($sidebarRepliesUsed) ?> /
+                        <?php // NULL means unlimited in this codebase — a real
+                              // limit of 0 exists, so it is never a falsy test. An
+                              // unlimited plan gets the word and no bar: a full bar
+                              // would say "used up" about a meter that cannot fill. ?>
+                        <?= $sidebarRepliesLimit === null ? 'Unlimited' : number_format($sidebarRepliesLimit) ?>
+                    </span>
+                </div>
+                <?php if ($sidebarRepliesLimit !== null): ?>
+                    <?php $navPct = $sidebarRepliesLimit > 0 ? min(100, (int)round($sidebarRepliesUsed / $sidebarRepliesLimit * 100)) : 100; ?>
+                    <div class="sidebar-plan-meter">
+                        <div class="sidebar-plan-meter-fill bg-<?= $navPct >= 100 ? 'danger' : ($navPct >= 80 ? 'warning' : 'primary') ?>"
+                             style="width: <?= $navPct ?>%"></div>
+                    </div>
+                <?php endif; ?>
+                <div class="sidebar-plan-row">
+                    <span>Accounts</span>
+                    <span class="sidebar-plan-nums">
+                        <?= number_format($sidebarAccountsUsed) ?> /
+                        <?= $sidebarAccountsLimit === null ? 'Unlimited' : number_format($sidebarAccountsLimit) ?>
+                    </span>
+                </div>
+                <a href="<?= APP_URL ?>/billing.php" class="sidebar-plan-link">Upgrade plan →</a>
+            </div>
+        <?php endif; ?>
         <div class="d-flex align-items-center gap-2">
             <div class="user-avatar-sm"><?= strtoupper(substr($user['name'] ?? 'U', 0, 1)) ?></div>
             <div class="sidebar-user-info">

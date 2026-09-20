@@ -309,9 +309,25 @@
         });
     }
 
+    // Live character counters (#36 follow-on). A field with
+    // data-char-count="<id>" has its counter element kept in step while typing.
+    // The count is server-rendered correct on load, so this only has to update —
+    // it is enhancement, and bails out silently if either half is missing.
+    function initCharCounts() {
+        document.querySelectorAll('[data-char-count]').forEach(function (el) {
+            var counter = document.getElementById(el.dataset.charCount);
+            var max = el.getAttribute('maxlength');
+            if (!counter || !max) return;
+            el.addEventListener('input', function () {
+                counter.textContent = el.value.length + '/' + max;
+            });
+        });
+    }
+
     function onReady() {
         promoteShells();
         initTooltips();
+        initCharCounts();
         showFlashIsland();
     }
 
