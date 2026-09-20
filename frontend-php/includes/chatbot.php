@@ -852,6 +852,17 @@ function chatbotPerformance(mysqli $conn, $userId, $days = 7) {
 // tenant's own days — "yesterday" in UTC can be the day before for them, and a
 // chart that disagrees with the dates the tenant sees everywhere else reads as
 // wrong. Same interpolated-$days convention as chatbotPerformance() above.
+//
+// COUNT(DISTINCT chat_key), not COUNT(*), because the bars sit under headline
+// numbers counted per conversation and the two have to mean the same thing. On
+// the live data a day with two replies to one customer drew a bar of "2" beside
+// a headline of "1 conversation handled" — the card contradicting itself, which
+// is the whole failure this card was built to avoid.
+//
+// One consequence, deliberately accepted: a conversation that spans midnight is
+// counted on both days, so the bars can sum to more than the window's total.
+// That is what a per-day chart means — it answers "was the bot busy that day",
+// not "how do these seven numbers add up".
 function chatbotDailyHandled(mysqli $conn, $userId, $timezone, $days = 7) {
     $days = max(1, min(90, (int)$days));
     $tz = new DateTimeZone($timezone);
@@ -865,10 +876,12 @@ function chatbotDailyHandled(mysqli $conn, $userId, $timezone, $days = 7) {
     $offset = sprintf('%s%02d:%02d', $sign, intdiv(abs($offsetSeconds), 3600), intdiv(abs($offsetSeconds) % 3600, 60));
 
     $stmt = $conn->prepare(
-        "SELECT DATE(CONVERT_TZ(created_at, '+00:00', ?)) AS d, COUNT(*) AS c
+        "SELECT DATE(CONVERT_TZ(created_at, '+00:00', ?)) AS d,
+                COUNT(DISTINCT chat_key) AS c
            FROM chatbot_events
           WHERE user_id = ?
             AND outcome IN ('replied', 'handoff')
+            AND chat_key IS NOT NULL
             AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL " . $days . " DAY)
           GROUP BY d
           ORDER BY d"
