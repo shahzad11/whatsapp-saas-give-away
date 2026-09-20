@@ -381,5 +381,31 @@ check('and the message offers the pin as the other way in',
     str_contains($none['error'], 'pin on the map') && str_contains($none['error'], 'No credit was used'));
 
 // ---------------------------------------------------------------------------
+group('The recorded area survives a followed pagination URL');
+
+// A typed-area search: SerpApi echoes location_requested, which wins.
+equals('location_requested is recorded as-is',
+    'Karachi, Pakistan',
+    leadsUsedLocation(['search_parameters' => ['location_requested' => 'Karachi, Pakistan']], ''));
+
+// A pin search's page two: no location_requested and no form location, but the
+// response still echoes the lat/lon it ran at — the '@lat,lng' label is
+// rebuilt from them rather than recorded as NULL.
+equals('a pin page falls back to @lat,lon',
+    '@31.5,74.3',
+    leadsUsedLocation(['search_parameters' => ['lat' => 31.5, 'lon' => 74.3]], ''));
+
+// Nothing in the response at all: the form's own location is the last resort.
+equals('an empty body keeps the fallback',
+    'Lahore, Pakistan',
+    leadsUsedLocation([], 'Lahore, Pakistan'));
+
+// When both are present the echo wins — it is what SerpApi actually ran.
+equals('location_requested beats lat/lon',
+    'Karachi, Pakistan',
+    leadsUsedLocation(['search_parameters' => [
+        'location_requested' => 'Karachi, Pakistan', 'lat' => 31.5, 'lon' => 74.3]], ''));
+
+// ---------------------------------------------------------------------------
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

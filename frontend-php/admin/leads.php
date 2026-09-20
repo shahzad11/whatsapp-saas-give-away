@@ -287,7 +287,13 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <?= sanitize($c['value']) ?> (<?= $c['n'] ?>)
                         </option>
                     <?php endforeach; ?>
-                    <option value="-" <?= $filters['category'] === '-' ? 'selected' : '' ?>>Not recorded</option>
+                    <?php // Shown only while such rows exist — or while the URL asks
+                          // for them, so a bookmarked filter still renders selected. ?>
+                    <?php if ($sources['unrecorded']['categories'] > 0 || $filters['category'] === '-'): ?>
+                        <option value="-" <?= $filters['category'] === '-' ? 'selected' : '' ?>>
+                            Not recorded (<?= number_format($sources['unrecorded']['categories']) ?>)
+                        </option>
+                    <?php endif; ?>
                 </select>
             </div>
             <div class="col-md-3">
@@ -301,9 +307,15 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         </option>
                     <?php endforeach; ?>
                     <?php // The 138 rows from before the area was recorded, and the
-                          // reason this option is not hidden: they are the ones an
-                          // admin most needs to be able to single out. ?>
-                    <option value="-" <?= $filters['area'] === '-' ? 'selected' : '' ?>>Not recorded</option>
+                          // reason this option exists at all: they are the ones an
+                          // admin most needs to be able to single out. It renders
+                          // only while such rows exist — or while the URL asks for
+                          // them, so a bookmarked filter still renders selected. ?>
+                    <?php if ($sources['unrecorded']['areas'] > 0 || $filters['area'] === '-'): ?>
+                        <option value="-" <?= $filters['area'] === '-' ? 'selected' : '' ?>>
+                            Not recorded (<?= number_format($sources['unrecorded']['areas']) ?>)
+                        </option>
+                    <?php endif; ?>
                 </select>
             </div>
             <div class="col-md-3">
@@ -457,7 +469,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <?php // Loaded here rather than in admin-footer.php so the rest of the console
       // never downloads it. Before the inline script, which uses `L` at init. ?>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJRZfuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 // Search is deliberately hand-written rather than a data-ajax form: every
 // request costs a credit, so it must come from a click and never from a form
@@ -473,6 +485,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     var queryInput = document.getElementById('leadQuery');
     var locationInput = document.getElementById('leadLocation');
     var radiusInput = document.getElementById('leadRadius');
+    var latInput = document.getElementById('leadLat');
+    var lngInput = document.getElementById('leadLng');
+    var pinStatus = document.getElementById('leadPinStatus');
+    var pinClear = document.getElementById('leadPinClear');
+    var pinLocate = document.getElementById('leadPinLocate');
 
     var nextUrl = null;
     var busy = false;
@@ -610,7 +627,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 // so the admin can see which "Lahore" the credit actually went
                 // to. A set pin is the origin itself — panning would move the
                 // marker's context under it, so it stays put.
-                if (res.resolved_ll && !pinSet()) {
+                if (res.resolved_ll && !pinSet() && map) {
                     var ll = /^@(-?\d+\.?\d*),(-?\d+\.?\d*)/.exec(res.resolved_ll);
                     if (ll) map.setView([parseFloat(ll[1]), parseFloat(ll[2])], 11);
                 }
@@ -637,24 +654,37 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             });
     }
 
+    // Wired up before the map is: a Leaflet that failed to load (a bad SRI
+    // hash, a blocked CDN) must not take the Search button down with it.
+    btn.addEventListener('click', function () { nextUrl = null; run(false); });
+    moreBtn.addEventListener('click', function () { run(true); });
+
     // --- The map pin (#52) -------------------------------------------------
     //
     // The pin and the Area box are two spellings of the same thing — where the
     // search happens — so they are never sent together: while a pin is set the
     // Area input is disabled and its value kept but unsubmitted. The circle is
     // the Radius field in metres, so the preview is the exact `m` SerpApi gets.
-    var latInput = document.getElementById('leadLat');
-    var lngInput = document.getElementById('leadLng');
-    var pinStatus = document.getElementById('leadPinStatus');
-    var pinClear = document.getElementById('leadPinClear');
-    var pinLocate = document.getElementById('leadPinLocate');
 
     // The last search's resolved coordinates, else a world view.
     var mapStart = <?= $mapStart !== null ? json_encode($mapStart) : 'null' ?>;
-    var map = L.map('leadMap').setView(mapStart || [20, 0], mapStart ? 11 : 2);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(map);
+    var map = null;
+    if (typeof L !== 'undefined') {
+        try {
+            map = L.map('leadMap').setView(mapStart || [20, 0], mapStart ? 11 : 2);
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+        } catch (e) {
+            map = null;
+        }
+    }
+    if (!map) {
+        // No Leaflet, no map — the search still works off the typed area.
+        document.getElementById('leadMap').classList.add('d-none');
+        pinStatus.textContent = 'Map unavailable — type an area to search in.';
+        pinLocate.classList.add('d-none');
+    }
 
     var marker = null;
     var circle = null;
@@ -674,6 +704,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     }
 
     function setPin(lat, lng) {
+        if (!map) return;
         if (!marker) {
             marker = L.marker([lat, lng], { draggable: true }).addTo(map);
             marker.on('dragend', function () {
@@ -695,7 +726,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     }
 
     function updateCircle() {
-        if (!marker) return;
+        if (!map || !marker) return;
         var metres = radiusKm() * 1000;
         if (!circle) {
             circle = L.circle(marker.getLatLng(), { radius: metres }).addTo(map);
@@ -706,8 +737,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     }
 
     function clearPin() {
-        if (marker) { map.removeLayer(marker); marker = null; }
-        if (circle) { map.removeLayer(circle); circle = null; }
+        if (map && marker) { map.removeLayer(marker); marker = null; }
+        if (map && circle) { map.removeLayer(circle); circle = null; }
         latInput.value = '';
         lngInput.value = '';
         locationInput.disabled = false;
@@ -716,7 +747,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         pinStatus.textContent = 'Click the map to drop a pin instead of typing an area.';
     }
 
-    map.on('click', function (e) {
+    if (map) map.on('click', function (e) {
         setPin(e.latlng.lat, e.latlng.lng);
     });
     radiusInput.addEventListener('input', function () {
@@ -731,16 +762,13 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         if (!navigator.geolocation) return;
         navigator.geolocation.getCurrentPosition(function (pos) {
             setPin(pos.coords.latitude, pos.coords.longitude);
-            map.setView([pos.coords.latitude, pos.coords.longitude], 11);
+            if (map) map.setView([pos.coords.latitude, pos.coords.longitude], 11);
         }, function () {
             // Denial is a shrug, not an error: the pin can still be dropped
             // by hand, so the note stays muted.
             pinStatus.textContent = 'Location unavailable — drop the pin by hand instead.';
         });
     });
-
-    btn.addEventListener('click', function () { nextUrl = null; run(false); });
-    moreBtn.addEventListener('click', function () { run(true); });
 })();
 </script>
 

@@ -376,8 +376,7 @@ function leadsSearch(mysqli $conn, array $params) {
         'resolved_ll' => $resolvedLl !== null ? mb_substr($resolvedLl, 0, 64) : null,
         // SerpApi echoes the area it was asked for as `location_requested`, so a
         // followed pagination URL can say which area page two was of.
-        'location' => mb_substr(trim((string)($body['search_parameters']['location_requested']
-            ?? $location)), 0, 200),
+        'location' => leadsUsedLocation($body, $location),
         'radius_m' => (int)($body['search_parameters']['m'] ?? $radiusM),
     ];
 }
@@ -408,6 +407,24 @@ function leadsResolvedLl(array $body) {
         return mb_substr('@' . $m[1] . ',' . $m[2] . ',' . $m[3], 0, 64);
     }
     return null;
+}
+
+// The area a search is recorded under — what `leads.source_location` and the
+// ledger's `location` store. `location_requested` covers typed-area searches
+// and their followed pages, but a pin search's `next` URL echoes neither it
+// nor the form's (empty) location; what it does echo is the `lat`/`lon` the
+// page ran at, so the '@lat,lng' label is rebuilt from them rather than
+// recording NULL.
+function leadsUsedLocation(array $body, string $fallback): string {
+    $sp = $body['search_parameters'] ?? [];
+    if (is_array($sp)) {
+        $requested = trim((string)($sp['location_requested'] ?? ''));
+        if ($requested !== '') return mb_substr($requested, 0, 200);
+        if (isset($sp['lat'], $sp['lon'])) {
+            return mb_substr('@' . (string)(float)$sp['lat'] . ',' . (string)(float)$sp['lon'], 0, 200);
+        }
+    }
+    return mb_substr($fallback, 0, 200);
 }
 
 // Removes api_key from a URL before it is sent to the browser. SerpApi does not
@@ -601,16 +618,27 @@ function leadAreas(mysqli $conn, $onlyActive = true) {
 // was never a saved category, and must not offer a category nothing was ever
 // found under. Two columns, one query, so the page makes one round trip.
 function leadsSourceValues(mysqli $conn) {
-    $out = ['categories' => [], 'areas' => []];
+    $out = ['categories' => [], 'areas' => [],
+            'unrecorded' => ['categories' => 0, 'areas' => 0]];
     $res = $conn->query(
         "SELECT 'c' AS kind, source_query AS value, COUNT(*) AS n FROM leads
           WHERE source_query IS NOT NULL AND source_query <> '' GROUP BY source_query
          UNION ALL
          SELECT 'a' AS kind, source_location AS value, COUNT(*) AS n FROM leads
           WHERE source_location IS NOT NULL AND source_location <> '' GROUP BY source_location
+         UNION ALL
+         SELECT 'cn' AS kind, '-' AS value, COUNT(*) AS n FROM leads
+          WHERE source_query IS NULL OR source_query = ''
+         UNION ALL
+         SELECT 'an' AS kind, '-' AS value, COUNT(*) AS n FROM leads
+          WHERE source_location IS NULL OR source_location = ''
          ORDER BY kind, value"
     );
     while ($row = $res->fetch_assoc()) {
+        // 'cn'/'an' are the NULL-column counts behind each "Not recorded"
+        // filter option, not values to list.
+        if ($row['kind'] === 'cn') { $out['unrecorded']['categories'] = (int)$row['n']; continue; }
+        if ($row['kind'] === 'an') { $out['unrecorded']['areas'] = (int)$row['n']; continue; }
         $out[$row['kind'] === 'c' ? 'categories' : 'areas'][] =
             ['value' => $row['value'], 'n' => (int)$row['n']];
     }
