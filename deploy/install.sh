@@ -254,6 +254,13 @@ LOG_LEVEL="info"
 # tenants when something needs a human. It is not a mailbox this stack reads —
 # outgoing mail goes through the SMTP server configured in Admin → Email.
 MAIL_FROM="noreply@${APP_DOMAIN}"
+
+# Opens a free FenLLM trial account (AI provider) for the admin on first boot,
+# so the chatbot works with no other setup. It can only ever create trial
+# accounts — it cannot spend money — and the FenLLM owner can rotate it. An
+# exported FENLLM_PARTNER_SECRET in the environment takes precedence over the
+# shipped default below.
+FENLLM_PARTNER_SECRET="${FENLLM_PARTNER_SECRET:-4bbacd43ae1edcdf4015a117d6c4234999d0787f611b02260f5e39ebbfb9774d}"
 EOF
   chmod 600 .env
 
@@ -347,11 +354,13 @@ The stack is up, but it is not usable yet. In the app, as the admin:
   1. Log in at the URL above with the credentials shown earlier.
   2. Admin > Email / SMTP    — outgoing email. Until this is set, activation and
                                password-reset emails cannot be delivered at all.
-  3. Admin > AI / LLM        — add an API key from OpenAI, Anthropic or Google.
-                               The chatbot cannot answer anything without one.
-  4. Admin > Plans           — switch the AI chatbot feature on for a plan and
-                               grant it a model. A plan with the feature and no
-                               model shows tenants "no models available".
+  3. Admin > AI / LLM        — a free FenLLM trial account has been created for
+                               you automatically and is selected by default; add
+                               OpenAI/Anthropic/Google keys only if you want them.
+  4. Admin > Plans           — switch the AI chatbot feature on for a plan. The
+                               FenLLM model is already granted to every plan, so
+                               there is no model access to set up unless you add
+                               another provider's models.
   5. Admin > Settings        — currency, timezone, whether sign-ups are open.
   6. Link Account            — pair a WhatsApp number by scanning a QR code.
   7. Chatbot                 — knowledge base, model, then switch the bot on.

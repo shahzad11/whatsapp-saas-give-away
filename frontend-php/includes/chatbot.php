@@ -383,9 +383,18 @@ function chatbotResolveModel(mysqli $conn, $userId, array $config) {
         ], null];
     }
 
-    if (empty($config['model_id'])) return [null, 'No model selected.'];
+    // A tenant who never picked a model falls back to the instance default:
+    // the auto-provisioned FenLLM model, if their plan can use it. Resolved to
+    // a real model id so every gate below — enabled, provider on, plan access —
+    // still applies exactly as if they had chosen it.
+    $modelId = (int)($config['model_id'] ?? 0);
+    if ($modelId === 0) {
+        $default = llmDefaultModelForPlan($conn, (int)$plan['id']);
+        if ($default === null) return [null, 'No model selected.'];
+        $modelId = (int)$default['id'];
+    }
 
-    $model = llmModelById($conn, (int)$config['model_id']);
+    $model = llmModelById($conn, $modelId);
     if (!$model)                          return [null, 'The selected model no longer exists.'];
     if (empty($model['is_enabled']))      return [null, 'The selected model has been disabled.'];
     if (empty($model['provider_enabled'])) return [null, 'The provider for this model is disabled.'];

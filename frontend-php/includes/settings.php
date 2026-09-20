@@ -191,7 +191,10 @@ function instanceSetupSteps(mysqli $conn) {
         ],
         [
             'label' => 'Add an AI provider key',
-            'why'   => 'The chatbot cannot write a reply without an account at an AI provider.',
+            // Usually already done: first boot opens a FenLLM trial account
+            // automatically when FENLLM_PARTNER_SECRET is set, which ticks this
+            // off without the admin ever visiting the page.
+            'why'   => 'The chatbot cannot write a reply without an account at an AI provider — done automatically when the FenLLM trial account was provisioned at install.',
             'url'   => APP_URL . '/admin/llm.php',
             'done'  => $providerWithKey > 0,
         ],

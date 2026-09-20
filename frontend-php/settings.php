@@ -33,6 +33,9 @@ $audioAvailable = planHasFeature($plan, 'voice_transcription')
 
 $config = chatbotConfig($conn, $userId);
 $availableModels = llmModelsForPlan($conn, (int)$plan['id']);
+// The model the bot uses while the tenant has not picked one — the
+// auto-provisioned FenLLM model, when the plan can reach it.
+$defaultModel = llmDefaultModelForPlan($conn, (int)$plan['id']);
 
 // Handover email is delivered by the instance's SMTP, which only an admin can
 // configure. Read before the POST handler because the handler needs it too: the
@@ -346,7 +349,7 @@ if ($canAppointments) {
 // A model is not a "gap" in the same sense — it is a hard stop, and the endpoint
 // returns a clear error rather than a bad answer — but it belongs in the same
 // list because it is the first thing to check.
-if (empty($config['model_id']) && empty($config['byo_model_code'])) {
+if (empty($config['model_id']) && empty($config['byo_model_code']) && $defaultModel === null) {
     $testGaps[] = ['html' =>
         '<strong>No model is selected</strong>, so nothing can answer at all. Pick one under '
         . '<a href="#tab-model" data-bs-toggle="tab" data-bs-target="#tab-model">Model</a>.'];
@@ -489,13 +492,26 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-label">Model</label>
                         <?= helpTip('The AI that writes the replies. The list shows the models included in your plan.') ?>
                         <select name="model_id" class="form-select">
-                            <option value="">— none selected —</option>
+                            <?php // "None" is not "nothing answers": when a default exists
+                                  // the bot still replies — with the instance-provisioned
+                                  // FenLLM model — so the option says what it really does. ?>
+                            <option value=""><?= $defaultModel ? '— use instance default —' : '— none selected —' ?></option>
                             <?php foreach ($availableModels as $m): ?>
-                                <option value="<?= (int)$m['id'] ?>" <?= (int)($config['model_id'] ?? 0) === (int)$m['id'] ? 'selected' : '' ?>>
+                                <option value="<?= (int)$m['id'] ?>"
+                                    <?= (int)($config['model_id'] ?? 0) === (int)$m['id']
+                                        || (empty($config['model_id']) && $defaultModel && (int)$defaultModel['id'] === (int)$m['id'])
+                                        ? 'selected' : '' ?>>
                                     <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                        <?php if ($defaultModel && empty($config['model_id'])): ?>
+                            <div class="form-text">
+                                No model chosen — the bot is using
+                                <strong><?= sanitize($defaultModel['provider_label'] . ' — ' . $defaultModel['label']) ?></strong>,
+                                the instance default. Pick another here to override it.
+                            </div>
+                        <?php endif; ?>
                         <?php if (!$availableModels): ?>
                             <div class="form-text text-warning">
                                 <?php // "Contact the administrator" is a dead end when the viewer

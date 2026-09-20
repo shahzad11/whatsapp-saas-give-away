@@ -66,46 +66,84 @@ $adminName  = env('ADMIN_NAME', 'Administrator');
 
 if (!$adminEmail || !$adminPass) {
     fwrite(STDOUT, "[bootstrap] ADMIN_EMAIL/ADMIN_PASSWORD not set — skipping admin creation\n");
-    exit(0);
-}
-
-$stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
-$stmt->bind_param('s', $adminEmail);
-$stmt->execute();
-$existing = $stmt->get_result()->fetch_assoc();
-$stmt->close();
-
-if ($existing) {
-    // Do NOT reset the password on every boot — that would let anyone who can
-    // read the compose env silently take over an account whose password the
-    // owner has since changed. Only ensure the account can still administer.
-    $stmt = $conn->prepare("UPDATE users SET is_admin = 1, is_active = 1, status = 'active' WHERE id = ?");
-    $stmt->bind_param('i', $existing['id']);
+} else {
+    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+    $stmt->bind_param('s', $adminEmail);
     $stmt->execute();
+    $existing = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    fwrite(STDOUT, "[bootstrap] admin {$adminEmail} already exists — ensured active\n");
-    exit(0);
+
+    if ($existing) {
+        // Do NOT reset the password on every boot — that would let anyone who can
+        // read the compose env silently take over an account whose password the
+        // owner has since changed. Only ensure the account can still administer.
+        $stmt = $conn->prepare("UPDATE users SET is_admin = 1, is_active = 1, status = 'active' WHERE id = ?");
+        $stmt->bind_param('i', $existing['id']);
+        $stmt->execute();
+        $stmt->close();
+        fwrite(STDOUT, "[bootstrap] admin {$adminEmail} already exists — ensured active\n");
+    } else {
+        $planRow = $conn->query("SELECT id FROM plans ORDER BY sort_order DESC LIMIT 1")->fetch_assoc();
+        $planId = $planRow['id'] ?? null;
+        $hash = password_hash($adminPass, PASSWORD_DEFAULT);
+
+        $stmt = $conn->prepare(
+            "INSERT INTO users (name, email, password, is_active, is_admin, status, plan_id)
+             VALUES (?, ?, ?, 1, 1, 'active', ?)"
+        );
+        $stmt->bind_param('sssi', $adminName, $adminEmail, $hash, $planId);
+        $stmt->execute();
+        $newId = $conn->insert_id;
+        $stmt->close();
+
+        $stmt = $conn->prepare(
+            "INSERT INTO subscriptions (user_id, plan_id, status, current_period_start, current_period_end)
+             VALUES (?, ?, 'active', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 YEAR))"
+        );
+        $stmt->bind_param('ii', $newId, $planId);
+        $stmt->execute();
+        $stmt->close();
+
+        fwrite(STDOUT, "[bootstrap] created admin {$adminEmail} (tenant t{$newId})\n");
+    }
 }
 
-$planRow = $conn->query("SELECT id FROM plans ORDER BY sort_order DESC LIMIT 1")->fetch_assoc();
-$planId = $planRow['id'] ?? null;
-$hash = password_hash($adminPass, PASSWORD_DEFAULT);
+// --- FenLLM trial account ---------------------------------------------------
+//
+// Opens a free trial account on the owner's LLM router so a fresh install can
+// answer chat messages with zero configuration. The returned API key is shown
+// exactly once by the signup endpoint, so it is stored (encrypted) immediately.
+//
+// Deliberately non-fatal: a network blip or a 503 must not keep Apache down.
+// fenllm_provision_status records the outcome — 'done' and 'account_exists'
+// are terminal (a 409 must never be re-POSTed), anything else retries on the
+// next boot. The secret and the API key are never printed.
+$fenllmSecret = env('FENLLM_PARTNER_SECRET');
+if (!$fenllmSecret) {
+    fwrite(STDOUT, "[bootstrap] FENLLM_PARTNER_SECRET not set — skipping FenLLM provisioning\n");
+} elseif (!$adminEmail) {
+    fwrite(STDOUT, "[bootstrap] ADMIN_EMAIL not set — skipping FenLLM provisioning\n");
+} else {
+    // Pulled in only when provisioning can actually run: config/app.php
+    // requires BACKEND_API_KEY (which the container always has), and
+    // config/init.php is avoided on purpose — it starts a session, which is
+    // meaningless on the CLI.
+    require_once $appRoot . '/config/app.php';
+    require_once $appRoot . '/includes/functions.php';
+    require_once $appRoot . '/includes/settings.php';
+    require_once $appRoot . '/includes/crypto.php';
+    require_once $appRoot . '/includes/plan.php';
+    require_once $appRoot . '/includes/llm.php';
 
-$stmt = $conn->prepare(
-    "INSERT INTO users (name, email, password, is_active, is_admin, status, plan_id)
-     VALUES (?, ?, ?, 1, 1, 'active', ?)"
-);
-$stmt->bind_param('sssi', $adminName, $adminEmail, $hash, $planId);
-$stmt->execute();
-$newId = $conn->insert_id;
-$stmt->close();
-
-$stmt = $conn->prepare(
-    "INSERT INTO subscriptions (user_id, plan_id, status, current_period_start, current_period_end)
-     VALUES (?, ?, 'active', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 YEAR))"
-);
-$stmt->bind_param('ii', $newId, $planId);
-$stmt->execute();
-$stmt->close();
-
-fwrite(STDOUT, "[bootstrap] created admin {$adminEmail} (tenant t{$newId})\n");
+    $status = appSetting($conn, 'fenllm_provision_status', null);
+    if ($status === 'done' || $status === 'account_exists') {
+        fwrite(STDOUT, "[bootstrap] FenLLM already provisioned ({$status}) — skipping\n");
+    } else {
+        try {
+            [$ok, $message] = llmProvisionFenLlm($conn, $adminEmail, $adminName, $fenllmSecret);
+            fwrite($ok ? STDOUT : STDERR, "[bootstrap] FenLLM: {$message}\n");
+        } catch (Throwable $e) {
+            fwrite(STDERR, "[bootstrap] FenLLM provisioning failed: {$e->getMessage()}\n");
+        }
+    }
+}

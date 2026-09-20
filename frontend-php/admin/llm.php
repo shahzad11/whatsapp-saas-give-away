@@ -156,6 +156,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         formRespond(true, 'Plan access updated.', $self);
     }
 
+    if ($action === 'fenllm_refresh_balance') {
+        // Forces past the hourly cache — the admin just did something on the
+        // FenLLM dashboard (or wants to see that the trial is really live) and
+        // is asking for now, not for an hour ago.
+        $balance = llmFenLlmBalanceCached($conn, true);
+        if ($balance === null) {
+            formRespond(false, 'Could not read the FenLLM balance right now.', $self);
+        }
+        $summary = 'Balance ' . ($balance['balance'] ?? 'unknown');
+        if (is_array($balance['trial'] ?? null)) {
+            $summary .= ' — trial ' . (!empty($balance['trial']['active']) ? 'active' : 'ended')
+                . ', ' . ($balance['trial']['remaining'] ?? '0') . ' remaining';
+        }
+        formRespond(true, 'FenLLM: ' . $summary . '.', $self);
+    }
+
+    if ($action === 'fenllm_signup') {
+        // The manual version of what bootstrap does at first boot — for an
+        // install that had no partner secret, or one created before this
+        // existed. The account is opened for the logged-in admin's email,
+        // which is also the email the magic sign-in link is issued to.
+        $secret = env('FENLLM_PARTNER_SECRET');
+        if ($secret === null || $secret === '') {
+            formRespond(false, 'FENLLM_PARTNER_SECRET is not set on this instance — paste a FenLLM API key into the card instead.', $self);
+        }
+        $me = getCurrentUser();
+        [$ok, $message] = llmProvisionFenLlm($conn, $me['email'] ?? '', $me['name'] ?? '', $secret);
+        // The ok flag only — never the key, and the message is already safe
+        // (llmProvisionFenLlm composes it without secrets).
+        logAudit($conn, 'llm.fenllm_provisioned', 'llm_provider', 'fenllm', ['ok' => $ok]);
+        formRespond($ok, $message, $self);
+    }
+
     if ($action === 'save_toggles') {
         // Voice-note transcription with no transcription model selected is a
         // switch that does nothing: every voice note silently goes unanswered,
@@ -227,8 +260,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <details class="alert alert-light border small mb-3">
     <summary class="fw-600">How this page works</summary>
     The chatbot cannot write a reply on its own — it asks an AI company (a <em>provider</em>) to do it,
-    over the internet, using an account you hold with them. So there are three steps:
-    add a provider's <em>API key</em> below, decide which <em>models</em> may be used, and choose which
+    over the internet, using an account you hold with them. A free <strong>FenLLM</strong> trial account
+    was opened automatically at install and is already configured and selected as the default — for most
+    instances there is nothing to do here. To use another provider instead, there are three steps:
+    add its <em>API key</em> below, decide which <em>models</em> may be used, and choose which
     <a href="<?= APP_URL ?>/admin/plans.php">plans</a> may use which model. Tenants then pick from what
     their plan allows, on their own Chatbot page. You pay the provider directly for what is used.
 </details>
@@ -242,7 +277,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     An <strong>API key</strong> is the password for your account with that company —
                     it is how they know the usage is yours to pay for. Keys are encrypted at rest and never
                     displayed again. Leave the key field blank to keep the stored one. A provider with no
-                    key cannot be selected by any tenant. You only need one provider for the chatbot to work.
+                    key cannot be selected by any tenant. You only need one provider for the chatbot to work
+                    — <strong>FenLLM</strong>, listed first, was pre-configured at install and is the
+                    default model for tenants who have not picked one.
                 </p>
                 <p class="form-text">
                     Base URL is optional — only change it if you route through a proxy or a compatible
@@ -254,6 +291,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                       // this is an edit-in-place row whose surrounding help text — where
                       // to get a key, what a base URL is for — is the reason an admin can
                       // fill it in at all, and a dialog would hide it. ?>
+                <?php // FenLLM's extras are resolved once, before the loop: the
+                      // balance call hits the vendor, so it is cached hourly in
+                      // app_settings and read once per page load. ?>
+                <?php $fenllmBalance = null; $fenllmBalanceFetched = false; ?>
                 <?php foreach ($providers as $code => $p): ?>
                 <form method="post" class="border rounded p-3 mb-3" data-ajax>
                     <?= csrfField() ?>
@@ -318,6 +359,96 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php endif; ?>
                     </div>
                 </form>
+
+                <?php if ($code === 'fenllm'): ?>
+                    <?php
+                    // The auto-provisioned provider gets its own panel: the
+                    // trial balance, the magic sign-in link (the account has no
+                    // password — that link IS how the admin reaches it), and a
+                    // way to create the account by hand when bootstrap did not.
+                    if ($p['has_key'] && !$fenllmBalanceFetched) {
+                        $fenllmBalance = llmFenLlmBalanceCached($conn);
+                        $fenllmBalanceFetched = true;
+                    }
+                    $fenllmSignIn = llmFenLlmSignInUrl($conn)
+                        ?? ($fenllmBalance['sign_in_url'] ?? null);
+                    $fenllmStatus = overrideSetting($conn, 'fenllm_provision_status');
+                    ?>
+                    <div class="border rounded p-3 mb-3 bg-light">
+                        <?php if ($p['has_key']): ?>
+                            <p class="small text-muted mb-2">
+                                Your own account at fenllm.com was created automatically at install with
+                                free trial credit. Nothing to configure.
+                            </p>
+                            <?php if ($fenllmBalance !== null): ?>
+                                <?php
+                                $fenllmTrial = $fenllmBalance['trial'] ?? null;
+                                $canCall = !empty($fenllmBalance['can_make_calls']);
+                                if (is_array($fenllmTrial)) {
+                                    if (!empty($fenllmTrial['exhausted']))     $trialText = 'trial credit used up';
+                                    elseif (!empty($fenllmTrial['expired']))   $trialText = 'trial expired';
+                                    elseif (!empty($fenllmTrial['active']))    $trialText = 'trial active';
+                                    else                                       $trialText = 'trial ended';
+                                } else {
+                                    $trialText = null;
+                                }
+                                ?>
+                                <div class="d-flex align-items-center gap-2 flex-wrap small">
+                                    <span class="badge bg-<?= $canCall ? 'success' : 'danger' ?>">
+                                        Balance <?= sanitize($fenllmBalance['balance'] ?? 'unknown') ?>
+                                    </span>
+                                    <?php if ($trialText !== null): ?>
+                                        <span class="badge bg-<?= $canCall ? 'light text-dark' : 'danger' ?>">
+                                            <?= sanitize($trialText) ?>
+                                            <?= is_array($fenllmTrial) && isset($fenllmTrial['remaining']) ? ' — ' . sanitize($fenllmTrial['remaining']) . ' left' : '' ?>
+                                        </span>
+                                    <?php endif; ?>
+                                    <?php if ($fenllmSignIn): ?>
+                                        <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener" class="small">
+                                            Manage account / add card
+                                        </a>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if (!$canCall): ?>
+                                    <div class="alert alert-warning small mt-2 mb-0">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>
+                                        This account cannot make calls — the trial credit is spent or expired.
+                                        <?php if ($fenllmSignIn): ?>
+                                            <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener">Sign in to add credit</a>,
+                                        <?php endif; ?>
+                                        or add a key from another provider below.
+                                    </div>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <div class="small text-muted">Balance unavailable right now — it is checked at most once an hour.</div>
+                            <?php endif; ?>
+                            <form method="post" class="mt-2" data-ajax>
+                                <?= csrfField() ?>
+                                <input type="hidden" name="action" value="fenllm_refresh_balance">
+                                <button class="btn btn-outline-secondary btn-sm" type="submit">Refresh balance</button>
+                            </form>
+                        <?php elseif ($fenllmStatus === 'account_exists'): ?>
+                            <p class="small mb-2">
+                                A FenLLM account already exists for this admin email — the trial key from
+                                that signup cannot be fetched again.
+                                <?php if ($fenllmSignIn): ?>
+                                    <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener">Sign in to your account</a>
+                                    and paste its API key into the card above.
+                                <?php endif; ?>
+                            </p>
+                        <?php elseif (env('FENLLM_PARTNER_SECRET')): ?>
+                            <p class="small text-muted mb-2">
+                                No trial account was created at install. Create one now — a free FenLLM
+                                account is opened for your admin email and its key is stored here.
+                            </p>
+                            <form method="post" data-ajax>
+                                <?= csrfField() ?>
+                                <input type="hidden" name="action" value="fenllm_signup">
+                                <button class="btn btn-primary btn-sm" type="submit">Create free trial account</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
                 <?php endforeach; ?>
             </div>
         </div>

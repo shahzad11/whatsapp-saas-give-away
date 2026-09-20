@@ -2,9 +2,11 @@
 
 // The LLM layer: everything that talks to a model vendor.
 //
-// Three vendors, three wire formats, one internal shape. Callers hand this file
+// Four vendors, three wire formats, one internal shape. Callers hand this file
 // a list of messages and get back text — they never learn which vendor answered
-// or what the key was.
+// or what the key was. FenLLM is the owner's own OpenAI-compatible router: a
+// trial account is provisioned automatically at install, so it is listed first
+// and is the default model for every tenant who has not picked one.
 //
 // Keys never leave this file in plaintext. They are stored with the same
 // libsodium secretbox used for the SMTP password (includes/crypto.php), are
@@ -13,6 +15,17 @@
 // llmScrubSecret() exists.
 
 const LLM_CONTEXT = 'llm-key-v1';
+
+// The provider this instance prefers when a tenant has not chosen one. It is
+// also the provider docker/bootstrap.php auto-provisions a trial account with
+// at install, so LLM_DEFAULT_PROVIDER must name a catalogue entry.
+const LLM_DEFAULT_PROVIDER = 'fenllm';
+
+// FenLLM's two endpoints outside the OpenAI-compatible base URL: the partner
+// API that opens a trial account (authenticated by a partner secret, used once
+// per install), and the account API that reports the remaining trial credit.
+const LLM_FENLLM_SIGNUP_URL  = 'https://app.fenllm.com/api/partner/signups';
+const LLM_FENLLM_BALANCE_URL = 'https://app.fenllm.com/api/v1/account/balance';
 
 // The vendors this instance knows how to speak to. Adding one means adding a
 // case to llmChatRequest() — the catalogue is not a lookup table of URLs
@@ -24,6 +37,19 @@ const LLM_CONTEXT = 'llm-key-v1';
 // pasting the wrong credential.
 function llmProviderCatalogue() {
     return [
+        // Listed first because it is pre-configured: a trial account and its
+        // key are created automatically at install (llmProvisionFenLlm), so for
+        // most instances this is the only provider that ever needs a key.
+        'fenllm' => [
+            'label'      => 'FenLLM',
+            'base_url'   => 'https://api.fenllm.com/v1',
+            'key_hint'   => 'apl_live_…',
+            'console_url' => 'https://app.fenllm.com',
+            'transcribe' => false,
+            'models'     => [
+                ['basic', 'FenLLM Basic', 'chat'],
+            ],
+        ],
         'openai' => [
             'label'      => 'OpenAI',
             'base_url'   => 'https://api.openai.com/v1',
@@ -226,7 +252,13 @@ function llmSetPlanModels(mysqli $conn, $planId, array $modelIds) {
 }
 
 // Grants a provider's chat models to every active plan whose `chatbot` feature
-// is on, and returns how many grants were created.
+// is on — or to every active plan when $onlyChatbotPlans is false — and returns
+// how many grants were created.
+//
+// The false form exists for the auto-provisioned provider (FenLLM): its model
+// is the instance default a tenant falls back to, and that fallback is resolved
+// through chatbotResolveModel(), which still checks the `chatbot` feature at
+// call time — so granting it to a plan without the feature hands nothing out.
 //
 // Called when a provider's catalogue is first seeded. Without it the models
 // exist but belong to no plan, so an admin who completes the two obvious steps
@@ -242,7 +274,7 @@ function llmSetPlanModels(mysqli $conn, $planId, array $modelIds) {
 //
 // Chat models only. A transcribe model is not selectable as a chatbot model and
 // granting it would put a nonsense option in front of the tenant.
-function llmGrantChatModelsToChatbotPlans(mysqli $conn, $providerId) {
+function llmGrantChatModelsToChatbotPlans(mysqli $conn, $providerId, $onlyChatbotPlans = true) {
     $stmt = $conn->prepare(
         "INSERT IGNORE INTO plan_llm_models (plan_id, model_id)
          SELECT ?, id FROM llm_models WHERE provider_id = ? AND kind = 'chat'"
@@ -250,7 +282,7 @@ function llmGrantChatModelsToChatbotPlans(mysqli $conn, $providerId) {
     $providerId = (int)$providerId;
     $granted = 0;
     foreach (getActivePlans($conn) as $plan) {
-        if (!planHasFeature($plan, 'chatbot')) continue;
+        if ($onlyChatbotPlans && !planHasFeature($plan, 'chatbot')) continue;
         $planId = (int)$plan['id'];
         $stmt->bind_param('ii', $planId, $providerId);
         $stmt->execute();
@@ -277,6 +309,17 @@ function llmModelsForPlan(mysqli $conn, $planId) {
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     return $rows;
+}
+
+// The model a tenant gets when they have not chosen one: the first model their
+// plan can use that belongs to the instance-provisioned provider (FenLLM).
+// Returns the llmModelsForPlan() row, or null when no such model exists — a
+// tenant is then in the same "pick a model" state they were always in.
+function llmDefaultModelForPlan(mysqli $conn, $planId) {
+    foreach (llmModelsForPlan($conn, $planId) as $model) {
+        if ($model['provider_code'] === LLM_DEFAULT_PROVIDER) return $model;
+    }
+    return null;
 }
 
 // --- Instance toggles -------------------------------------------------------
@@ -314,6 +357,7 @@ function llmChat(array $auth, array $messages, array $options = []) {
     $provider = $auth['provider'] ?? '';
 
     switch ($provider) {
+        case 'fenllm':    $result = llmCallFenLlm($auth, $messages, $options); break;
         case 'openai':    $result = llmCallOpenAi($auth, $messages, $options); break;
         case 'anthropic': $result = llmCallAnthropic($auth, $messages, $options); break;
         case 'google':    $result = llmCallGoogle($auth, $messages, $options); break;
@@ -333,20 +377,25 @@ function llmScrubSecret($text, $key = null) {
         $text = str_replace($key, '[redacted]', $text);
     }
     // Also catch keys we were not given — a nested error quoting a different one.
-    return preg_replace('/\b(sk-[A-Za-z0-9_\-]{8,}|AIza[A-Za-z0-9_\-]{20,})\b/', '[redacted]', $text);
+    return preg_replace('/\b(sk-[A-Za-z0-9_\-]{8,}|apl_live_[A-Za-z0-9_\-]{8,}|AIza[A-Za-z0-9_\-]{20,})\b/', '[redacted]', $text);
 }
 
-function llmHttpJson($url, array $headers, $payload, $timeout = 60) {
+function llmHttpJson($url, array $headers, $payload, $timeout = 60, $method = 'POST') {
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
+    $options = [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         // A vendor endpoint is a fixed, known host. Never follow it elsewhere.
         CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($payload),
         CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
-    ]);
+    ];
+    if ($method === 'GET') {
+        $options[CURLOPT_HTTPGET] = true;
+    } else {
+        $options[CURLOPT_POST] = true;
+        $options[CURLOPT_POSTFIELDS] = json_encode($payload);
+    }
+    curl_setopt_array($ch, $options);
     $body = curl_exec($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err = curl_error($ch);
@@ -356,6 +405,65 @@ function llmHttpJson($url, array $headers, $payload, $timeout = 60) {
     $decoded = json_decode($body, true);
     if (!is_array($decoded)) return [$status, null, 'Provider returned a non-JSON response'];
     return [$status, $decoded, null];
+}
+
+// FenLLM's gateway answers errors in two shapes of its own — `error` as a plain
+// string code with the human text in a sibling `message`, or `error` as an
+// object with code/message — plus Laravel's `{message, errors}` validation
+// shape from the app side. One formatter for all three, so a caller never has
+// to know which layer answered.
+function llmFenLlmErrorMessage($status, $body) {
+    $code = null;
+    $message = null;
+    if (is_array($body)) {
+        $error = $body['error'] ?? null;
+        if (is_string($error)) {
+            $code = $error;
+            $message = $body['message'] ?? null;
+        } elseif (is_array($error)) {
+            $code = $error['code'] ?? null;
+            $message = $error['message'] ?? null;
+        }
+        if ($message === null) $message = $body['message'] ?? null;
+    }
+    $suffix = trim((string)($message ?? 'request rejected'));
+    return 'FenLLM ' . (int)$status
+        . ($code !== null && $code !== '' ? ' (' . $code . ')' : '')
+        . ': ' . $suffix;
+}
+
+// FenLLM speaks the OpenAI wire format on its own base URL. The only deliberate
+// difference from llmCallOpenAi is `max_tokens` rather than `max_completion_
+// tokens` — the gateway accepts both, and the older field is what every other
+// OpenAI-compatible router understands.
+function llmCallFenLlm(array $auth, array $messages, array $options) {
+    $base = $auth['base_url'] ?: llmProviderCatalogue()['fenllm']['base_url'];
+    [$status, $body, $err] = llmHttpJson(rtrim($base, '/') . '/chat/completions',
+        ['Authorization: Bearer ' . $auth['key']],
+        [
+            'model' => $auth['model'],
+            'messages' => $messages,
+            'max_tokens' => (int)($options['max_tokens'] ?? 400),
+        ]);
+
+    if ($err) return ['ok' => false, 'error' => $err, 'text' => '', 'usage' => []];
+    if ($status !== 200) {
+        // 402 messages carry a top-up link the admin needs verbatim — pass the
+        // gateway's own sentence through rather than paraphrasing it.
+        return ['ok' => false, 'text' => '', 'usage' => [],
+                'error' => llmFenLlmErrorMessage($status, $body)];
+    }
+
+    $text = trim((string)($body['choices'][0]['message']['content'] ?? ''));
+    return [
+        'ok' => $text !== '',
+        'text' => $text,
+        'error' => $text === '' ? 'Empty completion' : null,
+        'usage' => [
+            'prompt' => (int)($body['usage']['prompt_tokens'] ?? 0),
+            'completion' => (int)($body['usage']['completion_tokens'] ?? 0),
+        ],
+    ];
 }
 
 function llmCallOpenAi(array $auth, array $messages, array $options) {
@@ -483,6 +591,136 @@ function llmCallGoogle(array $auth, array $messages, array $options) {
             'completion' => (int)($body['usageMetadata']['candidatesTokenCount'] ?? 0),
         ],
     ];
+}
+
+// --- FenLLM account provisioning -------------------------------------------
+//
+// The owner runs FenLLM, so every install opens a free trial account on it
+// automatically: the container's first boot posts the admin's email to the
+// partner signups endpoint and stores the returned key, encrypted, as the
+// fenllm provider row. The key is returned exactly once — it is never
+// retrievable again — so this flow writes it before anything else can fail.
+
+// POSTs the partner signup. Returns [status, decoded body|null, curl error].
+function llmFenLlmSignup($email, $name, $secret) {
+    return llmHttpJson(LLM_FENLLM_SIGNUP_URL,
+        ['X-Partner-Secret: ' . $secret],
+        ['email' => $email, 'name' => $name],
+        20);
+}
+
+// GETs the trial balance for a stored key. Returns [status, decoded body|null,
+// curl error]. The response's `error` here is an OBJECT — unlike the chat
+// gateway's string — which is exactly why llmFenLlmErrorMessage() reads both.
+function llmFenLlmBalance($apiKey) {
+    return llmHttpJson(LLM_FENLLM_BALANCE_URL,
+        ['Authorization: Bearer ' . $apiKey],
+        null, 20, 'GET');
+}
+
+// The balance, cached in app_settings for up to an hour. This runs on an admin
+// page load, and polling the vendor on every click would be both slow and
+// rate-limit bait. Returns the decoded response body or null; never stores the
+// key, only what the endpoint returned.
+function llmFenLlmBalanceCached(mysqli $conn, $force = false) {
+    $at = (int)(overrideSetting($conn, 'fenllm_balance_at') ?? 0);
+    if (!$force && $at > time() - 3600) {
+        $cached = json_decode((string)overrideSetting($conn, 'fenllm_balance_json'), true);
+        if (is_array($cached)) return $cached;
+    }
+
+    $provider = llmProviderByCode($conn, 'fenllm');
+    if (!$provider || !llmProviderHasKey($provider)) return null;
+    $key = llmProviderKey($provider);
+    if ($key === null) return null;
+
+    [$status, $body, $err] = llmFenLlmBalance($key);
+    if ($err || $status !== 200 || !is_array($body)) return null;
+
+    setAppSetting($conn, 'fenllm_balance_json', json_encode($body));
+    setAppSetting($conn, 'fenllm_balance_at', (string)time());
+    return $body;
+}
+
+// The magic link into the FenLLM dashboard (customers have no password — this
+// is how they reach their account). Stored at provisioning; null if it never
+// was.
+function llmFenLlmSignInUrl(?mysqli $conn) {
+    return overrideSetting($conn, 'fenllm_sign_in_url');
+}
+
+// Opens the trial account and wires it up. Returns [ok, admin-facing message].
+//
+// Safe to call on every boot: the first guard is "does a fenllm row with a key
+// already exist", so a successful run makes every later call a no-op, and a
+// 409 — the email already has an account — is recorded rather than retried,
+// because the key from that earlier signup can never be fetched again.
+function llmProvisionFenLlm(mysqli $conn, $email, $name, $secret) {
+    $existing = llmProviderByCode($conn, 'fenllm');
+    if ($existing && llmProviderHasKey($existing)) {
+        return [true, 'FenLLM is already provisioned on this instance.'];
+    }
+
+    [$status, $body, $err] = llmFenLlmSignup($email, $name, $secret);
+
+    if ($err) {
+        setAppSetting($conn, 'fenllm_provision_status', 'error');
+        return [false, 'FenLLM signup request failed: ' . $err];
+    }
+
+    if ($status === 201 && is_array($body)) {
+        $apiKey = trim((string)($body['api_key'] ?? ''));
+        if ($apiKey === '') {
+            setAppSetting($conn, 'fenllm_provision_status', 'error');
+            return [false, 'FenLLM returned no API key — nothing was stored.'];
+        }
+        // Encrypting must succeed before the key is saved; the plaintext never
+        // touches the database either way.
+        if (encryptSecret($apiKey, LLM_CONTEXT) === null) {
+            setAppSetting($conn, 'fenllm_provision_status', 'error');
+            return [false, cryptoSecretMissingMessage()];
+        }
+
+        [$saved, $saveErr] = llmSaveProvider($conn, 'fenllm', 'FenLLM', $apiKey,
+            $body['base_url'] ?? null, true);
+        if (!$saved) {
+            setAppSetting($conn, 'fenllm_provision_status', 'error');
+            return [false, $saveErr ?: 'The FenLLM key could not be stored.'];
+        }
+
+        $provider = llmProviderByCode($conn, 'fenllm');
+        $modelCode = trim((string)($body['model'] ?? 'basic')) ?: 'basic';
+        llmAddModel($conn, (int)$provider['id'], $modelCode,
+            'FenLLM ' . ucfirst($modelCode), 'chat');
+        // Every active plan, not only chatbot-enabled ones: this model is the
+        // instance default, and the feature check still applies at call time.
+        $granted = llmGrantChatModelsToChatbotPlans($conn, (int)$provider['id'], false);
+
+        if (!empty($body['sign_in_url'])) {
+            setAppSetting($conn, 'fenllm_sign_in_url', (string)$body['sign_in_url']);
+        }
+        setAppSetting($conn, 'fenllm_trial_json', json_encode($body['trial'] ?? null));
+        setAppSetting($conn, 'fenllm_provision_status', 'done');
+        return [true, 'FenLLM trial account created and enabled — granted to '
+            . $granted . ' plan' . ($granted === 1 ? '' : 's') . '.'];
+    }
+
+    if ($status === 409) {
+        // The email already has a FenLLM account. The signup's key is gone
+        // forever, so the admin's only route is the magic sign-in link — store
+        // it and say so, and never POST this again.
+        if (is_array($body) && !empty($body['sign_in_url'])) {
+            setAppSetting($conn, 'fenllm_sign_in_url', (string)$body['sign_in_url']);
+        }
+        setAppSetting($conn, 'fenllm_provision_status', 'account_exists');
+        $signIn = is_array($body) ? ($body['sign_in_url'] ?? '') : '';
+        return [false, 'A FenLLM account already exists for ' . $email
+            . '. Sign in at ' . ($signIn !== '' ? $signIn : 'https://app.fenllm.com')
+            . ' and paste its API key into the FenLLM card below.'];
+    }
+
+    setAppSetting($conn, 'fenllm_provision_status', 'error');
+    return [false, llmFenLlmErrorMessage($status, $body)];
 }
 
 // --- Transcription ----------------------------------------------------------

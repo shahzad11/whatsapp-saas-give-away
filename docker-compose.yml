@@ -85,6 +85,10 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_NAME: ${ADMIN_NAME:-Administrator}
+      # Used once at first boot to open a free FenLLM trial account for the
+      # admin (see docker/bootstrap.php). Optional — without it the stack runs
+      # fine, the trial account just is not created automatically.
+      FENLLM_PARTNER_SECRET: ${FENLLM_PARTNER_SECRET:-}
     volumes:
       - php-sessions:/var/lib/php/sessions
     networks: [app]
