@@ -100,6 +100,12 @@ function csrfField() {
     return '<input type="hidden" name="csrf_token" value="' . csrfToken() . '">';
 }
 
+function helpTip(string $text): string {
+    $t = sanitize($text);
+    return '<button type="button" class="help-tip" data-bs-toggle="tooltip" data-bs-placement="top" '
+        . 'data-bs-title="' . $t . '" aria-label="' . $t . '"><i class="bi bi-question-circle"></i></button>';
+}
+
 // The single comparison every CSRF check goes through, including the JSON and
 // multipart endpoints that cannot use verifyCsrf() because their token does not
 // arrive in $_POST.

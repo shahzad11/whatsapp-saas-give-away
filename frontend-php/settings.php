@@ -400,11 +400,7 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-check-label fw-500" for="is_enabled">
                             Reply automatically with AI
                         </label>
-                    </div>
-                    <div class="form-text">
-                        <i class="bi bi-shield-check me-1"></i>
-                        The bot only ever answers <strong>one-to-one chats</strong>. It never replies in
-                        group chats, never in archived chats, and never to your own number.
+                        <?= helpTip('The bot replies only in one-to-one chats. It never replies in group chats, archived chats, or to your own number.') ?>
                     </div>
                 </div>
             </div>
@@ -421,18 +417,15 @@ require_once __DIR__ . '/includes/header.php';
             <div class="tab-content card border-top-0">
                 <div class="tab-pane fade show active p-3" id="tab-kb">
                     <label class="form-label">What the bot knows about your business</label>
+                    <?= helpTip('Write everything a customer might ask about: opening hours, prices, services, address, policies. The bot answers only from this text. If something is not here, it says it does not know rather than guessing.') ?>
                     <textarea name="knowledge_base" class="form-control" rows="14"
                               placeholder="Opening hours, services and prices, address, delivery areas, refund policy, what to say if someone asks for the owner…"><?= sanitize($config['knowledge_base'] ?? '') ?></textarea>
-                    <div class="form-text">
-                        The bot is instructed to answer <strong>only</strong> from this text and to say it does not
-                        know otherwise. Anything missing here is something it will refuse to answer — which is
-                        deliberate: an invented price or policy is worse than no answer.
-                    </div>
                 </div>
 
                 <div class="tab-pane fade p-3" id="tab-model">
                     <div class="mb-3">
                         <label class="form-label">Model</label>
+                        <?= helpTip('The AI that writes the replies. The list shows the models included in your plan.') ?>
                         <select name="model_id" class="form-select">
                             <option value="">— none selected —</option>
                             <?php foreach ($availableModels as $m): ?>
@@ -458,14 +451,11 @@ require_once __DIR__ . '/includes/header.php';
 
                     <?php if ($canByo): ?>
                         <hr>
-                        <h6 class="small text-uppercase text-muted">Use your own API key</h6>
-                        <p class="form-text mt-0">
-                            Optional. When set, your key is used instead of the platform's and billing for
-                            model usage is yours. Your key is encrypted and never shown again.
-                        </p>
+                        <h6 class="small text-uppercase text-muted">Use your own API key <?= helpTip("Optional. If you have your own account with an AI provider, enter its key and usage is billed to you instead of the platform. The key is stored securely and never shown again.") ?></h6>
                         <div class="row g-2">
                             <div class="col-md-4">
                                 <label class="form-label small">Provider</label>
+                                <?= helpTip('The AI company you have an account with.') ?>
                                 <select name="byo_provider_code" class="form-select form-select-sm">
                                     <option value="">— not using my own key —</option>
                                     <?php foreach (llmProviderCatalogue() as $code => $meta): ?>
@@ -477,11 +467,13 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label small">Model id</label>
+                                <?= helpTip('The exact model name from your provider, for example gpt-4o-mini.') ?>
                                 <input type="text" name="byo_model_code" class="form-control form-control-sm"
                                        value="<?= sanitize($config['byo_model_code'] ?? '') ?>" placeholder="gpt-4o-mini">
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label small">API key</label>
+                                <?= helpTip("The secret key from your provider's account page. Leave blank to keep the one already saved.") ?>
                                 <input type="password" name="byo_api_key" class="form-control form-control-sm"
                                        autocomplete="new-password"
                                        placeholder="<?= $hasByoKey ? 'Stored — leave blank to keep' : 'sk-…' ?>">
@@ -507,6 +499,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label">Tone</label>
+                            <?= helpTip('How the bot sounds to customers, for example friendly or formal.') ?>
                             <select name="tone" class="form-select">
                                 <?php foreach (chatbotToneChoices() as $key => $label): ?>
                                     <option value="<?= sanitize($key) ?>" <?= ($config['tone'] ?? '') === $key ? 'selected' : '' ?>>
@@ -517,34 +510,34 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Reply length cap</label>
+                            <?= helpTip('How long a reply can be. 400 is about the length of a short WhatsApp message. Raise it if the bot needs to write more.') ?>
                             <input type="number" name="max_tokens" class="form-control" min="64" max="2000"
                                    value="<?= (int)($config['max_tokens'] ?? 400) ?>">
-                            <div class="form-text">Tokens. ~400 is a short WhatsApp reply.</div>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Context messages</label>
+                            <?= helpTip('How many earlier messages the bot re-reads before replying, so it can follow the conversation. 10 is a good default.') ?>
                             <input type="number" name="history_messages" class="form-control" min="0" max="30"
                                    value="<?= (int)($config['history_messages'] ?? 10) ?>">
-                            <div class="form-text">Earlier turns sent with each reply.</div>
                         </div>
 
                         <div class="col-12">
                             <label class="form-label">If the bot cannot answer</label>
+                            <?= helpTip('Sent to the customer if something goes wrong on our side. They never see a technical error.') ?>
                             <input type="text" name="fallback_message" class="form-control"
                                    value="<?= sanitize($config['fallback_message'] ?? '') ?>"
                                    placeholder="Sorry, I can't answer that right now. Someone will get back to you shortly.">
-                            <div class="form-text">
-                                Sent when the model fails or is misconfigured. The customer never sees a technical error.
-                            </div>
                         </div>
 
                         <div class="col-md-4">
                             <label class="form-label">Active from</label>
+                            <?= helpTip('The bot only replies between these two times, in your timezone. Leave both blank to reply around the clock.') ?>
                             <input type="time" name="active_hours_start" class="form-control"
                                    value="<?= sanitize($config['active_hours_start'] ?? '') ?>">
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Active until</label>
+                            <?= helpTip('The bot stops replying after this time until the next Active from.') ?>
                             <input type="time" name="active_hours_end" class="form-control"
                                    value="<?= sanitize($config['active_hours_end'] ?? '') ?>">
                         </div>
@@ -555,6 +548,7 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-12">
                             <label class="form-label">Outside those hours, send</label>
+                            <?= helpTip('The message customers get if they write outside the active hours. Leave blank to send nothing.') ?>
                             <input type="text" name="outside_hours_message" class="form-control"
                                    value="<?= sanitize($config['outside_hours_message'] ?? '') ?>"
                                    placeholder="Leave blank to stay silent outside hours">
@@ -573,10 +567,9 @@ require_once __DIR__ . '/includes/header.php';
                                 <label class="form-check-label <?= $audioAvailable ? '' : 'text-muted' ?>" for="transcribe">
                                     Understand voice notes
                                 </label>
+                                <?= helpTip('When a customer sends a voice note, the bot listens to it and replies in text.') ?>
                             </div>
-                            <?php if ($audioAvailable): ?>
-                                <div class="form-text">Incoming voice notes are transcribed, then answered as text.</div>
-                            <?php elseif (!planHasFeature($plan, 'voice_transcription')): ?>
+                            <?php if (!planHasFeature($plan, 'voice_transcription')): ?>
                                 <div class="form-text">
                                     <i class="bi bi-lock me-1"></i>Not part of your plan.
                                     <a href="<?= APP_URL ?>/billing.php">See plans</a>.
@@ -627,10 +620,7 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-check-label fw-500" for="appointments_enabled">
                             Let customers book appointments in the chat
                         </label>
-                        <div class="form-text">
-                            The bot may only <em>propose</em> a time. Whether a booking is real is decided here
-                            against your calendar — so it cannot confirm a slot that is taken or a time you are closed.
-                        </div>
+                        <?= helpTip('The bot suggests a time, then the system checks your services and opening hours before anything is confirmed. It cannot book a time that is taken or when you are closed.') ?>
                     </div>
 
                     <div class="row g-3 mb-3">
@@ -652,6 +642,7 @@ require_once __DIR__ . '/includes/header.php';
                               } ?>
                         <div class="col-md-4">
                             <label class="form-label small" for="appointment_slot_minutes">Slot length</label>
+                            <?= helpTip('How long each appointment lasts. Appointments run back to back from each opening time.') ?>
                             <select name="appointment_slot_minutes" id="appointment_slot_minutes"
                                     class="form-select form-select-sm" <?= $canAppointments ? '' : 'disabled' ?>>
                                 <?php foreach ($slotChoices as $minutes => $label): ?>
@@ -661,13 +652,13 @@ require_once __DIR__ . '/includes/header.php';
                                 <?php endforeach; ?>
                             </select>
                             <div class="form-text">
-                                Appointments start one after another from each opening time. With slots of
-                                <?= sanitize(apptHumanMinutes($slotSaved)) ?> and hours from 09:00 that is
-                                <?= sanitize(apptSlotExampleTimes($slotSaved)) ?> — and nothing in between.
+                                With <?= sanitize(apptHumanMinutes($slotSaved)) ?> slots and hours from 09:00,
+                                appointments start at <?= sanitize(apptSlotExampleTimes($slotSaved)) ?>.
                             </div>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label small">Minimum notice</label>
+                            <?= helpTip('How soon a customer can book. 60 means nothing sooner than one hour from now.') ?>
                             <div class="input-group input-group-sm">
                                 <input type="number" name="appointment_lead_minutes" class="form-control" min="0" max="10080"
                                        value="<?= (int)($config['appointment_lead_minutes'] ?? 60) ?>">
@@ -676,6 +667,7 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-md-4">
                             <label class="form-label small">Book at most</label>
+                            <?= helpTip('How far ahead a customer is allowed to book.') ?>
                             <div class="input-group input-group-sm">
                                 <input type="number" name="appointment_horizon_days" class="form-control" min="1" max="365"
                                        value="<?= (int)($config['appointment_horizon_days'] ?? 30) ?>">
@@ -703,7 +695,8 @@ require_once __DIR__ . '/includes/header.php';
                               // wrapping them into a narrow stack was how the old field
                               // came to be one cryptic line in the first place. ?>
                         <div class="col-12">
-                            <label class="form-label small d-block">Remind before</label>
+                            <label class="form-label small">Remind before</label>
+                            <?= helpTip('When to send the customer a WhatsApp reminder before their appointment. Tick more than one to remind twice; tick none for no reminders.') ?>
                             <input type="hidden" name="reminder_minutes_present" value="1">
                             <div class="d-flex flex-wrap gap-2">
                                 <?php foreach ($reminderChoices as $minutes => $label): ?>
@@ -717,16 +710,13 @@ require_once __DIR__ . '/includes/header.php';
                                     </div>
                                 <?php endforeach; ?>
                             </div>
-                            <div class="form-text">
-                                Before the appointment. Tick more than one to remind twice; tick none for no reminders.
-                            </div>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">Confirmation wording</label>
+                            <?= helpTip('The message the customer receives once a booking is confirmed. {service} becomes the service name and {when} the date and time.') ?>
                             <input type="text" name="booking_confirmation" class="form-control form-control-sm"
                                    value="<?= sanitize($config['booking_confirmation'] ?? '') ?>"
                                    placeholder="Confirmed: {service} on {when}.">
-                            <div class="form-text"><code>{service}</code> and <code>{when}</code> are filled in.</div>
                         </div>
                     </div>
                     <div class="alert alert-light border small">
@@ -751,39 +741,34 @@ require_once __DIR__ . '/includes/header.php';
                         <label class="form-check-label fw-500" for="handoff_enabled">
                             Let customers reach a person
                         </label>
-                        <div class="form-text">
-                            While a conversation is waiting or with an agent the bot stays <strong>silent</strong> in it.
-                            It only starts answering again when you resolve the conversation in
-                            <a href="<?= APP_URL ?>/live-chats.php">Live chats</a>.
-                        </div>
+                        <?= helpTip('When a customer asks for a person, the bot goes quiet in that chat until you mark the conversation resolved on the Live chats page.') ?>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label small">Trigger phrases</label>
+                        <?= helpTip('Words a customer might type to ask for a person, separated by commas, for example: agent, human, speak to someone. Works even when the AI is unavailable. Single words match whole words only.') ?>
                         <input type="text" name="handoff_phrases" class="form-control form-control-sm"
                                value="<?= sanitize($config['handoff_phrases'] ?? '') ?>">
-                        <div class="form-text">
-                            Comma separated, matched before the model is even called — so this still works when the
-                            model is down, which is exactly when people ask for a human. Single words match whole
-                            words only, so "agent" does not fire on "management".
-                        </div>
                     </div>
 
                     <div class="row g-3">
                         <div class="col-12">
                             <label class="form-label small">What the customer is told</label>
+                            <?= helpTip('Sent to the customer the moment they ask for a person.') ?>
                             <input type="text" name="handoff_ack_message" class="form-control form-control-sm"
                                    value="<?= sanitize($config['handoff_ack_message'] ?? '') ?>"
                                    placeholder="Thanks — I'm passing you to a member of our team. They'll reply here shortly.">
                         </div>
                         <div class="col-12">
                             <label class="form-label small">What they are told when you resolve it</label>
+                            <?= helpTip('Sent when you close the conversation in Live chats and the bot takes over again. Leave blank to send nothing.') ?>
                             <input type="text" name="handoff_resume_message" class="form-control form-control-sm"
                                    value="<?= sanitize($config['handoff_resume_message'] ?? '') ?>"
                                    placeholder="Leave blank to say nothing">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small">Notify this WhatsApp number</label>
+                            <?= helpTip("A colleague's phone that gets an alert when a customer asks for a person. Not the number linked to this bot. Country code first, no leading zero, for example 923001234567. Each alert counts as one of your messages.") ?>
                             <input type="text" name="handoff_notify_number" inputmode="numeric"
                                    class="form-control form-control-sm<?= isset($errors['handoff_notify_number']) ? ' is-invalid' : '' ?>"
                                    value="<?= sanitize($config['handoff_notify_number'] ?? '') ?>"
@@ -791,22 +776,19 @@ require_once __DIR__ . '/includes/header.php';
                             <?php if (isset($errors['handoff_notify_number'])): ?>
                                 <div class="invalid-feedback d-block"><?= sanitize($errors['handoff_notify_number']) ?></div>
                             <?php endif; ?>
-                            <div class="form-text">
-                                <?php // #26: this is deliberately NOT the linked account. Said here
-                                      // because the obvious guess — "my WhatsApp number" — would have
-                                      // the bot alerting the very phone it is running on. ?>
-                                A colleague's phone, <strong>not</strong> your linked account — the bot never
-                                answers messages from this number. Country code, no leading zero.
-                                Each alert counts as one of your messages.
-                                <?php if (trim((string)($config['handoff_notify_number'] ?? '')) === '' && $adminNotifyNumber !== ''): ?>
-                                    <div class="text-muted x-small mt-1">
-                                        Blank, so alerts currently go to the number your administrator set.
-                                    </div>
-                                <?php endif; ?>
-                            </div>
+                            <?php // #26: this is deliberately NOT the linked account. Said here
+                                  // because the obvious guess — "my WhatsApp number" — would have
+                                  // the bot alerting the very phone it is running on. The full
+                                  // explanation now lives in the help tip next to the label. ?>
+                            <?php if (trim((string)($config['handoff_notify_number'] ?? '')) === '' && $adminNotifyNumber !== ''): ?>
+                                <div class="form-text">
+                                    Blank, so alerts currently go to the number your administrator set.
+                                </div>
+                            <?php endif; ?>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small <?= $smtpReady ? '' : 'text-muted' ?>">Notify this email</label>
+                            <?= helpTip('An email alert goes to this address when a customer asks for a person.') ?>
                             <?php // Disabled, not merely footnoted, when the instance cannot send
                                   // mail. A tenant who types an address into a live-looking field
                                   // reasonably believes they will be emailed; the eight-word note
@@ -814,9 +796,7 @@ require_once __DIR__ . '/includes/header.php';
                             <input type="email" name="handoff_notify_email" class="form-control form-control-sm"
                                    value="<?= sanitize($config['handoff_notify_email'] ?? '') ?>"
                                    <?= $smtpReady ? '' : 'disabled' ?>>
-                            <?php if ($smtpReady): ?>
-                                <div class="form-text">Emailed as soon as someone asks for a person.</div>
-                            <?php else: ?>
+                            <?php if (!$smtpReady): ?>
                                 <div class="form-text text-warning">
                                     <i class="bi bi-exclamation-triangle me-1"></i>
                                     This instance cannot send email yet, so no notification would arrive.
@@ -844,12 +824,9 @@ require_once __DIR__ . '/includes/header.php';
                                 <label class="form-check-label <?= $shareable ? '' : 'text-muted' ?>" for="handoff_share_number">
                                     Give the customer this number when handing over
                                 </label>
+                                <?= helpTip('Adds your contact number to the handover message so a customer in a hurry can call instead of waiting.') ?>
                             </div>
-                            <?php if ($shareable): ?>
-                                <div class="form-text">
-                                    Added to the message above, so someone in a hurry can call instead of waiting.
-                                </div>
-                            <?php else: ?>
+                            <?php if (!$shareable): ?>
                                 <div class="form-text">
                                     <i class="bi bi-info-circle me-1"></i>
                                     Set a notification number first — there is nothing to share yet.
@@ -858,15 +835,15 @@ require_once __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-12">
                             <label class="form-label small">How to word it</label>
+                            <?= helpTip('How the number is offered to the customer. {number} is replaced with your contact number. Leave blank for the standard wording.') ?>
                             <input type="text" name="handoff_share_message" class="form-control form-control-sm"
                                    value="<?= sanitize($config['handoff_share_message'] ?? '') ?>"
                                    placeholder="You can also reach our team directly on {number}.">
-                            <div class="form-text">
-                                <code>{number}</code> is replaced with the number above in international form
-                                <?php if ($shareable): ?>
-                                    (<code>+<?= sanitize($effectiveNotifyNumber) ?></code>)<?php endif; ?>.
-                                Leave blank for the default wording.
-                            </div>
+                            <?php if ($shareable): ?>
+                                <div class="form-text">
+                                    <code>{number}</code> will show as <code>+<?= sanitize($effectiveNotifyNumber) ?></code>.
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>

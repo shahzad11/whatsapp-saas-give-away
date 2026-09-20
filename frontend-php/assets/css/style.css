@@ -2170,3 +2170,10 @@ details.settings-collapse > summary::after {
 details[open].settings-collapse > summary::after {
     transform: rotate(180deg);
 }
+
+/* Help tooltips next to field labels (settings.php). */
+.help-tip { border: 0; background: none; padding: 0; margin-left: .3rem; color: var(--bs-secondary-color); line-height: 1; font-size: .9em; vertical-align: -1px; cursor: help; }
+.help-tip:hover, .help-tip:focus-visible { color: var(--bs-primary); }
+.help-tip:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: 2px; border-radius: 50%; }
+.tooltip { --bs-tooltip-max-width: 280px; }
+.tooltip-inner { text-align: left; }

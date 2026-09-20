@@ -299,8 +299,19 @@
         });
     }
 
+    // Bootstrap tooltips are opt-in: a data-bs-toggle="tooltip" attribute does
+    // nothing until an instance is created, so the help icons have to be wired
+    // up here. Focus is included alongside hover so keyboard users get the tip.
+    function initTooltips() {
+        if (!window.bootstrap) return;
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+            bootstrap.Tooltip.getOrCreateInstance(el, { trigger: 'hover focus' });
+        });
+    }
+
     function onReady() {
         promoteShells();
+        initTooltips();
         showFlashIsland();
     }
 
