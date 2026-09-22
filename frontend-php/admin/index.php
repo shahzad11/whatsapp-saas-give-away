@@ -65,7 +65,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
 <?php if ($showSetup): ?>
-<div class="card mb-4 border-primary">
+<div class="card mb-4 admin-setup-card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-rocket-takeoff me-2"></i>Getting started —
             <?= (int)$setupOutstanding ?> of <?= count($setupSteps) ?> steps left</span>
@@ -111,49 +111,93 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <?php endif; ?>
 
 <div class="row g-3 mb-4">
-    <?php
-    $cards = [
-        ['Tenants',        $stats['total_users'],          'people',       'primary', $stats['new_this_month'] . ' new this month'],
-        ['Active',         $stats['active_users'],          'person-check', 'success', (int)$stats['unactivated_users'] . ' unactivated'],
-        ['Suspended',      $stats['suspended_users'],       'person-slash', 'danger',  ''],
-        ['Paid tenants',   $stats['paid_tenants'],          'star',         'info',    ''],
-        ['WA connected',   $stats['connected_accounts'],    'plug',         'success', (int)$stats['total_accounts'] . ' linked total'],
-        ['WA broken',      $stats['broken_accounts'],       'plug-fill',    'warning', 'need a QR rescan'],
-        ['Messages / mo',  $stats['messages_this_month'],   'chat-dots',    'primary', ''],
-    ];
-    foreach ($cards as [$label, $value, $icon, $colour, $sub]): ?>
-    <div class="col-6 col-lg-3">
-        <div class="card h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <i class="bi bi-<?= $icon ?> fs-3 text-<?= $colour ?>"></i>
-                <div>
-                    <div class="h4 mb-0"><?= number_format((int)$value) ?></div>
-                    <div class="text-muted small"><?= $label ?></div>
-                    <?php if ($sub): ?><div class="text-muted x-small"><?= sanitize($sub) ?></div><?php endif; ?>
-                </div>
+    <div class="col-6 col-xl-3">
+        <div class="card kpi-card h-100">
+            <span class="kpi-icon"><i class="bi bi-people"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format((int)$stats['total_users']) ?></div>
+                <div class="kpi-label">Tenants</div>
+                <div class="kpi-sub"><?= number_format((int)$stats['active_users']) ?> active &middot; <?= number_format((int)$stats['new_this_month']) ?> new this month</div>
             </div>
         </div>
     </div>
-    <?php endforeach; ?>
-
-    <div class="col-6 col-lg-3">
-        <div class="card h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <i class="bi bi-cash-coin fs-3 text-success"></i>
-                <div>
-                    <?php if (!$totals): ?>
-                        <div class="h4 mb-0">—</div>
-                    <?php else: ?>
-                        <?php // One line per currency: a cross-currency total would be
-                              // meaningless without a rate, and would be believed. ?>
-                        <?php foreach ($totals as $t): ?>
-                            <div class="h5 mb-0"><?= sanitize(formatMoney((int)$t['total'], $t['currency'])) ?></div>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                    <div class="text-muted small">Received this month</div>
-                </div>
+    <div class="col-6 col-xl-3">
+        <div class="card kpi-card h-100">
+            <span class="kpi-icon"><i class="bi bi-plug"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format((int)$stats['connected_accounts']) ?></div>
+                <div class="kpi-label">WhatsApp connected</div>
+                <div class="kpi-sub">of <?= number_format((int)$stats['total_accounts']) ?> linked</div>
             </div>
         </div>
+    </div>
+    <div class="col-6 col-xl-3">
+        <div class="card kpi-card h-100">
+            <span class="kpi-icon"><i class="bi bi-chat-dots"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format((int)$stats['messages_this_month']) ?></div>
+                <div class="kpi-label">Messages this month</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-xl-3">
+        <div class="card kpi-card h-100">
+            <span class="kpi-icon"><i class="bi bi-cash-coin"></i></span>
+            <div>
+                <?php if (!$totals): ?>
+                    <div class="kpi-value">—</div>
+                <?php else: ?>
+                    <?php // One line per currency: a cross-currency total would be
+                          // meaningless without a rate, and would be believed. ?>
+                    <?php foreach ($totals as $t): ?>
+                        <div class="kpi-value kpi-value-sm"><?= sanitize(formatMoney((int)$t['total'], $t['currency'])) ?></div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                <div class="kpi-label">Received this month</div>
+                <div class="kpi-sub"><?= number_format((int)$stats['paid_tenants']) ?> paying tenants</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php // The exceptions panel replaces the Suspended / Paid tenants / WA broken /
+      // Active cards: a zero in a coloured card looked like a problem. A count
+      // above zero is a link to the filtered list that answers it; a zero is
+      // muted text, because a link to an empty filter is a dead end. ?>
+<?php
+$attention = [
+    ['suspended',   'person-slash',      'is-danger', (int)$stats['suspended_users'],   'Suspended tenants',                 APP_URL . '/admin/tenants.php?status=suspended'],
+    ['unactivated', 'person-exclamation','is-warn',   (int)$stats['unactivated_users'], 'Tenants not activated',             APP_URL . '/admin/tenants.php?status=unactivated'],
+    ['broken',      'plug-fill',         'is-warn',   (int)$stats['broken_accounts'],   'WhatsApp accounts needing a rescan', APP_URL . '/admin/system.php'],
+];
+$allClear = !array_filter(array_column($attention, 3));
+?>
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-exclamation-circle"></i>Needs attention</div>
+    <div class="card-body pt-1 pb-2">
+        <?php if ($allClear): ?>
+            <div class="d-flex align-items-center gap-2 py-2">
+                <span class="kpi-icon kpi-icon-sm is-ok"><i class="bi bi-check-lg"></i></span>
+                <span class="text-muted">Nothing needs attention.</span>
+            </div>
+        <?php else: ?>
+            <?php foreach ($attention as [$key, $icon, $tone, $count, $label, $href]): ?>
+                <?php if ($count > 0): ?>
+                    <a class="attention-row" href="<?= $href ?>">
+                        <span class="kpi-icon <?= $tone ?>"><i class="bi bi-<?= $icon ?>"></i></span>
+                        <span class="attention-count"><?= number_format($count) ?></span>
+                        <span class="small"><?= $label ?></span>
+                        <i class="bi bi-chevron-right ms-auto text-muted"></i>
+                    </a>
+                <?php else: ?>
+                    <div class="attention-row is-muted">
+                        <span class="kpi-icon is-neutral"><i class="bi bi-<?= $icon ?>"></i></span>
+                        <span class="attention-count">0</span>
+                        <span class="small"><?= $label ?></span>
+                    </div>
+                <?php endif; ?>
+            <?php endforeach; ?>
+        <?php endif; ?>
     </div>
 </div>
 

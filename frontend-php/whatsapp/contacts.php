@@ -167,7 +167,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <i class="bi bi-people d-block"></i>
                 <h5>No contacts yet</h5>
                 <p>Link a WhatsApp account and open Chats to sync your contacts.</p>
-                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link Account</a>
+                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link account</a>
             </div>
         </div>
     </div>
@@ -226,7 +226,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <i class="bi bi-search d-block"></i>
                 <h5>No contacts found</h5>
                 <p>Try adjusting your search or filters.</p>
-                <a href="contacts.php" class="btn btn-outline-primary btn-sm">Clear Filters</a>
+                <a href="contacts.php" class="btn btn-outline-primary btn-sm">Clear filters</a>
             </div>
         </div>
     </div>
@@ -258,12 +258,15 @@ require_once dirname(__DIR__) . '/includes/header.php';
                                   // group reads as "Group chat" rather than the
                                   // numeric JID prefix the old fallback printed,
                                   // and an unmappable @lid as "Unknown contact". ?>
-                            <?= sanitize(chatDisplayName(
+                            <?php // dir="auto" scopes to the name text, not the cell:
+                                  // on the <td> it would also re-align the whole column
+                                  // (icon included) for a right-to-left name. ?>
+                            <span dir="auto"><?= sanitize(chatDisplayName(
                                     $c['contact_name'],
                                     $c['phone_number'] ?? null,
                                     $c['chat_id'],
                                     (bool)$c['is_group']
-                                )) ?>
+                                )) ?></span>
                         </td>
                         <td class="small" data-label="Phone Number">
                             <?php $phone = extractPhone($c['chat_id'], $c['phone_number'] ?? null); ?>
@@ -272,14 +275,20 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         <?php if (count($accounts) > 1): ?>
                         <td class="small" data-label="Account"><?= sanitize($c['account_label'] ?: ('Account #' . $c['account_id'])) ?></td>
                         <?php endif; ?>
-                        <td class="text-muted small" data-label="Last Message" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                            <?= sanitize(mb_strimwidth($c['last_message'] ?? '', 0, 60, '...')) ?>
+                        <?php // In the mobile stacked-card layout each cell repeats its
+                              // label, so "Last Message: —" is a row that says nothing.
+                              // is-empty lets CSS drop it there; the desktop table is
+                              // unchanged — same placeholder, same columns. ?>
+                        <?php $lastMsg = sanitize(mb_strimwidth($c['last_message'] ?? '', 0, 60, '...')); ?>
+                        <td class="text-muted small<?= in_array(trim($lastMsg), ['', '—', '-'], true) ? ' is-empty' : '' ?>" data-label="Last Message" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                            <?= $lastMsg ?>
                         </td>
-                        <td class="text-muted small" data-label="Last Active">
-                            <?php
-                            $converted = convertToUserTz($c['last_message_time'], $userTz);
-                            echo $converted ? sanitize($converted) : '-';
-                            ?>
+                        <?php
+                        $converted = convertToUserTz($c['last_message_time'], $userTz);
+                        $lastActive = $converted ? sanitize($converted) : '-';
+                        ?>
+                        <td class="text-muted small<?= in_array(trim($lastActive), ['', '—', '-'], true) ? ' is-empty' : '' ?>" data-label="Last Active">
+                            <?= $lastActive ?>
                         </td>
                     </tr>
                     <?php endforeach; ?>

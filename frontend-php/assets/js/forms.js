@@ -146,7 +146,14 @@
         // exactly this way) and FormData does not include it.
         if (submitter && submitter.name) data.append(submitter.name, submitter.value);
 
-        fetch(form.action || window.location.href, {
+        // getAttribute, not form.action: a form's named controls shadow its IDL
+        // attributes, so on a form with a control named "action" (a hidden
+        // action input, or the Save/Test/Verify buttons on admin/email.php)
+        // form.action is that control, not the URL. The fetch then posted to
+        // /admin/[object RadioNodeList], got a 404 page, failed to parse it as
+        // JSON and fell through to the network-failure path: a red toast, then
+        // a plain form post, then the green toast from its redirect.
+        fetch(form.getAttribute('action') || window.location.href, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             body: data,

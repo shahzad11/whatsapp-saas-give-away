@@ -245,8 +245,35 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 <?php endif; ?>
 
+<div class="page-toolbar">
+    <div>
+        <p class="page-toolbar-title">Tenants</p>
+        <p class="page-toolbar-subtitle">
+            <?= number_format(count($users)) ?> <?= $filtered ? 'matching' : 'total' ?>
+        </p>
+    </div>
+    <div class="page-toolbar-actions">
+        <?php // A real link to the form's own anchor, so it works with
+              // JavaScript off; data-modal-target upgrades it to the modal
+              // forms.js promoted the card into. ?>
+        <a href="#tenantShell" class="btn btn-sm btn-primary"
+           data-modal-target="#tenantModal" data-modal-reset="on"
+           data-modal-title="New tenant">
+            <i class="bi bi-plus-lg me-1"></i>New tenant
+        </a>
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-body">
+        <?php // Collapsed only under 768px: d-md-block keeps it open from
+              // tablets up without any JavaScript. The form itself is plain GET. ?>
+        <button type="button" class="btn btn-sm btn-outline-secondary d-md-none mb-2"
+                data-bs-toggle="collapse" data-bs-target="#tenantFilters"
+                aria-controls="tenantFilters" aria-expanded="false">
+            <i class="bi bi-funnel me-1"></i>Filters <i class="bi bi-chevron-down ms-1"></i>
+        </button>
+        <div class="collapse d-md-block" id="tenantFilters">
         <form method="GET" class="row g-2 align-items-end">
             <div class="col-md-4">
                 <label class="form-label x-small text-muted mb-1">Search</label>
@@ -293,25 +320,13 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <?php endif; ?>
             </div>
         </form>
+        </div>
     </div>
 </div>
 
 <div class="card table-card">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header">
         <span>Tenants</span>
-        <div class="d-flex align-items-center gap-3">
-            <span class="text-muted small">
-                <?= number_format(count($users)) ?> <?= $filtered ? 'matching' : 'total' ?>
-            </span>
-            <?php // A real link to the form's own anchor, so it works with
-                  // JavaScript off; data-modal-target upgrades it to the modal
-                  // forms.js promoted the card into. ?>
-            <a href="#tenantShell" class="btn btn-sm btn-primary"
-               data-modal-target="#tenantModal" data-modal-reset="on"
-               data-modal-title="New tenant">
-                <i class="bi bi-plus-lg me-1"></i>New tenant
-            </a>
-        </div>
     </div>
     <div class="table-responsive">
         <table class="table align-middle table-stack">
@@ -331,7 +346,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($users as $u): ?>
                 <tr>
-                    <td data-label="Tenant">
+                    <td data-label="Tenant" class="cell-block">
                         <div class="fw-500">
                             <?php // href is the full detail page, which is what a click does
                                   // with JavaScript off. With it, the same URL is fetched as a
@@ -349,12 +364,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="text-muted small"><?= sanitize($u['email']) ?></div>
                         <div class="text-muted x-small">tenant id: t<?= (int)$u['id'] ?></div>
                     </td>
-                    <td data-label="Plan">
+                    <td data-label="Plan" class="cell-block">
                         <form method="POST" class="d-flex gap-1" data-ajax>
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="change_plan">
                             <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
-                            <select name="plan_id" class="form-select form-select-sm" style="min-width:150px">
+                            <select name="plan_id" class="form-select form-select-sm admin-plan-select">
                                 <?php foreach ($plans as $p): ?>
                                     <option value="<?= (int)$p['id'] ?>" <?= $p['id'] == $u['plan_id'] ? 'selected' : '' ?>>
                                         <?= sanitize($p['name']) ?> — <?= sanitize(formatPrice($p)) ?>

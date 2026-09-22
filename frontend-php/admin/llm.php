@@ -295,7 +295,35 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                       // balance call hits the vendor, so it is cached hourly in
                       // app_settings and read once per page load. ?>
                 <?php $fenllmBalance = null; $fenllmBalanceFetched = false; ?>
+                <?php // One accordion item per provider. No data-bs-parent:
+                      // comparing two providers' settings is a real task, and a
+                      // parented accordion would close one every time the other
+                      // opened. Expanded when the provider is live (has a key or
+                      // is enabled); a never-configured one stays out of the way. ?>
+                <div class="accordion">
                 <?php foreach ($providers as $code => $p): ?>
+                <?php $accOpen = $p['has_key'] || !empty($p['row']['is_enabled']); ?>
+                <div class="accordion-item" id="llm-acc-<?= sanitize($code) ?>">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button<?= $accOpen ? '' : ' collapsed' ?>" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#llm-body-<?= sanitize($code) ?>"
+                                aria-expanded="<?= $accOpen ? 'true' : 'false' ?>"
+                                aria-controls="llm-body-<?= sanitize($code) ?>">
+                            <span class="fw-500"><?= sanitize($p['meta']['label']) ?></span>
+                            <span class="ms-2 d-flex gap-1">
+                                <?php if ($p['has_key']): ?>
+                                    <span class="badge bg-success">Key stored</span>
+                                <?php endif; ?>
+                                <?php if ($p['row'] && $p['row']['last_test_ok'] !== null): ?>
+                                    <span class="badge bg-<?= $p['row']['last_test_ok'] ? 'success' : 'danger' ?>">
+                                        <?= $p['row']['last_test_ok'] ? 'Test passed' : 'Test failed' ?>
+                                    </span>
+                                <?php endif; ?>
+                            </span>
+                        </button>
+                    </h2>
+                    <div id="llm-body-<?= sanitize($code) ?>" class="accordion-collapse collapse<?= $accOpen ? ' show' : '' ?>">
+                    <div class="accordion-body">
                 <form method="post" class="border rounded p-3 mb-3" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_provider">
@@ -449,7 +477,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
+                    </div><?php // /.accordion-body ?>
+                    </div><?php // /#llm-body-… ?>
+                </div><?php // /.accordion-item ?>
                 <?php endforeach; ?>
+                </div><?php // /.accordion ?>
             </div>
         </div>
 
@@ -465,17 +497,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     a new and expensive model must never become selectable on its own.
                 </p>
 
-                <table class="table table-sm align-middle">
+                <table class="table table-sm align-middle table-stack">
                     <thead><tr><th>Provider</th><th>Model</th><th>Kind</th><th class="text-end">Actions</th></tr></thead>
                     <tbody>
                     <?php foreach (array_merge($chatModels, $transcribeModels) as $m): ?>
                         <tr class="<?= $m['is_enabled'] ? '' : 'opacity-50' ?>">
-                            <td class="small"><?= sanitize($m['provider_label']) ?></td>
-                            <td>
+                            <td class="small" data-label="Provider"><?= sanitize($m['provider_label']) ?></td>
+                            <td class="cell-block" data-label="Model">
                                 <div class="small fw-500"><?= sanitize($m['label']) ?></div>
                                 <code class="x-small text-muted"><?= sanitize($m['model_code']) ?></code>
                             </td>
-                            <td><span class="badge bg-light text-dark"><?= sanitize($m['kind']) ?></span></td>
+                            <td data-label="Kind"><span class="badge bg-light text-dark"><?= sanitize($m['kind']) ?></span></td>
                             <td class="text-end">
                                 <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
@@ -619,35 +651,55 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <form method="post" data-ajax>
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="save_access">
-                    <?php foreach ($plans as $plan): ?>
-                        <div class="mb-3">
-                            <div class="fw-500 small mb-1">
-                                <?= sanitize($plan['name']) ?>
-                                <?php // The badge stated a fact and left the admin to find where it
-                                      // is changed. It is changed on the Plans page, so it links there. ?>
-                                <?php if (!planHasFeature($plan, 'chatbot')): ?>
-                                    <a href="<?= APP_URL ?>/admin/plans.php" class="badge bg-warning text-dark ms-1 text-decoration-none"
-                                       title="Granting models here has no effect until the AI chatbot feature is on for this plan. Click to change it.">
-                                        AI chatbot off for this plan — fix on Plans
-                                    </a>
-                                <?php endif; ?>
-                            </div>
+                    <?php // The matrix is a table now: a row per model, a column per plan.
+                          // The checkboxes are byte-identical to the old per-plan lists —
+                          // name, value, id and the checked test all unchanged — so a
+                          // save posts exactly what it did before. The plan heading's
+                          // chatbot-off warning keeps its link and its title. ?>
+                    <?php if ($chatModels): ?>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="small">Model</th>
+                                    <?php foreach ($plans as $plan): ?>
+                                        <th scope="col" class="small">
+                                            <?= sanitize($plan['name']) ?>
+                                            <?php // The badge stated a fact and left the admin to find where it
+                                                  // is changed. It is changed on the Plans page, so it links there. ?>
+                                            <?php if (!planHasFeature($plan, 'chatbot')): ?>
+                                                <a href="<?= APP_URL ?>/admin/plans.php" class="badge bg-warning text-dark d-block text-decoration-none"
+                                                   title="Granting models here has no effect until the AI chatbot feature is on for this plan. Click to change it.">
+                                                    AI chatbot off for this plan — fix on Plans
+                                                </a>
+                                            <?php endif; ?>
+                                        </th>
+                                    <?php endforeach; ?>
+                                </tr>
+                            </thead>
+                            <tbody>
                             <?php foreach ($chatModels as $m): ?>
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox"
-                                           name="plan_models[<?= (int)$plan['id'] ?>][]" value="<?= (int)$m['id'] ?>"
-                                           id="pm-<?= (int)$plan['id'] ?>-<?= (int)$m['id'] ?>"
-                                        <?= in_array((int)$m['id'], $planAccess[$plan['id']], true) ? 'checked' : '' ?>>
-                                    <label class="form-check-label small" for="pm-<?= (int)$plan['id'] ?>-<?= (int)$m['id'] ?>">
+                                <tr>
+                                    <th scope="row" class="small fw-500">
                                         <?= sanitize($m['provider_label'] . ' — ' . $m['label']) ?>
-                                    </label>
-                                </div>
+                                    </th>
+                                    <?php foreach ($plans as $plan): ?>
+                                        <td class="text-center">
+                                            <input class="form-check-input" type="checkbox"
+                                                   name="plan_models[<?= (int)$plan['id'] ?>][]" value="<?= (int)$m['id'] ?>"
+                                                   id="pm-<?= (int)$plan['id'] ?>-<?= (int)$m['id'] ?>"
+                                                   aria-label="<?= sanitize($plan['name'] . ' — ' . $m['provider_label'] . ' — ' . $m['label']) ?>"
+                                                <?= in_array((int)$m['id'], $planAccess[$plan['id']], true) ? 'checked' : '' ?>>
+                                        </td>
+                                    <?php endforeach; ?>
+                                </tr>
                             <?php endforeach; ?>
-                            <?php if (!$chatModels): ?>
-                                <div class="text-muted small">No chat models yet.</div>
-                            <?php endif; ?>
-                        </div>
-                    <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <?php else: ?>
+                        <div class="text-muted small mb-3">No chat models yet.</div>
+                    <?php endif; ?>
                     <button class="btn btn-primary btn-sm" type="submit">Save access</button>
                 </form>
             </div>

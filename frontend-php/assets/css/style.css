@@ -1,14 +1,18 @@
 :root {
-    --primary: #4f46e5;
-    --primary-hover: #4338ca;
-    --primary-light: #eef2ff;
-    --sidebar-bg: #0f172a;
+    --primary: #008069;
+    --primary-hover: #006b59;
+    --primary-light: #e7fcef;
+    /* Deep teal #008069 is the interactive colour (bright #25d366 fails
+       contrast as a button fill); #25d366 stays the brand mark / "live"
+       accent. */
+    --brand-accent: #25d366;
+    --sidebar-bg: #111b21;
     --sidebar-width: 260px;
-    --sidebar-active: #1e293b;
-    --sidebar-text: #94a3b8;
+    --sidebar-active: #202c33;
+    --sidebar-text: #aebac1;
     --sidebar-text-active: #ffffff;
     --topbar-height: 64px;
-    --body-bg: #f1f5f9;
+    --body-bg: #f0f2f5;
     --card-bg: #ffffff;
     --text-primary: #0f172a;
     --text-secondary: #64748b;
@@ -62,7 +66,42 @@
        shadow in the component's own colour, which on a white card next to a
        light border is close to invisible — and it is not applied at all to
        links, table actions or the sidebar. */
-    --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.35);
+    --focus-ring: 0 0 0 3px rgba(0, 128, 105, 0.35);
+}
+
+/* Pull Bootstrap's own accent onto the tenant teal: without this the app shows
+   three hues at once — the custom primary, WhatsApp green, and Bootstrap's
+   #0d6efd on links, pagination, checkboxes and .text-primary/.bg-primary.
+   Scoped off .admin-console, which keeps its own palette.
+   The variable overrides cover everything that reads var(--bs-primary) or
+   var(--bs-link-color); Bootstrap 5.3's compiled CSS uses the literal #0d6efd
+   for pagination, checkboxes and the check focus border, so those three each
+   need an explicit rule. */
+body:not(.admin-console) {
+    --bs-primary: #008069;
+    --bs-primary-rgb: 0, 128, 105;
+    --bs-link-color: #008069;
+    --bs-link-color-rgb: 0, 128, 105;
+    --bs-link-hover-color: #006b59;
+    --bs-link-hover-color-rgb: 0, 107, 89;
+}
+
+body:not(.admin-console) .page-link {
+    color: var(--primary);
+}
+
+body:not(.admin-console) .page-item.active .page-link {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+body:not(.admin-console) .form-check-input:checked {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+body:not(.admin-console) .form-check-input:focus {
+    border-color: var(--primary);
 }
 
 * {
@@ -188,7 +227,7 @@ button:focus-visible,
 
 .sidebar-brand i {
     font-size: 1.5rem;
-    color: #25d366;
+    color: var(--brand-accent);
 }
 
 /* An admin-uploaded logo (#23). Bounded in both directions so a tall or very
@@ -662,7 +701,7 @@ button:focus-visible,
 
 .auth-brand i {
     font-size: 2.5rem;
-    color: #25d366;
+    color: var(--brand-accent);
 }
 
 .auth-brand h2 {
@@ -707,7 +746,7 @@ button:focus-visible,
 .form-control:focus,
 .form-select:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+    box-shadow: 0 0 0 3px rgba(0, 128, 105, 0.12);
 }
 
 .form-label {
@@ -827,6 +866,11 @@ button:focus-visible,
 
 /* ===== Chat UI ===== */
 .chat-wrapper {
+    /* position: relative so the mobile .chat-sidebar (absolute below 992px)
+       resolves against this box rather than the initial containing block —
+       without it the full-width list is pinned to the viewport top and covers
+       the sticky topbar. */
+    position: relative;
     display: flex;
     height: calc(100vh - var(--topbar-height) - 48px);
     background: var(--card-bg);
@@ -898,7 +942,7 @@ button:focus-visible,
 }
 
 .chat-list-header:hover {
-    background: #eef2ff;
+    background: var(--primary-light);
 }
 
 .chat-list-header i {
@@ -959,7 +1003,7 @@ button:focus-visible,
 }
 
 .chat-list-item .chat-avatar.chat-avatar-group {
-    background: #25d366;
+    background: var(--brand-accent);
 }
 
 /* Group avatars render an icon rather than an initial, so the glyph needs to be
@@ -970,7 +1014,43 @@ button:focus-visible,
 }
 
 .chat-header-avatar.chat-avatar-group {
-    background: #25d366;
+    background: var(--brand-accent);
+}
+
+/* Six fixed tones rather than a hash-to-hue, so nothing lands on an unreadable
+   colour or collides with the group green. chatAvatarTone() in app.js picks
+   one deterministically from the chat id, so a contact is recognisable by tone
+   while scrolling. All are dark enough for white initials. */
+.chat-avatar.tone-1, .chat-header-avatar.tone-1 { background: #0e8f7e; }
+.chat-avatar.tone-2, .chat-header-avatar.tone-2 { background: #1f7a8c; }
+.chat-avatar.tone-3, .chat-header-avatar.tone-3 { background: #3f7f5c; }
+.chat-avatar.tone-4, .chat-header-avatar.tone-4 { background: #6b6ea9; }
+.chat-avatar.tone-5, .chat-header-avatar.tone-5 { background: #8a6d3b; }
+.chat-avatar.tone-6, .chat-header-avatar.tone-6 { background: #a35b6f; }
+
+/* Mobile-only back button inside the open thread's header (see .chat-wrapper
+   .show-thread below). Styled like WhatsApp's: a bare icon, not a pill. */
+.chat-back {
+    width: 40px;
+    height: 40px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    padding: 0;
+}
+
+.chat-back:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+@media (min-width: 992px) {
+    .chat-back { display: none; }
 }
 
 .chat-list-item .chat-info {
@@ -1150,6 +1230,12 @@ button:focus-visible,
 
 .bubble-content {
     padding: 0 4px;
+    /* dir="auto" on this element resolves the direction ONCE from the first
+       strong character, so a bubble that opens in Urdu flipped the English
+       half of a mixed-script message too — trailing punctuation included.
+       plaintext resolves per bidi paragraph instead: each <br>-separated line
+       gets its own direction, Urdu lines RTL and English lines LTR. */
+    unicode-bidi: plaintext;
 }
 
 .bubble-meta {
@@ -1464,7 +1550,7 @@ button:focus-visible,
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: #25d366;
+    background: var(--brand-accent);
     color: #fff;
     display: flex;
     align-items: center;
@@ -2064,6 +2150,13 @@ button:focus-visible,
         z-index: 10;
         background: #fff;
     }
+    /* List/thread modes: the sidebar covers .chat-main at this width, so an
+       open conversation is unreachable until the list is hidden. openChat()
+       adds the class; the in-header back button and the browser Back button
+       (popstate) remove it. */
+    .chat-wrapper.show-thread .chat-sidebar {
+        display: none;
+    }
 }
 
 @media (max-width: 767.98px) {
@@ -2076,6 +2169,28 @@ button:focus-visible,
     }
     .chat-wrapper {
         height: calc(100vh - var(--topbar-height) - 32px);
+    }
+    /* Six tabs wrapped onto two rows on a phone, which reads as two controls.
+       One scrollable row reads as one; the scrollbar is hidden because the
+       strip's own overflow is the affordance. */
+    .settings-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    .settings-tabs::-webkit-scrollbar {
+        display: none;
+    }
+    .settings-tabs .nav-item {
+        flex: 0 0 auto;
+    }
+    /* The bar needs a shadow to read as a bar over scrolling content rather
+       than floating text, and the safe-area inset keeps the button off a
+       phone's home indicator. */
+    .sticky-save {
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+        box-shadow: 0 -2px 8px rgba(15, 23, 42, 0.06);
     }
 }
 
@@ -2136,6 +2251,13 @@ button:focus-visible,
     .table-stack tbody tr.is-note td {
         display: block;
         text-align: left;
+    }
+    /* A stacked card row repeats the label for every cell, so "Last Message: —"
+       is a row that says nothing. Cells that render blank or a placeholder get
+       .is-empty in the markup and are dropped on mobile only — the desktop
+       table keeps its columns and placeholders. */
+    .table-stack tbody td.is-empty {
+        display: none;
     }
 }
 
@@ -2254,11 +2376,11 @@ details[open].settings-collapse > summary::after {
     border-radius: 2px;
 }
 
-/* Indigo-300 rather than --primary: #4f46e5 on the near-black rail fails the
-   contrast a link needs. */
+/* A light teal tint rather than --primary: #008069 on the near-black rail
+   fails the contrast a link needs. */
 .sidebar-plan-link {
     display: inline-block;
-    color: #a5b4fc;
+    color: #7fd8b5;
     font-weight: var(--fw-label);
     margin-top: var(--space-1);
     text-decoration: none;

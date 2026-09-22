@@ -330,10 +330,28 @@ $pageTitle = 'Instance Settings';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
+<div class="row g-4">
+    <div class="col-lg-3 d-none d-lg-block">
+        <?php // Seven cards, one scroll. The nav mirrors them so a section is one
+              // click from the top; it is hidden below lg where stacking it would
+              // only lengthen the scroll it was added to shorten. ?>
+        <nav class="settings-nav" aria-label="Settings sections">
+            <div class="nav-section-title px-3 mb-1">On this page</div>
+            <a href="#set-localisation">Localisation</a>
+            <a href="#set-tenants">New tenants</a>
+            <a href="#set-security">Login security</a>
+            <a href="#set-handover">Handover notifications</a>
+            <a href="#set-payment">Payment instructions</a>
+            <a href="#set-sales">Sales contact</a>
+            <a href="#set-leads">Lead search</a>
+        </nav>
+    </div>
+    <div class="col-lg-9">
+
 <form method="POST" data-ajax>
     <?= csrfField() ?>
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-localisation">
         <div class="card-header">Localisation</div>
         <div class="card-body">
             <div class="row g-3">
@@ -392,7 +410,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-tenants">
         <div class="card-header">New tenants</div>
         <div class="card-body">
             <?php // The "Allow public sign-ups" switch was here, and is gone (#48).
@@ -442,7 +460,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-security">
         <div class="card-header">Login Security</div>
         <div class="card-body">
             <div class="row g-3">
@@ -465,7 +483,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-handover">
         <div class="card-header">Handover Notifications</div>
         <div class="card-body">
             <div class="col-md-5 px-0">
@@ -487,7 +505,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-payment">
         <div class="card-header">Payment Instructions</div>
         <div class="card-body">
             <label class="form-label">Shown to tenants on their billing page</label>
@@ -506,7 +524,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
           // their billing page shows whatever is switched on here, with the plan's
           // name already in the message — so an enquiry arrives saying which plan
           // it is about. ?>
-    <div class="card mb-4">
+    <div class="card mb-4" id="set-sales">
         <div class="card-header">Sales Contact</div>
         <div class="card-body">
             <?php if (!$current['billing_contact_methods']): ?>
@@ -595,7 +613,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 
-    <button type="submit" class="btn btn-primary">Save Settings</button>
+    <div class="sticky-save">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+    </div>
 </form>
 
 <?php // Lead generation (#50). A separate form, deliberately.
@@ -606,7 +626,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
       // "keep what is there" — the same contract as the SMTP password and the
       // LLM provider keys. Keeping it in its own form is what makes that rule
       // impossible to break by adding a field to the wrong place. ?>
-<div class="card mb-4 mt-4">
+<div class="card mb-4 mt-4" id="set-leads">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span>Lead search (SerpApi)</span>
         <?php if ($serpConfigured): ?>
@@ -696,6 +716,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </form>
 </div>
+
+    </div><?php // /.col-lg-9 ?>
+</div><?php // /.row ?>
 
 <script>
 // Reveal the relabel opt-in only when the currency actually changes. Server-side

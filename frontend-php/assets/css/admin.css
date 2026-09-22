@@ -9,7 +9,23 @@
  * should never need a second look. */
 
 .admin-console {
-    --admin-accent: #dc2626;
+    --admin-accent: #b91c1c;
+    --admin-accent-hover: #991b1b;
+    --admin-accent-soft: #fef2f2;
+    --admin-accent-border: #fecaca;
+    --admin-destructive: #dc2626;
+
+    /* The accent is applied by redefining the tokens style.css already writes
+       .btn-primary, .btn-outline-primary, .nav-link-item.active,
+       .card-header icons, .skip-link and the focus ring in terms of — so the
+       console inherits it without duplicating any of those rules. */
+    --primary: var(--admin-accent);
+    --primary-hover: var(--admin-accent-hover);
+    --primary-light: var(--admin-accent-soft);
+    --focus-ring: 0 0 0 3px rgba(185, 28, 28, 0.35);
+    --bs-link-color-rgb: 185, 28, 28;
+    --bs-link-hover-color-rgb: 153, 27, 27;
+
     --sidebar-bg: #1a1014;
     --sidebar-active: #2c1a1f;
 }
@@ -61,8 +77,348 @@
     vertical-align: middle;
 }
 
-/* Destructive tenant actions (suspend, demote) should read as destructive. */
-.admin-console .table-card .btn-outline-danger:hover {
-    background: var(--admin-accent);
-    border-color: var(--admin-accent);
+/* Three things say "admin" at once: the sidebar brand's " Admin" suffix, the
+ * accent scope banner, and this badge. On desktop the sidebar is always on
+ * screen so the badge is redundant; on mobile the sidebar is off-canvas and
+ * the badge is the only scope cue left, so it stays there. */
+@media (min-width: 992px) {
+    .admin-console .app-topbar h1::before {
+        display: none;
+    }
+}
+
+/* With red as the ordinary action colour, hue no longer separates action
+ * kinds — shape does instead, as a three-way system: filled red is the primary
+ * action, a neutral grey outline is a secondary action, and a 2px red outline
+ * is a destructive one that fills only on hover/focus. Without the neutral
+ * rule a secondary outline and a destructive outline are both red and read as
+ * equally dangerous — the "Set" next to "Suspend" problem. This is the visual
+ * layer only: the data-confirm dialog remains the real guard. */
+.admin-console .btn-outline-primary {
+    border-color: #cbd5e1;
+    color: var(--text-primary);
+}
+.admin-console .btn-outline-primary:hover,
+.admin-console .btn-outline-primary:focus-visible {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    color: var(--text-primary);
+}
+.admin-console .btn-outline-danger {
+    border-width: 2px;
+    border-color: var(--admin-destructive);
+    color: var(--admin-destructive);
+    font-weight: var(--fw-heading);
+}
+.admin-console .btn-outline-danger:hover,
+.admin-console .btn-outline-danger:focus-visible {
+    background: var(--admin-destructive);
+    border-color: var(--admin-destructive);
+    color: #fff;
+}
+
+/* #64748b on the console's warm-black sidebar is marginal at 12px; warm grey
+ * reads at roughly 7:1 against it. Scoped to the footer so the muted style
+ * elsewhere keeps the tenant app's value. */
+.admin-console .sidebar-footer .text-muted-light {
+    color: #a8a29e;
+}
+
+/* Card headers disagree in height and baseline down a page of stacked cards:
+ * some are plain text, some carry actions, some a whole filter form. One flex
+ * baseline for all of them. */
+.admin-console .card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    min-height: 56px;
+}
+
+/* style.css gives .btn-sm justify-content: space-between, which pushes an
+ * icon and its label to opposite ends of the button. Centre them instead. */
+.admin-console .btn-sm {
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 12px;
+}
+
+@media (max-width: 767.98px) {
+    .admin-console .btn,
+    .admin-console .btn-sm {
+        min-height: 40px;
+    }
+}
+
+/* The inline min-width this replaces fought the stacked-table fix below. */
+.admin-plan-select {
+    min-width: 190px;
+}
+
+/* Same for the two truncated cells on the leads table. */
+.admin-lead-title {
+    max-width: 260px;
+}
+
+/* .table-stack turns rows into label:value cards under 768px, but admin cells
+ * hold selects with hard min-widths, long emails and button groups that do
+ * not shrink — without these rules the content runs past the card edge. */
+@media (max-width: 767.98px) {
+    /* display:table auto layout sizes columns from cell min-content, so a
+       nowrap or truncate cell would force the whole table past the card edge
+       no matter how the cells themselves behave. Block the table and tbody so
+       each row's width comes from the container, not its widest cell. */
+    .admin-console .table-stack,
+    .admin-console .table-stack tbody {
+        display: block;
+    }
+    .admin-console .table-stack tbody tr {
+        margin: 12px 0;
+    }
+    .admin-console .table-stack tbody td {
+        align-items: flex-start;
+        gap: var(--space-3);
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .admin-console .table-stack tbody td::before {
+        flex: 0 0 34%;
+        max-width: 34%;
+    }
+    .admin-console .table-stack tbody td > * {
+        min-width: 0;
+        max-width: 100%;
+    }
+    .admin-console .table-stack tbody td > form,
+    .admin-console .table-stack tbody td > .d-flex {
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .admin-console .table-stack tbody td .form-select,
+    .admin-console .table-stack tbody td .form-control {
+        width: 100%;
+    }
+    .admin-plan-select {
+        min-width: 0;
+    }
+    .admin-lead-title {
+        max-width: 100%;
+    }
+
+    /* Cells holding a multi-line identity block (tenant name + email + id,
+       business title + address) cannot survive label:value side-by-side — a
+       long name wraps one character at a time inside the squeezed value
+       column. .cell-block opts the cell back into a stacked block with the
+       label as a small heading above it. */
+    .admin-console .table-stack tbody td.cell-block {
+        display: block;
+        text-align: left;
+    }
+    .admin-console .table-stack tbody td.cell-block::before {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+}
+
+/* ===== Overview / summary components =====
+ *
+ * .kpi-card replaces the old "icon + h4 + caption" stat cards, which gave a 0
+ * the same visual weight as the revenue figure. The icon is a fixed tile so
+ * the numbers align across a row; accent-tinted by default, is-neutral for
+ * "nothing wrong here" states where colour would be alarm without cause. */
+.admin-console .kpi-card {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-4);
+    padding: var(--space-5);
+}
+.admin-console .kpi-icon {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    background: var(--admin-accent-soft);
+    color: var(--admin-accent);
+}
+.admin-console .kpi-icon.is-neutral { background: #f1f5f9; color: #64748b; }
+.admin-console .kpi-icon-sm {
+    flex-basis: 32px;
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+}
+.admin-console .kpi-icon.is-warn { background: var(--warning-light); color: #92400e; }
+.admin-console .kpi-icon.is-danger { background: var(--danger-light); color: #991b1b; }
+.admin-console .kpi-icon.is-ok { background: var(--success-light); color: #065f46; }
+.admin-console .kpi-value {
+    font-size: 1.875rem;
+    font-weight: var(--fw-title);
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+}
+/* Several currency lines share one KPI cell (currencies are never summed), so
+   each gets a quieter size than a single headline figure. */
+.admin-console .kpi-value-sm {
+    font-size: 1.25rem;
+}
+.admin-console .kpi-label {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    font-weight: var(--fw-label);
+}
+.admin-console .kpi-sub {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+
+/* One row per exception on the Overview. A row above zero is a link with a
+ * chevron — it goes to the filtered list that answers it; a zero row is plain
+ * muted text, because a link to an empty filter is a dead end dressed as a
+ * door. */
+.admin-console .attention-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border-color);
+    color: inherit;
+    text-decoration: none;
+}
+.admin-console .attention-row:last-child {
+    border-bottom: 0;
+}
+.admin-console .attention-row .attention-count {
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-title);
+    font-variant-numeric: tabular-nums;
+    min-width: 2ch;
+}
+.admin-console .attention-row.is-muted {
+    color: var(--text-secondary);
+}
+.admin-console .attention-row.is-muted .attention-count {
+    font-weight: var(--fw-label);
+}
+
+/* The getting-started checklist was the page's only border-primary — with the
+ * accent moved to red it was also the only blue left on the page. */
+.admin-console .admin-setup-card {
+    border-left: 4px solid var(--admin-accent);
+}
+
+/* Plans as cards. The 11-column table hid everything past "Contacts" on a
+ * phone and overflowed its own card at desktop width; a card per plan keeps
+ * every limit visible at any width. */
+.admin-console .plan-card .plan-price {
+    font-size: 1.5rem;
+    font-weight: var(--fw-title);
+    font-variant-numeric: tabular-nums;
+}
+.admin-console .plan-limits {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: var(--space-4);
+    row-gap: 2px;
+    font-size: var(--fs-sm);
+    margin: 0;
+}
+.admin-console .plan-limits dt {
+    color: var(--text-secondary);
+    font-weight: var(--fw-label);
+}
+.admin-console .plan-limits dd {
+    margin: 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+/* An inactive plan is de-emphasised through its content only: dimming the
+ * whole card dims the Enable button, which is the one thing on the card that
+ * must stay obvious. */
+.admin-console .plan-card.is-inactive .plan-card-main {
+    opacity: 0.55;
+}
+
+/* On a phone-width viewport a promoted modal is a tall floating dialog with
+ * the page visible behind it and fields cut mid-scroll. Make it a full-screen
+ * sheet with a sticky header instead; the modal-dialog-scrollable body
+ * scrolls inside it.
+ *
+ * #waConfirmModal is excluded on purpose: it is a small centred confirm
+ * dialog, and a full-screen sheet for "Suspend this account?" would read as a
+ * page navigation rather than a question. */
+@media (max-width: 575.98px) {
+    .admin-console .modal:not(#waConfirmModal) .modal-dialog {
+        margin: 0;
+        max-width: 100%;
+        height: 100%;
+    }
+    .admin-console .modal:not(#waConfirmModal) .modal-content {
+        height: 100%;
+        border-radius: 0;
+        border: 0;
+    }
+    .admin-console .modal:not(#waConfirmModal) .modal-header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--card-bg);
+    }
+}
+
+/* Settings page: the column of cards is over two thousand pixels tall, so the
+ * section links and the Save button ride along instead of waiting at the top
+ * and the bottom. The nav is desktop-only — stacked above the form on a phone
+ * it would be another scroll before the fields. */
+.admin-console .settings-nav {
+    position: sticky;
+    top: calc(var(--topbar-height) + var(--space-4));
+}
+.admin-console .settings-nav a {
+    display: block;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    text-decoration: none;
+}
+.admin-console .settings-nav a:hover {
+    background: var(--admin-accent-soft);
+    color: var(--text-primary);
+}
+.admin-console .sticky-save {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    background: var(--body-bg);
+    border-top: 1px solid var(--card-border, #e2e8f0);
+    padding: var(--space-3) 0;
+}
+
+/* Every in-page anchor in the console — the Settings section links, the audit
+ * tab fragment, the promoted-shell anchors — jumps under the sticky topbar
+ * without this. scroll-margin clears it on scrollIntoView and fragment jumps
+ * alike; it has no visual effect otherwise. */
+.admin-console .card[id],
+.admin-console .tab-pane[id] {
+    scroll-margin-top: calc(var(--topbar-height) + var(--space-4));
+}
+
+/* A collapse toggle that reads the same open and shut gives no clue which way
+ * it goes. Bootstrap already maintains aria-expanded on the trigger, so the
+ * chevron rotates off that — no script needed. prefers-reduced-motion neutralises
+ * the transition globally. */
+.admin-console [data-bs-toggle="collapse"] .bi-chevron-down {
+    transition: transform 0.15s ease;
+}
+.admin-console [data-bs-toggle="collapse"][aria-expanded="true"] .bi-chevron-down {
+    transform: rotate(180deg);
 }

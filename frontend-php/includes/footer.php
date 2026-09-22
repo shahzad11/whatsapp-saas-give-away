@@ -6,9 +6,9 @@
       // rather than per page: a new page that calls one of them would otherwise
       // fail closed with "Invalid request" and the cause would not be obvious. ?>
 <script>window.waCsrfToken = '<?= csrfToken() ?>';</script>
-<script src="<?= APP_URL ?>/assets/js/app.js"></script>
+<script src="<?= APP_URL ?>/assets/js/app.js?v=<?= (int)@filemtime(dirname(__DIR__) . '/assets/js/app.js') ?>"></script>
 <?php // Progressive enhancement only — modals, AJAX submits, confirmations and
       // sticky tabs. Every form it upgrades still posts and validates without it. ?>
-<script src="<?= APP_URL ?>/assets/js/forms.js"></script>
+<script src="<?= APP_URL ?>/assets/js/forms.js?v=<?= (int)@filemtime(dirname(__DIR__) . '/assets/js/forms.js') ?>"></script>
 </body>
 </html>

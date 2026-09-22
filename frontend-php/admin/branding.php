@@ -107,6 +107,36 @@ $pageTitle = 'App Branding';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
+<?php // Rendered from the saved/effective values, deliberately not wired to the
+      // inputs below: a live preview would invite an admin to trust a page that
+      // has not been saved, so it states plainly which snapshot it shows. ?>
+<div class="card mb-4">
+    <div class="card-header">Preview</div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <div class="rounded px-3 py-2 d-flex align-items-center gap-2" style="background:#1a1014;">
+                <i class="bi bi-shield-lock" style="color:var(--admin-accent);"></i>
+                <?php if ($logoUrlNow !== ''): ?>
+                    <img src="<?= sanitize($logoUrlNow) ?>" alt="Logo" style="max-height:22px;max-width:140px;">
+                <?php else: ?>
+                    <span class="text-white small fw-500"><?= sanitize($brandName) ?><span class="text-white-50"> Admin</span></span>
+                <?php endif; ?>
+            </div>
+            <div class="rounded-pill border d-flex align-items-center gap-2 px-3 py-1 small text-muted">
+                <?php if ($faviconUrlNow !== ''): ?>
+                    <img src="<?= sanitize($faviconUrlNow) ?>" alt="" style="height:16px;width:16px;">
+                <?php else: ?>
+                    <i class="bi bi-shield-lock" style="font-size:0.8rem;"></i>
+                <?php endif; ?>
+                <span><?= sanitize($brandName) ?> Admin</span>
+            </div>
+        </div>
+        <p class="text-muted x-small mt-2 mb-0">
+            This is what is currently saved — edits typed below are not reflected here until you save.
+        </p>
+    </div>
+</div>
+
 <?php // enctype is required for the file inputs; the AJAX path sends the same
       // FormData, so one form serves both. ?>
 <form method="POST" enctype="multipart/form-data" data-ajax>

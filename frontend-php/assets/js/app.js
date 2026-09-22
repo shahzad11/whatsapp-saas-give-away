@@ -403,6 +403,15 @@ function renderMediaPreview(msg) {
     return `${icons[t] || ''} ${labels[t] || t}`;
 }
 
+// Same name always gets the same colour, so a contact is recognisable by tone
+// while scrolling. Six fixed tones rather than a hash-to-hue, so nothing lands
+// on an unreadable colour or collides with the group green.
+function chatAvatarTone(key) {
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return 'tone-' + (h % 6 + 1);
+}
+
 // Which list the sidebar is showing. WhatsApp Web keeps archived chats out of
 // the main list entirely and only reveals them inside their own view.
 let showingArchived = false;
@@ -513,13 +522,13 @@ function renderChatList(sessionId, chats) {
         const isActive = chat.id === currentChatId;
         return `
             <div class="chat-list-item ${isActive ? 'active' : ''}" onclick="openChat('${escapeAttr(sessionId)}', '${escapeAttr(chat.id)}', this)">
-                <div class="chat-avatar ${chat.isGroup ? 'chat-avatar-group' : ''}">${avatar}</div>
+                <div class="chat-avatar ${chat.isGroup ? 'chat-avatar-group' : chatAvatarTone(chat.id)}">${avatar}</div>
                 <div class="chat-info">
                     <div class="chat-info-top">
-                        <span class="chat-name">${name}</span>
+                        <span class="chat-name" dir="auto">${name}</span>
                         <span class="chat-time">${time}</span>
                     </div>
-                    <div class="chat-preview">${preview}</div>
+                    <div class="chat-preview" dir="auto">${preview}</div>
                 </div>
             </div>
         `;
@@ -576,9 +585,10 @@ function openChat(sessionId, chatId, el) {
 
     chatMain.innerHTML = `
         <div class="chat-main-header">
-            <div class="chat-header-avatar ${isGroup ? 'chat-avatar-group' : ''}">${avatar}</div>
+            <button type="button" class="btn chat-back d-lg-none" onclick="closeChatThread()" aria-label="Back to conversations"><i class="bi bi-arrow-left"></i></button>
+            <div class="chat-header-avatar ${isGroup ? 'chat-avatar-group' : chatAvatarTone(chatId)}">${avatar}</div>
             <div class="chat-header-info">
-                <div class="chat-header-name">${escapeHtml(currentChatName)}${archivedBadge}</div>
+                <div class="chat-header-name" dir="auto">${escapeHtml(currentChatName)}${archivedBadge}</div>
                 <div class="chat-header-status">${escapeHtml(subtext)}</div>
             </div>
         </div>
@@ -628,11 +638,34 @@ function openChat(sessionId, chatId, el) {
     discardVoiceRecording();
     pendingAttachment = null;
 
+    const wrapper = document.querySelector('.chat-wrapper');
+    const narrow = window.matchMedia('(max-width: 991.98px)').matches;
+    // One history entry per thread session, not one per chat switch: the phone's
+    // Back button should return to the list, not walk back through every chat.
+    if (wrapper && narrow && !wrapper.classList.contains('show-thread')) {
+        history.pushState({ waThread: 1 }, '');
+    }
+    if (wrapper) wrapper.classList.add('show-thread');
+
     currentSessionId = sessionId;
     loadMessages(sessionId, chatId);
     if (chatPollInterval) clearInterval(chatPollInterval);
     chatPollInterval = setInterval(() => loadMessages(sessionId, chatId), 5000);
 }
+
+// Leaves thread mode on narrow screens. The header button goes through
+// history.back() so the entry openChat() pushed is consumed rather than left
+// behind for the next Back press to trip over.
+function closeChatThread() {
+    if (history.state && history.state.waThread) { history.back(); return; }
+    document.querySelector('.chat-wrapper')?.classList.remove('show-thread');
+}
+
+window.addEventListener('popstate', function (e) {
+    if (!(e.state && e.state.waThread)) {
+        document.querySelector('.chat-wrapper')?.classList.remove('show-thread');
+    }
+});
 
 function loadMessages(sessionId, chatId) {
     fetch(`ajax/get-messages.php?session_id=${sessionId}&chat_id=${encodeURIComponent(chatId)}`)
@@ -683,7 +716,7 @@ function loadMessages(sessionId, chatId) {
                     html += `<div class="bubble-sender">${escapeHtml(msg.senderName)}</div>`;
                 }
                 lastSender = msg.fromMe ? null : (msg.senderName || null);
-                html += `<div class="bubble-content">${content}</div>`;
+                html += `<div class="bubble-content" dir="auto">${content}</div>`;
                 html += `<div class="bubble-meta"><span class="bubble-time">${time}</span>${tickMark}</div>`;
                 html += `</div></div>`;
             }

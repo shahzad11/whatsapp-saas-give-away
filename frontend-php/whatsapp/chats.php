@@ -38,7 +38,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <i class="bi bi-chat-dots d-block"></i>
                 <h5>No accounts linked</h5>
                 <p>Link a WhatsApp account first to view chats.</p>
-                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link Account</a>
+                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link account</a>
             </div>
         </div>
     </div>

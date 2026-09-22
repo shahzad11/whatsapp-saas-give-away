@@ -110,9 +110,9 @@ require_once dirname(__DIR__) . '/includes/header.php';
         <form method="POST" class="d-inline" data-ajax>
             <?= csrfField() ?>
             <input type="hidden" name="action" value="sync">
-            <button type="submit" class="btn btn-outline-primary btn-sm" data-busy-label="Syncing…"><i class="bi bi-arrow-clockwise me-1"></i>Sync All</button>
+            <button type="submit" class="btn btn-outline-primary btn-sm" data-busy-label="Syncing…"><i class="bi bi-arrow-clockwise me-1"></i>Sync all</button>
         </form>
-        <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link Account</a>
+        <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link account</a>
     </div>
 </div>
 
@@ -123,7 +123,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <i class="bi bi-phone d-block"></i>
                 <h5>No WhatsApp accounts linked</h5>
                 <p>Link your WhatsApp accounts to manage them from this dashboard.</p>
-                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link Account</a>
+                <a href="<?= APP_URL ?>/whatsapp/link.php" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Link account</a>
             </div>
         </div>
     </div>

@@ -48,10 +48,11 @@ if (isset($conn) && !empty($_SESSION['user_id']) && function_exists('getUserPlan
               // an action on the Accounts page, not a place, and it is already the
               // primary button there, in the dashboard toolbar and in every empty
               // state. Accounts stays lit while linking so the nav still says where
-              // you are. ?>
+              // you are. 'connect-cloud' is the same kind of action — the Cloud API
+              // connection form is a step in linking an account, not a destination. ?>
         <div class="nav-section">
             <span class="nav-section-title">WhatsApp</span>
-            <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="nav-link-item <?= in_array($currentPage, ['accounts', 'link'], true) ? 'active' : '' ?>">
+            <a href="<?= APP_URL ?>/whatsapp/accounts.php" class="nav-link-item <?= in_array($currentPage, ['accounts', 'link', 'connect-cloud'], true) ? 'active' : '' ?>">
                 <i class="bi bi-phone"></i><span>Accounts</span>
             </a>
             <a href="<?= APP_URL ?>/whatsapp/chats.php" class="nav-link-item <?= $currentPage === 'chats' ? 'active' : '' ?>">

@@ -86,6 +86,8 @@ class SmtpClient
     private $socket = null;
     private array $log = [];
     private int $timeout;
+    private bool $tlsActive = false;
+    private string $authState = 'skipped_no_username';
 
     public function __construct(int $timeout = 15)
     {
@@ -101,6 +103,42 @@ class SmtpClient
     // password is never written to the transcript.
     public function send(array $cfg, string $toEmail, string $subject, string $htmlBody, string $textBody = ''): bool
     {
+        try {
+            $this->openSession($cfg);
+
+            $from = mailValidAddress($cfg['from_email']);
+            $to = mailValidAddress($toEmail);
+            if (!$from) throw new RuntimeException('The "from" address is not a valid email address.');
+            if (!$to) throw new RuntimeException('The recipient address is not a valid email address.');
+
+            $this->command("MAIL FROM:<{$from}>");
+            $this->expect([250], 'MAIL FROM');
+            $this->command("RCPT TO:<{$to}>");
+            $this->expect([250, 251], 'RCPT TO');
+            $this->command('DATA');
+            $this->expect([354], 'DATA');
+
+            $this->writeRaw($this->buildMessage($cfg, $to, $subject, $htmlBody, $textBody));
+            $this->writeRaw("\r\n.\r\n");
+            $this->expect([250], 'message body');
+
+            $this->command('QUIT');
+            return true;
+        } finally {
+            $this->close();
+        }
+    }
+
+    // Runs everything send() needs before the envelope: connect, greeting,
+    // EHLO, STARTTLS when configured, AUTH when credentials exist. verify()
+    // calls this and nothing more, which is what makes it a probe that cannot
+    // send. Returns the post-EHLO capability string for authenticate().
+    private function openSession(array $cfg): string
+    {
+        // A reused instance must not report the previous session's outcome.
+        $this->tlsActive = false;
+        $this->authState = 'skipped_no_username';
+
         $encryption = $cfg['encryption'] ?? 'tls';
         $host = $cfg['host'];
         $port = (int)$cfg['port'];
@@ -127,55 +165,64 @@ class SmtpClient
         if (!$this->socket) {
             throw new RuntimeException("Cannot connect to {$host}:{$port} — " . ($errstr ?: 'connection failed'));
         }
+        if ($encryption === 'ssl') {
+            $this->tlsActive = true;
+        }
         stream_set_timeout($this->socket, $this->timeout);
 
-        try {
-            $this->expect([220], 'greeting');
+        $this->expect([220], 'greeting');
 
-            $ehloName = $this->ehloName($cfg['from_email'] ?? '');
+        $ehloName = $this->ehloName($cfg['from_email'] ?? '');
+        $this->command("EHLO {$ehloName}");
+        $caps = $this->expect([250], 'EHLO');
+
+        if ($encryption === 'tls') {
+            $this->command('STARTTLS');
+            $this->expect([220], 'STARTTLS');
+            if (!@stream_socket_enable_crypto($this->socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
+                throw new RuntimeException('STARTTLS negotiation failed (certificate or protocol mismatch).');
+            }
+            $this->tlsActive = true;
+            // Capabilities must be re-read after the upgrade: the server is
+            // allowed to advertise a different set, and AUTH usually only
+            // appears once the channel is encrypted.
             $this->command("EHLO {$ehloName}");
-            $caps = $this->expect([250], 'EHLO');
+            $caps = $this->expect([250], 'EHLO after STARTTLS');
+        }
 
-            if ($encryption === 'tls') {
-                $this->command('STARTTLS');
-                $this->expect([220], 'STARTTLS');
-                if (!@stream_socket_enable_crypto($this->socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
-                    throw new RuntimeException('STARTTLS negotiation failed (certificate or protocol mismatch).');
-                }
-                // Capabilities must be re-read after the upgrade: the server is
-                // allowed to advertise a different set, and AUTH usually only
-                // appears once the channel is encrypted.
-                $this->command("EHLO {$ehloName}");
-                $caps = $this->expect([250], 'EHLO after STARTTLS');
-            }
-
-            if (($cfg['username'] ?? '') !== '' && ($cfg['password'] ?? '') !== '') {
+        if (($cfg['username'] ?? '') !== '') {
+            // A username with no password authenticates nothing; skipping is
+            // what the send path has always done, so the probe reports it
+            // rather than treating it as a failure.
+            if (($cfg['password'] ?? '') === '') {
+                $this->authState = 'skipped_no_password';
+            } else {
                 $this->authenticate($caps, $cfg['username'], $cfg['password']);
+                $this->authState = 'ok';
             }
+        }
 
-            $from = mailValidAddress($cfg['from_email']);
-            $to = mailValidAddress($toEmail);
-            if (!$from) throw new RuntimeException('The "from" address is not a valid email address.');
-            if (!$to) throw new RuntimeException('The recipient address is not a valid email address.');
+        return $caps;
+    }
 
-            $this->command("MAIL FROM:<{$from}>");
-            $this->expect([250], 'MAIL FROM');
-            $this->command("RCPT TO:<{$to}>");
-            $this->expect([250, 251], 'RCPT TO');
-            $this->command('DATA');
-            $this->expect([354], 'DATA');
-
-            $this->writeRaw($this->buildMessage($cfg, $to, $subject, $htmlBody, $textBody));
-            $this->writeRaw("\r\n.\r\n");
-            $this->expect([250], 'message body');
-
+    // Connect, EHLO, STARTTLS, AUTH, QUIT — and deliberately no MAIL FROM,
+    // RCPT TO or DATA, so the probe cannot send or even address a message.
+    public function verify(array $cfg): array
+    {
+        try {
+            $this->openSession($cfg);
             $this->command('QUIT');
-            return true;
+            return ['tls' => $this->tlsActive, 'auth' => $this->authState];
         } finally {
-            if ($this->socket) {
-                @fclose($this->socket);
-                $this->socket = null;
-            }
+            $this->close();
+        }
+    }
+
+    private function close(): void
+    {
+        if ($this->socket) {
+            @fclose($this->socket);
+            $this->socket = null;
         }
     }
 
@@ -352,5 +399,32 @@ function sendMailNow($to, $subject, $htmlBody, $textBody = '', mysqli $conn = nu
         // and in the log.
         error_log('SMTP send failed: ' . $e->getMessage() . ' | ' . implode(' ', $client->log()));
         return [false, $e->getMessage()];
+    }
+}
+
+// Probes the SMTP server without sending anything: connect, EHLO, STARTTLS,
+// AUTH, QUIT. Separates "the server and credentials are wrong" from "the
+// message was accepted and filtered later", which a test *send* cannot do.
+//
+// Takes an explicit $cfg rather than the database and never checks DEV_MODE:
+// a probe that short-circuits in dev or reaches for stored settings would test
+// something other than what is on the admin's screen — its whole value is in
+// really opening the socket to the given host.
+// Returns [ok(bool), message(string), transcript(string[])].
+function verifySmtpConnection(array $cfg) {
+    $client = new SmtpClient();
+    try {
+        $r = $client->verify($cfg);
+        $parts = ['Connected to ' . $cfg['host'] . ':' . (int)$cfg['port']];
+        $parts[] = $r['tls'] ? 'encrypted' : 'not encrypted';
+        $parts[] = [
+            'ok' => 'credentials accepted',
+            'skipped_no_username' => 'no username set, so authentication was not tested',
+            'skipped_no_password' => 'no password available, so authentication was not tested',
+        ][$r['auth']];
+        return [true, implode(' — ', $parts) . '.', $client->log()];
+    } catch (Throwable $e) {
+        error_log('SMTP connection test failed: ' . $e->getMessage() . ' | ' . implode(' ', $client->log()));
+        return [false, $e->getMessage(), $client->log()];
     }
 }

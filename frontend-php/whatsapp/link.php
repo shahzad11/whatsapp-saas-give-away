@@ -107,7 +107,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         <a href="<?= APP_URL ?>/billing.php" class="alert-link">Upgrade your plan</a> to link more.
                     </div>
                 <?php else: ?>
-                <p class="text-muted small mb-4">Give your account a label to identify it easily, then click "Generate QR Code" to start the linking process.</p>
+                <p class="text-muted small mb-4">Give your account a label to identify it easily, then click "Generate QR code" to start the linking process.</p>
                 <form method="POST">
                     <?= csrfField() ?>
                     <div class="mb-3">
@@ -116,7 +116,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         <div class="form-text">Optional. Helps you identify this account later.</div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100">
-                        <i class="bi bi-qr-code me-2"></i>Generate QR Code
+                        <i class="bi bi-qr-code me-2"></i>Generate QR code
                     </button>
                 </form>
                 <?php endif; ?>

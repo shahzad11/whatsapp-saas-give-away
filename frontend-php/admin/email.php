@@ -95,6 +95,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'username_set' => $username !== '', 'from' => $fromEmail,
         ]);
 
+        if ($action === 'verify') {
+            [$ok, $message, $transcript] = verifySmtpConnection(smtpSettings($conn));
+            logAudit($conn, 'admin.smtp.verify', 'app_settings', null, ['host' => $host, 'port' => $port, 'ok' => $ok]);
+            // Same contract as the send-test below: the probe's own outcome
+            // lives in the result panel, so $ok here reports that the save
+            // succeeded and the AJAX path reloads to show the panel rather
+            // than shrinking a diagnostic into a toast.
+            $_SESSION['smtp_test'] = ['kind' => 'connection', 'ok' => $ok, 'message' => $message, 'transcript' => $transcript];
+            formRespond(true, $ok ? 'Connection test passed.' : 'Connection test failed — see the details on the page.',
+                $self, [], ['redirect' => $self]);
+        }
+
         if ($action === 'test') {
             $to = trim($_POST['test_to'] ?? '');
             if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
@@ -107,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // The full result panel (including the SPF note) is rendered on the
             // page, so the AJAX path reloads to show it rather than shrinking a
             // diagnostic into a toast.
-            $_SESSION['smtp_test'] = ['ok' => $ok, 'message' => $message, 'to' => $to];
+            $_SESSION['smtp_test'] = ['kind' => 'message', 'ok' => $ok, 'message' => $message, 'to' => $to];
             formRespond(true, $ok ? 'Test message accepted by the server.' : 'Test message failed — see the details on the page.',
                 $self, [], ['redirect' => $self]);
         }
@@ -137,7 +149,29 @@ $pageTitle = 'Email / SMTP';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
-<?php if ($testResult): ?>
+<?php if ($testResult && ($testResult['kind'] ?? 'message') === 'connection'): ?>
+    <div class="alert alert-<?= $testResult['ok'] ? 'success' : 'danger' ?>">
+        <strong><?= $testResult['ok'] ? 'Connection test passed' : 'Connection test failed' ?></strong>
+        <div class="small mt-1"><?= sanitize($testResult['message']) ?></div>
+        <?php if ($testResult['ok']): ?>
+            <div class="small mt-1 text-muted">
+                This proves the server is reachable and the credentials work. It does not prove a
+                message will reach an inbox — use "Save &amp; send test" for that.
+            </div>
+        <?php endif; ?>
+        <?php // SmtpClient redacts credentials in its transcript (AUTH PLAIN
+              // <redacted>, <username>, <redacted>), which is why it is safe to
+              // render here — do not add unredacted lines to the log. ?>
+        <?php // Empty when the socket never opened — an empty disclosure titled
+              // "Server conversation" reads as a bug, so it is omitted. ?>
+        <?php if (!empty($testResult['transcript'])): ?>
+            <details class="mt-2">
+                <summary>Server conversation</summary>
+                <pre class="small mb-0"><?= sanitize(implode("\n", $testResult['transcript'])) ?></pre>
+            </details>
+        <?php endif; ?>
+    </div>
+<?php elseif ($testResult): ?>
     <div class="alert alert-<?= $testResult['ok'] ? 'success' : 'danger' ?>">
         <strong><?= $testResult['ok'] ? 'Test message sent' : 'Test message failed' ?></strong>
         to <?= sanitize($testResult['to']) ?>.
@@ -154,38 +188,65 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 <?php endif; ?>
 
+<?php // One strip states the state — including the positive one, which the old
+      // page never showed. The long explanations move into <details> under it:
+      // the reasoning is worth keeping, but it is not worth re-reading on every
+      // visit. Both are preserved word for word. ?>
+<div class="alert alert-<?= $unreadable ? 'danger' : ($configured ? 'success' : 'warning') ?> d-flex align-items-start gap-2">
+    <i class="bi bi-<?= $unreadable ? 'exclamation-octagon' : ($configured ? 'check-circle' : 'exclamation-triangle') ?>"></i>
+    <div class="small">
+        <?php if ($unreadable): ?>
+            <strong>Credential problem</strong> — the stored SMTP password cannot be decrypted,
+            so email will not send.
+        <?php elseif (!$configured): ?>
+            <strong>Not configured</strong> — this instance cannot send email.
+        <?php else: ?>
+            <strong>Configured</strong> — sending through
+            <code><?= sanitize($stored['smtp_host']) ?></code>
+            as <?= sanitize($stored['smtp_from_email'] !== '' ? $stored['smtp_from_email'] : $stored['smtp_username']) ?>.
+        <?php endif; ?>
+    </div>
+</div>
+
 <?php if ($unreadable): ?>
-    <div class="alert alert-warning">
-        <strong>The stored SMTP password cannot be decrypted.</strong>
-        This happens when the instance secret (<code>APP_SECRET_KEY</code>, or
-        <code>BACKEND_API_KEY</code> when that is unset) has changed since it was saved.
-        Re-enter the password below to fix it. Email will not send until you do.
-    </div>
-<?php elseif (!$configured): ?>
-    <div class="alert alert-warning">
-        <strong>Email is not configured, so this instance cannot send any.</strong>
-        Account activation, password resets, renewal reminders and human-handover alerts are all
-        silently undeliverable until the fields below are filled in.
-        <?php // #15 asked for a local EXIM relay so a fresh deployment could send
-              // mail before an admin configured SMTP. It was declined, and this is
-              // where that decision has to be visible — otherwise the absence of a
-              // fallback looks like something that has not been built yet.
-              //
-              // The reasoning: a self-hosted MTA on a VPS with no SPF record, no
-              // DKIM signing and generic reverse DNS does not reach inboxes, it
-              // reaches spam folders. Mail that is silently filtered is strictly
-              // worse than mail that visibly fails, because nobody investigates a
-              // password reset that "was sent". An SMTP relay the operator already
-              // owns has the reputation these messages need. ?>
-        <div class="small mt-2">
-            There is <strong>deliberately</strong> no local mail server to fall back to. A mail server
-            running on this VPS would have no SPF record, no DKIM signature and generic reverse DNS,
-            so most providers would filter its mail into spam — and mail that is silently filtered is
-            worse than mail that visibly fails, because nobody investigates a reset link that "was
-            sent". Use an SMTP relay whose domain reputation you already own: your own mail provider,
-            or a transactional service. Any of them works here.
+    <details class="mb-4">
+        <summary class="small text-muted">Why the stored password cannot be recovered</summary>
+        <div class="alert alert-warning small mt-2 mb-0">
+            <strong>The stored SMTP password cannot be decrypted.</strong>
+            This happens when the instance secret (<code>APP_SECRET_KEY</code>, or
+            <code>BACKEND_API_KEY</code> when that is unset) has changed since it was saved.
+            Re-enter the password below to fix it. Email will not send until you do.
         </div>
-    </div>
+    </details>
+<?php endif; ?>
+<?php if (!$configured): ?>
+    <details class="mb-4">
+        <summary class="small text-muted">What stops working, and why there is no built-in fallback</summary>
+        <div class="alert alert-warning small mt-2 mb-0">
+            <strong>Email is not configured, so this instance cannot send any.</strong>
+            Account activation, password resets, renewal reminders and human-handover alerts are all
+            silently undeliverable until the fields below are filled in.
+            <?php // #15 asked for a local EXIM relay so a fresh deployment could send
+                  // mail before an admin configured SMTP. It was declined, and this is
+                  // where that decision has to be visible — otherwise the absence of a
+                  // fallback looks like something that has not been built yet.
+                  //
+                  // The reasoning: a self-hosted MTA on a VPS with no SPF record, no
+                  // DKIM signing and generic reverse DNS does not reach inboxes, it
+                  // reaches spam folders. Mail that is silently filtered is strictly
+                  // worse than mail that visibly fails, because nobody investigates a
+                  // password reset that "was sent". An SMTP relay the operator already
+                  // owns has the reputation these messages need. ?>
+            <div class="small mt-2">
+                There is <strong>deliberately</strong> no local mail server to fall back to. A mail server
+                running on this VPS would have no SPF record, no DKIM signature and generic reverse DNS,
+                so most providers would filter its mail into spam — and mail that is silently filtered is
+                worse than mail that visibly fails, because nobody investigates a reset link that "was
+                sent". Use an SMTP relay whose domain reputation you already own: your own mail provider,
+                or a transactional service. Any of them works here.
+            </div>
+        </div>
+    </details>
 <?php endif; ?>
 
 <form method="POST" data-ajax>
@@ -279,19 +340,28 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4">
-        <div class="card-header">Send a Test</div>
+        <div class="card-header">Test</div>
         <div class="card-body">
             <div class="row g-3 align-items-end">
                 <div class="col-md-6">
                     <label class="form-label">Send a test message to</label>
                     <input type="email" name="test_to" class="form-control"
                            value="<?= sanitize($user['email'] ?? '') ?>">
-                    <div class="form-text">Saves the settings above, then sends using them.</div>
+                    <div class="form-text">Saves the settings above, then sends using them. Sending a
+                        test proves end-to-end delivery.</div>
                 </div>
                 <div class="col-md-6">
-                    <button type="submit" name="action" value="test" class="btn btn-outline-primary">
-                        <i class="bi bi-send me-1"></i>Save &amp; send test
-                    </button>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button type="submit" name="action" value="test" class="btn btn-outline-primary">
+                            <i class="bi bi-send me-1"></i>Save &amp; send test
+                        </button>
+                        <button type="submit" name="action" value="verify" class="btn btn-outline-secondary"
+                                data-busy-label="Testing…">
+                            <i class="bi bi-plug me-1"></i>Save &amp; test connection
+                        </button>
+                    </div>
+                    <div class="form-text">Testing the connection proves the host, port, encryption and
+                        password are right — it sends nothing.</div>
                 </div>
             </div>
         </div>

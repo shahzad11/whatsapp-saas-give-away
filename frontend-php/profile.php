@@ -310,7 +310,7 @@ require_once __DIR__ . '/includes/header.php';
                           // them needs preference-aware routing in the mailer,
                           // which does not exist yet, so the controls are gone
                           // rather than silently ignored. The columns remain. ?>
-                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                    <button type="submit" class="btn btn-primary">Save changes</button>
                 </form>
             </div>
         </div>

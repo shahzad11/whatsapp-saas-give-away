@@ -24,8 +24,17 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="<?= APP_URL ?>/assets/css/style.css" rel="stylesheet">
-    <link href="<?= APP_URL ?>/assets/css/admin.css" rel="stylesheet">
+    <link href="<?= APP_URL ?>/assets/css/style.css?v=<?= (int)@filemtime(dirname(__DIR__) . '/assets/css/style.css') ?>" rel="stylesheet">
+    <link href="<?= APP_URL ?>/assets/css/admin.css?v=<?= (int)@filemtime(dirname(__DIR__) . '/assets/css/admin.css') ?>" rel="stylesheet">
+    <?php // Same reasoning as the modal fallbacks: every toggleable element here
+          // renders real content first and upgrades to a tab/accordion/collapse
+          // with JavaScript. Without it, display:none leaves sections that were
+          // always visible unreachable, so the noscript sheet forces them open. ?>
+    <noscript><style>
+        .admin-console .tab-pane { display: block !important; opacity: 1 !important; }
+        .admin-console .collapse { display: block !important; }
+        .admin-console .accordion-collapse { display: block !important; }
+    </style></noscript>
 </head>
 <body class="admin-console">
 <?php // #33 §17 — see includes/header.php. Both layouts need it; neither can
@@ -112,7 +121,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 <h1 class="h5 mb-0"><?= sanitize($pageTitle) ?></h1>
             </div>
             <div class="d-flex align-items-center gap-3">
-                <a href="<?= APP_URL ?>/logout.php" class="btn btn-sm btn-link text-danger text-decoration-none">
+                <a href="<?= APP_URL ?>/logout.php" class="btn btn-sm btn-link text-secondary text-decoration-none">
                     <i class="bi bi-box-arrow-right me-1"></i>Logout
                 </a>
             </div>

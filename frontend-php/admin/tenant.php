@@ -73,9 +73,29 @@ $fragment = isXhrRequest();
 if (!$fragment) {
     require_once dirname(__DIR__) . '/includes/admin-header.php';
     ?>
-    <a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-link text-decoration-none mb-3 px-0">
-        <i class="bi bi-arrow-left me-1"></i>All tenants
-    </a>
+    <div class="page-toolbar">
+        <div>
+            <p class="page-toolbar-title">
+                <?= sanitize(tenantDisplayName($tenant, $profile)) ?>
+                <?php if (!$tenant['is_active']): ?>
+                    <span class="badge bg-secondary">unactivated</span>
+                <?php elseif ($tenant['status'] === 'suspended'): ?>
+                    <span class="badge bg-danger">suspended</span>
+                <?php else: ?>
+                    <span class="badge bg-success">active</span>
+                <?php endif; ?>
+                <?php if ($tenant['is_admin']): ?><span class="badge bg-dark">admin</span><?php endif; ?>
+            </p>
+            <p class="page-toolbar-subtitle">
+                <?= sanitize($tenant['email']) ?> · <code>t<?= (int)$tenant['id'] ?></code>
+            </p>
+        </div>
+        <div class="page-toolbar-actions">
+            <a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-left me-1"></i>All tenants
+            </a>
+        </div>
+    </div>
     <?php
 }
 ?>
@@ -157,9 +177,22 @@ if (!$fragment) {
             <div class="card-header">Usage This Month</div>
             <div class="card-body">
                 <?php foreach ($usage as $label => [$used, $limit]): ?>
-                    <div class="d-flex justify-content-between small mb-2">
-                        <span class="fw-500"><?= sanitize($label) ?></span>
-                        <span class="text-muted"><?= number_format($used) ?> / <?= sanitize(formatLimit($limit)) ?></span>
+                    <div class="small mb-3">
+                        <div class="d-flex justify-content-between">
+                            <span class="fw-500"><?= sanitize($label) ?></span>
+                            <span class="text-muted"><?= number_format($used) ?> / <?= sanitize(formatLimit($limit)) ?></span>
+                        </div>
+                        <?php // The numbers already say how much is used; the bar says how
+                              // much room is left. Only finite limits get one — "Unlimited"
+                              // cannot be drawn, and a 0 limit is drawn full rather than
+                              // divided by. ?>
+                        <?php if ($limit !== null): ?>
+                            <?php $pct = $limit > 0 ? min(100, (int)round($used / $limit * 100)) : 100; ?>
+                            <div class="progress mt-1" style="height:6px;">
+                                <div class="progress-bar" role="progressbar" style="width:<?= $pct ?>%"
+                                     aria-valuenow="<?= $pct ?>" aria-valuemin="0" aria-valuemax="100"></div>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -171,15 +204,15 @@ if (!$fragment) {
                 <div class="card-body"><p class="text-muted small mb-0">No linked accounts.</p></div>
             <?php else: ?>
             <div class="table-responsive">
-                <table class="table align-middle mb-0">
+                <table class="table align-middle mb-0 table-stack">
                     <thead><tr><th>Label</th><th>Number</th><th>Status</th><th>Connected</th></tr></thead>
                     <tbody>
                     <?php foreach ($accounts as $a): ?>
                         <tr>
-                            <td class="small"><?= sanitize($a['label'] ?: '—') ?></td>
-                            <td class="small"><?= $a['phone_number'] ? sanitize(formatPhone($a['phone_number'])) : '—' ?></td>
-                            <td><span class="badge bg-<?= $a['status'] === 'connected' ? 'success' : 'secondary' ?>"><?= sanitize($a['status']) ?></span></td>
-                            <td class="small text-muted"><?= $a['connected_at'] ? sanitize(timeAgo($a['connected_at'])) : '—' ?></td>
+                            <td class="small" data-label="Label"><?= sanitize($a['label'] ?: '—') ?></td>
+                            <td class="small" data-label="Number"><?= $a['phone_number'] ? sanitize(formatPhone($a['phone_number'])) : '—' ?></td>
+                            <td data-label="Status"><span class="badge bg-<?= $a['status'] === 'connected' ? 'success' : 'secondary' ?>"><?= sanitize($a['status']) ?></span></td>
+                            <td class="small text-muted" data-label="Connected"><?= $a['connected_at'] ? sanitize(timeAgo($a['connected_at'])) : '—' ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -194,15 +227,15 @@ if (!$fragment) {
                 <div class="card-body"><p class="text-muted small mb-0">Nothing logged yet.</p></div>
             <?php else: ?>
             <div class="table-responsive">
-                <table class="table align-middle mb-0">
+                <table class="table align-middle mb-0 table-stack">
                     <thead><tr><th>Action</th><th>Entity</th><th>IP</th><th>When</th></tr></thead>
                     <tbody>
                     <?php foreach ($audit as $row): ?>
                         <tr>
-                            <td class="small"><code><?= sanitize($row['action']) ?></code></td>
-                            <td class="small text-muted"><?= sanitize(trim(($row['entity'] ?? '') . ' ' . ($row['entity_id'] ?? ''))) ?: '—' ?></td>
-                            <td class="small text-muted"><?= sanitize($row['ip_address'] ?? '—') ?></td>
-                            <td class="small text-muted"><?= sanitize(timeAgo($row['created_at'])) ?></td>
+                            <td class="small" data-label="Action"><code><?= sanitize($row['action']) ?></code></td>
+                            <td class="small text-muted" data-label="Entity"><?= sanitize(trim(($row['entity'] ?? '') . ' ' . ($row['entity_id'] ?? ''))) ?: '—' ?></td>
+                            <td class="small text-muted" data-label="IP"><?= sanitize($row['ip_address'] ?? '—') ?></td>
+                            <td class="small text-muted" data-label="When"><?= sanitize(timeAgo($row['created_at'])) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>

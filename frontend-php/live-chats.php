@@ -139,7 +139,9 @@ require_once __DIR__ . '/includes/header.php';
 <div class="row g-3 mb-3">
     <?php foreach ([
         ['Waiting', $counts['waiting'] ?? 0, 'bi-hourglass-split', 'warning'],
-        ['With an agent', $counts['claimed'] ?? 0, 'bi-person-check', 'primary'],
+        // 'info' not 'primary': with primary now the WhatsApp teal it reads as
+        // the same green as Resolved below — blue says in progress, green done.
+        ['With an agent', $counts['claimed'] ?? 0, 'bi-person-check', 'info'],
         ['Resolved', $counts['resolved'] ?? 0, 'bi-check2-circle', 'success'],
         ['Abandoned', $counts['abandoned'] ?? 0, 'bi-slash-circle', 'secondary'],
     ] as [$label, $value, $icon, $colour]): ?>
@@ -185,7 +187,10 @@ require_once __DIR__ . '/includes/header.php';
                                 </div>
                             </div>
                             <div class="text-end flex-shrink-0 ms-2">
-                                <?php $badge = ['waiting' => 'warning', 'claimed' => 'primary', 'resolved' => 'success', 'abandoned' => 'secondary'][$h['status']]; ?>
+                                <?php // 'claimed' is 'info' for the same reason as the metric card
+                                      // above: 'primary' is now teal and would sit next to the green
+                                      // 'resolved' badge reading as the same colour. ?>
+                                <?php $badge = ['waiting' => 'warning', 'claimed' => 'info', 'resolved' => 'success', 'abandoned' => 'secondary'][$h['status']]; ?>
                                 <span class="badge bg-<?= $badge ?>"><?= sanitize(handoffStatuses()[$h['status']]) ?></span>
                                 <?php if ($h['status'] === 'waiting'): ?>
                                     <div class="x-small text-danger mt-1">waiting <?= handoffWaitLabel($h['requested_at']) ?></div>

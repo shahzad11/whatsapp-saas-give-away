@@ -75,25 +75,41 @@ $sessionCounts = $conn->query(
      GROUP BY u.id, u.name ORDER BY total DESC LIMIT 20"
 )->fetch_all(MYSQLI_ASSOC);
 
+$self = APP_URL . '/admin/system.php';
+
 // --- Audit log, filterable ---
 $fAction = trim($_GET['action'] ?? '');
 $fUser = (int)($_GET['user'] ?? 0);
 $fDays = (int)($_GET['days'] ?? 7);
 if ($fDays < 1 || $fDays > 365) $fDays = 7;
 
-$sql = "SELECT a.id, a.action, a.entity, a.entity_id, a.ip_address, a.created_at, a.meta,
-               u.name AS actor_name, u.email AS actor_email
-        FROM audit_log a LEFT JOIN users u ON a.user_id = u.id
-        WHERE a.created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)";
+$where = "FROM audit_log a LEFT JOIN users u ON a.user_id = u.id
+          WHERE a.created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)";
 $types = 'i';
 $args = [$fDays];
 
-if ($fAction !== '') { $sql .= ' AND a.action = ?'; $types .= 's'; $args[] = $fAction; }
-if ($fUser > 0)      { $sql .= ' AND a.user_id = ?'; $types .= 'i'; $args[] = $fUser; }
-$sql .= ' ORDER BY a.id DESC LIMIT 200';
+if ($fAction !== '') { $where .= ' AND a.action = ?'; $types .= 's'; $args[] = $fAction; }
+if ($fUser > 0)      { $where .= ' AND a.user_id = ?'; $types .= 'i'; $args[] = $fUser; }
 
-$stmt = $conn->prepare($sql);
+// Paged at 50: the old LIMIT 200 made the log the whole page, which is why the
+// health cards above it sat nine thousand pixels down on a phone. The count
+// runs the same WHERE so a filtered page number cannot lie about the total.
+$perPage = 50;
+$page = max(1, (int)($_GET['page'] ?? 1));
+$stmt = $conn->prepare("SELECT COUNT(*) " . $where);
 $stmt->bind_param($types, ...$args);
+$stmt->execute();
+$auditTotal = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+$stmt->close();
+$totalPages = max(1, (int)ceil($auditTotal / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+
+$stmt = $conn->prepare(
+    "SELECT a.id, a.action, a.entity, a.entity_id, a.ip_address, a.created_at, a.meta,
+            u.name AS actor_name, u.email AS actor_email
+     " . $where . " ORDER BY a.id DESC LIMIT ? OFFSET ?"
+);
+$stmt->bind_param($types . 'ii', ...[...$args, $perPage, ($page - 1) * $perPage]);
 $stmt->execute();
 $audit = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
@@ -106,9 +122,32 @@ $actors = $conn->query(
     "SELECT DISTINCT u.id, u.name FROM audit_log a JOIN users u ON a.user_id = u.id ORDER BY u.name"
 )->fetch_all(MYSQLI_ASSOC);
 
+// The page is two jobs — "is it up" and "what happened" — that used to stack
+// into one nine-thousand-pixel scroll. They are tabs now. The audit tab is the
+// default whenever the URL carries one of its own parameters, so a filter
+// submit or a shared link opens on the log, not on the health cards.
+$auditTab = isset($_GET['action']) || isset($_GET['user']) || isset($_GET['days']) || isset($_GET['page']);
+
 $pageTitle = 'System & Audit';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
+
+<ul class="nav nav-tabs mb-4" role="tablist">
+    <li class="nav-item">
+        <button class="nav-link<?= $auditTab ? '' : ' active' ?>" id="tab-health-btn" type="button"
+                role="tab" aria-selected="<?= $auditTab ? 'false' : 'true' ?>" aria-controls="tab-health"
+                data-bs-toggle="tab" data-bs-target="#tab-health">Health</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link<?= $auditTab ? ' active' : '' ?>" id="tab-audit-btn" type="button"
+                role="tab" aria-selected="<?= $auditTab ? 'true' : 'false' ?>" aria-controls="tab-audit"
+                data-bs-toggle="tab" data-bs-target="#tab-audit">Audit log</button>
+    </li>
+</ul>
+
+<div class="tab-content">
+<div class="tab-pane fade<?= $auditTab ? '' : ' show active' ?>" id="tab-health"
+     role="tabpanel" aria-labelledby="tab-health-btn" tabindex="0">
 
 <div class="row g-3 mb-4">
     <div class="col-lg-4 col-md-6">
@@ -218,7 +257,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <div class="card table-card h-100">
             <div class="card-header">Accounts Needing Attention</div>
             <div class="table-responsive">
-                <table class="table align-middle mb-0">
+                <table class="table align-middle mb-0 table-stack">
                     <thead><tr><th>Tenant</th><th>Account</th><th>Status</th><th>Since</th><th></th></tr></thead>
                     <tbody>
                     <?php if (!$needsAttention): ?>
@@ -226,18 +265,18 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php endif; ?>
                     <?php foreach ($needsAttention as $a): ?>
                         <tr>
-                            <td class="small">
+                            <td class="small" data-label="Tenant">
                                 <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$a['user_id'] ?>" class="text-decoration-none">
                                     <?= sanitize($a['tenant_name']) ?>
                                 </a>
                             </td>
-                            <td class="small">
+                            <td class="small cell-block" data-label="Account">
                                 <?= sanitize($a['label'] ?: '—') ?>
                                 <?php if ($a['phone_number']): ?>
                                     <span class="text-muted x-small d-block"><?= sanitize(formatPhone($a['phone_number'])) ?></span>
                                 <?php endif; ?>
                             </td>
-                            <td>
+                            <td data-label="Status">
                                 <span class="badge-status <?= waStatusClass($a['status']) ?>" title="<?= sanitize($a['status']) ?>">
                                     <?= sanitize(waStatusLabel($a['status'])) ?>
                                 </span>
@@ -245,7 +284,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                     <div class="x-small text-muted"><?= sanitize($hint) ?></div>
                                 <?php endif; ?>
                             </td>
-                            <td class="small text-muted"><?= sanitize(timeAgo($a['updated_at'])) ?></td>
+                            <td class="small text-muted" data-label="Since"><?= sanitize(timeAgo($a['updated_at'])) ?></td>
                             <td class="text-end">
                                 <?php // Re-linking means scanning a QR code with the phone that owns
                                       // the number, so an admin genuinely cannot do it for someone
@@ -285,7 +324,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <div class="card table-card h-100">
             <div class="card-header">Linked Accounts per Tenant</div>
             <div class="table-responsive">
-                <table class="table align-middle mb-0">
+                <table class="table align-middle mb-0 table-stack">
                     <thead><tr><th>Tenant</th><th>Connected</th><th>Total</th></tr></thead>
                     <tbody>
                     <?php if (!$sessionCounts): ?>
@@ -293,9 +332,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php endif; ?>
                     <?php foreach ($sessionCounts as $s): ?>
                         <tr>
-                            <td class="small"><a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$s['id'] ?>" class="text-decoration-none"><?= sanitize($s['name']) ?></a></td>
-                            <td class="small"><?= (int)$s['connected'] ?></td>
-                            <td class="small"><?= (int)$s['total'] ?></td>
+                            <td class="small" data-label="Tenant"><a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$s['id'] ?>" class="text-decoration-none"><?= sanitize($s['name']) ?></a></td>
+                            <td class="small" data-label="Connected"><?= (int)$s['connected'] ?></td>
+                            <td class="small" data-label="Total"><?= (int)$s['total'] ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -305,10 +344,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 </div>
 
+</div><?php // /#tab-health ?>
+<div class="tab-pane fade<?= $auditTab ? ' show active' : '' ?>" id="tab-audit"
+     role="tabpanel" aria-labelledby="tab-audit-btn" tabindex="0">
+
 <div class="card table-card">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span>Audit Log</span>
-        <form method="GET" class="d-flex gap-2 flex-wrap">
+        <?php // The fragment in the action keeps a filter submit on this tab;
+              // where a browser drops it, stickyTabs() remembering the active
+              // tab covers the gap. ?>
+        <form method="GET" action="<?= APP_URL ?>/admin/system.php#tab-audit" class="d-flex gap-2 flex-wrap">
             <select name="action" class="form-select form-select-sm" style="width:240px">
                 <option value="">All actions</option>
                 <?php foreach ($actions as $a): ?>
@@ -333,7 +379,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </form>
     </div>
     <div class="table-responsive">
-        <table class="table align-middle mb-0">
+        <table class="table align-middle mb-0 table-stack">
             <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>IP</th><th>Detail</th></tr></thead>
             <tbody>
             <?php if (!$audit): ?>
@@ -341,14 +387,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($audit as $row): ?>
                 <tr>
-                    <td class="small text-muted" title="<?= sanitize($row['created_at']) ?>"><?= sanitize(timeAgo($row['created_at'])) ?></td>
-                    <td class="small"><?= sanitize($row['actor_name'] ?? 'system') ?></td>
+                    <td class="small text-muted" data-label="When" title="<?= sanitize($row['created_at']) ?>"><?= sanitize(timeAgo($row['created_at'])) ?></td>
+                    <td class="small" data-label="Actor"><?= sanitize($row['actor_name'] ?? 'system') ?></td>
                     <?php // The identifier is what you filter and grep by, so it stays — as the
                           // tooltip. The column itself now reads as a sentence. ?>
-                    <td class="small" title="<?= sanitize($row['action']) ?>"><?= sanitize(auditActionLabel($row['action'])) ?></td>
-                    <td class="small text-muted"><?= sanitize(trim(($row['entity'] ?? '') . ' ' . ($row['entity_id'] ?? ''))) ?: '—' ?></td>
-                    <td class="small text-muted"><?= sanitize($row['ip_address'] ?? '—') ?></td>
-                    <td class="x-small text-muted" style="max-width:280px">
+                    <td class="small" data-label="Action" title="<?= sanitize($row['action']) ?>"><?= sanitize(auditActionLabel($row['action'])) ?></td>
+                    <td class="small text-muted" data-label="Entity"><?= sanitize(trim(($row['entity'] ?? '') . ' ' . ($row['entity_id'] ?? ''))) ?: '—' ?></td>
+                    <td class="small text-muted" data-label="IP"><?= sanitize($row['ip_address'] ?? '—') ?></td>
+                    <td class="x-small text-muted" data-label="Detail" style="max-width:280px">
                         <?php // meta is action metadata (plan ids, amounts) — never message content. ?>
                         <?= $row['meta'] ? sanitize(mb_strimwidth((string)$row['meta'], 0, 120, '…')) : '' ?>
                     </td>
@@ -357,12 +403,34 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </tbody>
         </table>
     </div>
+    <?php if ($totalPages > 1): ?>
+    <?php // Same Prev/Next as leads.php, carrying the filters forward so a page
+          // change cannot silently drop the action/actor/window being read. ?>
+    <nav class="card-body border-top d-flex justify-content-between align-items-center" aria-label="Audit log pages">
+        <?php $auditQuery = ['action' => $fAction, 'user' => $fUser, 'days' => $fDays]; ?>
+        <?php if ($page > 1): ?>
+            <a class="btn btn-sm btn-outline-secondary" href="<?= $self ?>?<?= sanitize(http_build_query($auditQuery + ['page' => $page - 1])) ?>#tab-audit">&laquo; Previous</a>
+        <?php else: ?>
+            <span></span>
+        <?php endif; ?>
+        <span class="text-muted small">Page <?= (int)$page ?> of <?= number_format($totalPages) ?></span>
+        <?php if ($page < $totalPages): ?>
+            <a class="btn btn-sm btn-outline-secondary" href="<?= $self ?>?<?= sanitize(http_build_query($auditQuery + ['page' => $page + 1])) ?>#tab-audit">Next &raquo;</a>
+        <?php else: ?>
+            <span></span>
+        <?php endif; ?>
+    </nav>
+    <?php endif; ?>
     <div class="card-body border-top">
         <p class="text-muted x-small mb-0">
-            Showing up to 200 entries. The audit log records actions and their metadata only —
-            tenant message contents are never exposed here.
+            Showing page <?= (int)$page ?> of <?= number_format($totalPages) ?> — <?= (int)$perPage ?> entries
+            per page, <?= number_format($auditTotal) ?> matching. The audit log records actions and their
+            metadata only — tenant message contents are never exposed here.
         </p>
     </div>
 </div>
+
+</div><?php // /#tab-audit ?>
+</div><?php // /.tab-content ?>
 
 <?php require_once dirname(__DIR__) . '/includes/admin-footer.php'; ?>

@@ -157,24 +157,40 @@ $pageTitle = 'Payments';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
+<div class="page-toolbar">
+    <div>
+        <p class="page-toolbar-title">Payments</p>
+    </div>
+    <div class="page-toolbar-actions">
+        <?php // The form below is inside a modal once JavaScript has moved it, so
+              // the page needs a way back to it. The href is the same anchor the
+              // lapsing list uses, which is the plain page with the form on it. ?>
+        <a href="<?= APP_URL ?>/admin/payments.php#logForm" class="btn btn-sm btn-primary"
+           data-modal-target="#paymentModal" data-modal-title="Log a Payment">
+            <i class="bi bi-plus-lg me-1"></i>Log a payment
+        </a>
+    </div>
+</div>
+
 <div class="row g-3 mb-4">
     <div class="col-lg-6">
-        <div class="card h-100">
-            <div class="card-header">Received This Month</div>
-            <div class="card-body">
+        <div class="card kpi-card h-100">
+            <span class="kpi-icon"><i class="bi bi-cash-coin"></i></span>
+            <div>
                 <?php if (!$totals): ?>
-                    <p class="text-muted small mb-0">No payments logged this month.</p>
+                    <div class="kpi-value">—</div>
                 <?php else: ?>
                     <?php // One row per currency, never a single total: summing across
                           // currencies without a rate produces a number that would be
                           // believed and is meaningless. ?>
                     <?php foreach ($totals as $t): ?>
-                        <div class="d-flex justify-content-between align-items-baseline mb-1">
-                            <span class="h5 mb-0"><?= sanitize(formatMoney((int)$t['total'], $t['currency'])) ?></span>
-                            <span class="text-muted small"><?= (int)$t['payments'] ?> payment(s)</span>
-                        </div>
+                        <div class="kpi-value kpi-value-sm"><?= sanitize(formatMoney((int)$t['total'], $t['currency'])) ?></div>
                     <?php endforeach; ?>
                 <?php endif; ?>
+                <div class="kpi-label">Received this month</div>
+                <div class="kpi-sub">
+                    <?= $totals ? (int)array_sum(array_column($totals, 'payments')) : 0 ?> payment(s)
+                </div>
             </div>
         </div>
     </div>
@@ -240,6 +256,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-body">
         <form method="POST" data-ajax>
             <?= csrfField() ?>
+            <h6 class="fw-600 mb-3">Tenant &amp; plan</h6>
             <div class="row g-3">
                 <div class="col-md-5">
                     <label class="form-label">Tenant <span class="text-danger">*</span></label>
@@ -273,12 +290,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?= yErr('method') ?>
                 </div>
 
-                <div class="col-md-3">
+            </div>
+
+            <hr class="my-4">
+            <h6 class="fw-600 mb-3">Amount</h6>
+            <div class="row g-3">
+                <div class="col-md-6">
                     <label class="form-label">Amount received <span class="text-danger">*</span></label>
                     <input type="text" name="amount" class="form-control<?= yCls('amount') ?>" placeholder="1500" required>
                     <?= yErr('amount') ?>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-6">
                     <label class="form-label">Currency</label>
                     <select name="currency" class="form-select<?= yCls('currency') ?>">
                         <?php $cur = appCurrency($conn); ?>
@@ -288,29 +310,22 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     </select>
                     <?= yErr('currency') ?>
                 </div>
-                <div class="col-md-3">
+            </div>
+
+            <hr class="my-4">
+            <h6 class="fw-600 mb-3">Period</h6>
+            <div class="row g-3">
+                <div class="col-md-6">
                     <label class="form-label">Period start</label>
                     <input type="date" name="period_start" class="form-control<?= yCls('period_start') ?>"
                            value="<?= sanitize(gmdate('Y-m-d')) ?>">
                     <?= yErr('period_start') ?>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-6">
                     <label class="form-label">Period end</label>
                     <input type="date" name="period_end" class="form-control<?= yCls('period_end') ?>"
                            value="<?= sanitize(gmdate('Y-m-d', strtotime('+1 month'))) ?>">
                     <?= yErr('period_end') ?>
-                </div>
-
-                <div class="col-md-6">
-                    <label class="form-label">Reference</label>
-                    <input type="text" name="reference" class="form-control<?= yCls('reference') ?>"
-                           maxlength="120" placeholder="Transaction id / cheque no.">
-                    <?= yErr('reference') ?>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Note</label>
-                    <input type="text" name="note" class="form-control<?= yCls('note') ?>" maxlength="500">
-                    <?= yErr('note') ?>
                 </div>
             </div>
 
@@ -324,6 +339,22 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </div>
             </div>
 
+            <hr class="my-4">
+            <h6 class="fw-600 mb-3">Reference</h6>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Reference</label>
+                    <input type="text" name="reference" class="form-control<?= yCls('reference') ?>"
+                           maxlength="120" placeholder="Transaction id / cheque no.">
+                    <?= yErr('reference') ?>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Note</label>
+                    <input type="text" name="note" class="form-control<?= yCls('note') ?>" maxlength="500">
+                    <?= yErr('note') ?>
+                </div>
+            </div>
+
             <button type="submit" class="btn btn-primary">Log Payment</button>
         </form>
     </div>
@@ -333,13 +364,6 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span>Payment History</span>
         <div class="d-flex gap-2 align-items-center flex-wrap">
-            <?php // The form above is inside a modal once JavaScript has moved it, so
-                  // the page needs a way back to it. The href is the same anchor the
-                  // lapsing list uses, which is the plain page with the form on it. ?>
-            <a href="<?= APP_URL ?>/admin/payments.php#logForm" class="btn btn-sm btn-primary"
-               data-modal-target="#paymentModal" data-modal-title="Log a Payment">
-                <i class="bi bi-plus-lg me-1"></i>Log a payment
-            </a>
             <form method="GET" class="d-flex gap-2">
                 <input type="search" name="q" class="form-control form-control-sm" style="width:220px"
                        placeholder="Tenant or reference" value="<?= sanitize($search) ?>">

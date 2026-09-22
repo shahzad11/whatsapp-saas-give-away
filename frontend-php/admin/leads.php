@@ -138,28 +138,49 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
 <div class="row g-3 mb-4">
     <div class="col-md-4">
-        <div class="card"><div class="card-body py-3">
-            <div class="text-muted x-small text-uppercase">Saved leads</div>
-            <div class="h4 mb-0"><?= number_format($totalLeads) ?></div>
-        </div></div>
+        <div class="card kpi-card">
+            <span class="kpi-icon"><i class="bi bi-binoculars"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format($totalLeads) ?></div>
+                <div class="kpi-label">Saved leads</div>
+            </div>
+        </div>
     </div>
     <div class="col-md-4">
-        <div class="card"><div class="card-body py-3">
-            <div class="text-muted x-small text-uppercase">Searches (30 days)</div>
-            <div class="h4 mb-0"><?= number_format((int)$spend['searches']) ?></div>
-        </div></div>
+        <div class="card kpi-card">
+            <span class="kpi-icon"><i class="bi bi-search"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format((int)$spend['searches']) ?></div>
+                <div class="kpi-label">Searches (30 days)</div>
+            </div>
+        </div>
     </div>
     <div class="col-md-4">
-        <div class="card"><div class="card-body py-3">
-            <div class="text-muted x-small text-uppercase">Credits used (30 days)</div>
-            <div class="h4 mb-0"><?= number_format((int)$spend['credits']) ?></div>
-        </div></div>
+        <div class="card kpi-card">
+            <span class="kpi-icon"><i class="bi bi-coin"></i></span>
+            <div>
+                <div class="kpi-value"><?= number_format((int)$spend['credits']) ?></div>
+                <div class="kpi-label">Credits used (30 days)</div>
+            </div>
+        </div>
     </div>
 </div>
 
 <?php // --- Search -------------------------------------------------------- ?>
+<?php // Collapsed once there is a list to read: an admin with saved leads came
+      // for the list, and the search panel is the expensive half. Open by
+      // default only while there is nothing saved to read. The map inside is
+      // resized on shown.bs.collapse — see the script at the foot. ?>
 <div class="card mb-4">
-    <div class="card-header">Find businesses</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Find businesses</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                data-bs-toggle="collapse" data-bs-target="#leadSearchPanel"
+                aria-expanded="<?= $totalLeads === 0 ? 'true' : 'false' ?>" aria-controls="leadSearchPanel">
+            <i class="bi bi-chevron-down me-1"></i>Search panel
+        </button>
+    </div>
+    <div class="collapse<?= $totalLeads === 0 ? ' show' : '' ?>" id="leadSearchPanel">
     <div class="card-body">
         <?php // Not a <form>. Submitting this would be a page load, and a page
               // load that spent a credit could be repeated by a refresh or a
@@ -255,6 +276,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </button>
         </div>
     </div>
+    </div><?php // /#leadSearchPanel ?>
 </div>
 
 <?php // --- Saved leads ---------------------------------------------------- ?>
@@ -269,6 +291,14 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </a>
     </div>
     <div class="card-body border-bottom">
+        <?php // Eight filter rows are a wall on a phone, so they collapse below
+              // md; d-md-block keeps them permanently open from 768px up. ?>
+        <button type="button" class="btn btn-sm btn-outline-secondary w-100 d-md-none mb-2"
+                data-bs-toggle="collapse" data-bs-target="#leadFilters"
+                aria-expanded="false" aria-controls="leadFilters">
+            <i class="bi bi-funnel me-1"></i>Filters <i class="bi bi-chevron-down ms-1"></i>
+        </button>
+        <div class="collapse d-md-block" id="leadFilters">
         <form method="GET" class="row g-2 align-items-end">
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1">Search</label>
@@ -355,6 +385,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <button class="btn btn-sm btn-primary w-100">Apply</button>
             </div>
         </form>
+        </div><?php // /#leadFilters ?>
     </div>
     <div class="table-responsive">
         <table class="table align-middle mb-0 table-stack">
@@ -373,11 +404,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php endif; ?>
             <?php foreach ($saved as $l): ?>
                 <tr>
-                    <td data-label="Business">
-                        <div class="fw-500 text-truncate" style="max-width: 260px"
+                    <td data-label="Business" class="cell-block">
+                        <div class="fw-500 text-truncate admin-lead-title"
                              title="<?= sanitize($l['title']) ?>"><?= sanitize($l['title']) ?></div>
                         <?php if ($l['address']): ?>
-                            <div class="text-muted x-small text-truncate" style="max-width: 260px"
+                            <div class="text-muted x-small text-truncate admin-lead-title"
                                  title="<?= sanitize($l['address']) ?>"><?= sanitize($l['address']) ?></div>
                         <?php endif; ?>
                     </td>
@@ -745,6 +776,16 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         locationInput.placeholder = areaPlaceholder;
         pinClear.classList.add('d-none');
         pinStatus.textContent = 'Click the map to drop a pin instead of typing an area.';
+    }
+
+    // The map initialised while its panel may have been display:none, which
+    // sizes Leaflet to zero and leaves a grey box when the panel is opened.
+    // invalidateSize() on shown.bs.collapse re-measures it once it is visible.
+    var searchPanel = document.getElementById('leadSearchPanel');
+    if (map && searchPanel) {
+        searchPanel.addEventListener('shown.bs.collapse', function () {
+            map.invalidateSize();
+        });
     }
 
     if (map) map.on('click', function (e) {

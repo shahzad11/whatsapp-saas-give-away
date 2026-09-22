@@ -353,7 +353,13 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<div class="card mb-3">
+<?php // table-card, like every other table in the app: all the cell padding, the
+      // grey uppercase header and the row hover live under that class, and
+      // without it this table fell back to Bootstrap's own (quarter-em under
+      // .table-sm) and read as cramped next to Contacts and Accounts. Its
+      // overflow:hidden is safe here — both row dropdowns are popper
+      // strategy:fixed, so they escape the clip. ?>
+<div class="card table-card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span><?= count($appointments) ?> appointment<?= count($appointments) === 1 ? '' : 's' ?></span>
         <div class="d-flex align-items-center gap-3">
@@ -363,12 +369,12 @@ require_once __DIR__ . '/includes/header.php';
                   // a working form rather than a button that does nothing. Withheld
                   // entirely when there is no service to book: the card below then holds
                   // the explanation instead of a form, and a link to an explanation
-                  // dressed up as "Add by hand" is a dead end. ?>
+                  // dressed up as "Add manually" is a dead end. ?>
             <?php if ($services): ?>
                 <a href="#apptForm" class="btn btn-sm btn-primary"
                    data-modal-target="#apptCreateModal" data-modal-reset="on"
                    data-modal-title="Add an appointment">
-                    <i class="bi bi-plus-lg me-1"></i>Add by hand
+                    <i class="bi bi-plus-lg me-1"></i>Add manually
                 </a>
             <?php endif; ?>
         </div>
@@ -543,7 +549,7 @@ require_once __DIR__ . '/includes/header.php';
       // the note that says so, and moving that into a modal nothing opens would
       // delete the explanation from the page. ?>
 <div class="card" <?= $services ? 'data-modal-shell="apptCreateModal" data-modal-title="Add an appointment"' : '' ?>>
-    <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Add by hand</div>
+    <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Add manually</div>
     <div class="card-body">
         <?php if (!$services): ?>
             <p class="text-muted small mb-0">
