@@ -198,7 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $wantAudio = !empty($_POST['llm_enable_audio']);
         $transcribeId = (int)($_POST['llm_transcribe_model_id'] ?? 0);
         if ($wantAudio) {
-            $valid = in_array($transcribeId, array_map('intval', array_column(llmModels($conn, 'transcribe', true), 'id')), true);
+            $valid = in_array($transcribeId, array_map('intval', array_column(llmTranscribeCandidates($conn, true), 'id')), true);
             if (!$valid) {
                 formRespond(false, $transcribeId > 0
                     ? 'That transcription model is not available — pick an enabled one, or add a transcription model first.'
@@ -236,7 +236,7 @@ foreach ($catalogue as $code => $meta) {
 }
 
 $chatModels = llmModels($conn, 'chat', false);
-$transcribeModels = llmModels($conn, 'transcribe', false);
+$transcribeModels = llmTranscribeCandidates($conn, false);
 $plans = getActivePlans($conn);
 $planAccess = [];
 foreach ($plans as $plan) {
@@ -500,14 +500,19 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <table class="table table-sm align-middle table-stack">
                     <thead><tr><th>Provider</th><th>Model</th><th>Kind</th><th class="text-end">Actions</th></tr></thead>
                     <tbody>
-                    <?php foreach (array_merge($chatModels, $transcribeModels) as $m): ?>
+                    <?php // A chat model with the 'audio' capability (FenLLM Max) is in
+                          // both lists — it can chat AND transcribe — so the merge is
+                          // deduped by id rather than concatenated. ?>
+                    <?php $tableModels = [];
+                    foreach (array_merge($chatModels, $transcribeModels) as $m) $tableModels[(int)$m['id']] = $m; ?>
+                    <?php foreach ($tableModels as $m): ?>
                         <tr class="<?= $m['is_enabled'] ? '' : 'opacity-50' ?>">
                             <td class="small" data-label="Provider"><?= sanitize($m['provider_label']) ?></td>
                             <td class="cell-block" data-label="Model">
                                 <div class="small fw-500"><?= sanitize($m['label']) ?></div>
                                 <code class="x-small text-muted"><?= sanitize($m['model_code']) ?></code>
                             </td>
-                            <td data-label="Kind"><span class="badge bg-light text-dark"><?= sanitize($m['kind']) ?></span></td>
+                            <td data-label="Kind"><span class="badge bg-light text-dark"><?= sanitize($m['kind'] === 'chat' && llmModelTranscribes($m) ? 'chat + audio' : $m['kind']) ?></span></td>
                             <td class="text-end">
                                 <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
@@ -631,7 +636,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <?php if (!$transcribeModels): ?>
                                 <span class="text-warning">No transcription model exists yet — add one with kind
                                 <code>transcribe</code> under Models (OpenAI's <code>whisper-1</code> is seeded
-                                automatically when you save OpenAI).</span>
+                                automatically when you save OpenAI, and FenLLM Max is added automatically
+                                once a FenLLM key is stored).</span>
                             <?php endif; ?>
                         </div>
                     </div>

@@ -119,12 +119,11 @@ if (!$adminEmail || !$adminPass) {
 // are terminal (a 409 must never be re-POSTed), anything else retries on the
 // next boot. The secret and the API key are never printed.
 $fenllmSecret = env('FENLLM_PARTNER_SECRET');
-if (!$fenllmSecret) {
-    fwrite(STDOUT, "[bootstrap] FENLLM_PARTNER_SECRET not set — skipping FenLLM provisioning\n");
-} elseif (!$adminEmail) {
+if (!$adminEmail) {
     fwrite(STDOUT, "[bootstrap] ADMIN_EMAIL not set — skipping FenLLM provisioning\n");
 } else {
-    // Pulled in only when provisioning can actually run: config/app.php
+    // Pulled in whenever the admin email is set — the catalogue sync below
+    // needs them even on instances with no partner secret. config/app.php
     // requires BACKEND_API_KEY (which the container always has), and
     // config/init.php is avoided on purpose — it starts a session, which is
     // meaningless on the CLI.
@@ -135,15 +134,34 @@ if (!$fenllmSecret) {
     require_once $appRoot . '/includes/plan.php';
     require_once $appRoot . '/includes/llm.php';
 
-    $status = appSetting($conn, 'fenllm_provision_status', null);
-    if ($status === 'done' || $status === 'account_exists') {
-        fwrite(STDOUT, "[bootstrap] FenLLM already provisioned ({$status}) — skipping\n");
+    if (!$fenllmSecret) {
+        fwrite(STDOUT, "[bootstrap] FENLLM_PARTNER_SECRET not set — skipping FenLLM provisioning\n");
     } else {
-        try {
-            [$ok, $message] = llmProvisionFenLlm($conn, $adminEmail, $adminName, $fenllmSecret);
-            fwrite($ok ? STDOUT : STDERR, "[bootstrap] FenLLM: {$message}\n");
-        } catch (Throwable $e) {
-            fwrite(STDERR, "[bootstrap] FenLLM provisioning failed: {$e->getMessage()}\n");
+        $status = appSetting($conn, 'fenllm_provision_status', null);
+        if ($status === 'done' || $status === 'account_exists') {
+            fwrite(STDOUT, "[bootstrap] FenLLM already provisioned ({$status}) — skipping\n");
+        } else {
+            try {
+                [$ok, $message] = llmProvisionFenLlm($conn, $adminEmail, $adminName, $fenllmSecret);
+                fwrite($ok ? STDOUT : STDERR, "[bootstrap] FenLLM: {$message}\n");
+            } catch (Throwable $e) {
+                fwrite(STDERR, "[bootstrap] FenLLM provisioning failed: {$e->getMessage()}\n");
+            }
         }
+    }
+
+    // Adds any catalogue models an existing install is missing (pro, max) and
+    // sets FenLLM Max as the transcription default — once, so an admin's later
+    // choice is never overwritten. A no-op once everything is in place.
+    try {
+        [$added, $defaultSet] = llmEnsureFenLlmCatalogue($conn);
+        if ($added === 0 && !$defaultSet) {
+            fwrite(STDOUT, "[bootstrap] FenLLM catalogue up to date\n");
+        } else {
+            if ($added > 0) fwrite(STDOUT, "[bootstrap] FenLLM catalogue: added {$added} model(s)\n");
+            if ($defaultSet) fwrite(STDOUT, "[bootstrap] transcription default set to FenLLM Max\n");
+        }
+    } catch (Throwable $e) {
+        fwrite(STDERR, "[bootstrap] FenLLM catalogue sync failed: {$e->getMessage()}\n");
     }
 }

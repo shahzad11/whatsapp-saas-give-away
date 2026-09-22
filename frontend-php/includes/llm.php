@@ -45,9 +45,15 @@ function llmProviderCatalogue() {
             'base_url'   => 'https://api.fenllm.com/v1',
             'key_hint'   => 'apl_live_…',
             'console_url' => 'https://app.fenllm.com',
-            'transcribe' => false,
+            'transcribe' => true,
+            // The fourth element, when present, is a capabilities list: 'audio'
+            // marks a chat model that also accepts input_audio content parts,
+            // which is how FenLLM Max transcribes voice notes (it has no
+            // /audio/transcriptions endpoint — /chat/completions only).
             'models'     => [
                 ['basic', 'FenLLM Basic', 'chat'],
+                ['pro',   'FenLLM Pro',   'chat'],
+                ['max',   'FenLLM Max',   'chat', ['audio']],
             ],
         ],
         'openai' => [
@@ -220,6 +226,30 @@ function llmDeleteModel(mysqli $conn, $modelId) {
     $stmt->bind_param('i', $modelId);
     $stmt->execute();
     $stmt->close();
+}
+
+// Can this llm_models row turn audio into text? Two ways: the row's kind is
+// 'transcribe' (a dedicated endpoint model like whisper-1), or the catalogue
+// lists the model with an 'audio' capability (a chat model that also takes
+// input_audio parts, like FenLLM Max). Needs provider_code and model_code on
+// the row — llmModels() and llmModelById() both return them.
+function llmModelTranscribes(array $model) {
+    if (($model['kind'] ?? '') === 'transcribe') return true;
+    $provider = $model['provider_code'] ?? '';
+    $code = $model['model_code'] ?? '';
+    foreach (llmProviderCatalogue()[$provider]['models'] ?? [] as $entry) {
+        if ($entry[0] === $code && in_array('audio', $entry[3] ?? [], true)) return true;
+    }
+    return false;
+}
+
+// Every model that can transcribe, for the admin dropdown and its validation.
+// Replaces filtering by kind alone, which would hide a capable chat model.
+function llmTranscribeCandidates(mysqli $conn, $onlyEnabled = false) {
+    return array_values(array_filter(
+        llmModels($conn, null, $onlyEnabled),
+        'llmModelTranscribes'
+    ));
 }
 
 // --- Per-plan access --------------------------------------------------------
@@ -695,6 +725,10 @@ function llmProvisionFenLlm(mysqli $conn, $email, $name, $secret) {
         // Every active plan, not only chatbot-enabled ones: this model is the
         // instance default, and the feature check still applies at call time.
         $granted = llmGrantChatModelsToChatbotPlans($conn, (int)$provider['id'], false);
+        // Whatever the signup returned for `model`, the rest of the catalogue
+        // (pro, max) is filled in here so a fresh install ships all three and
+        // gets FenLLM Max as the transcription default.
+        llmEnsureFenLlmCatalogue($conn);
 
         if (!empty($body['sign_in_url'])) {
             setAppSetting($conn, 'fenllm_sign_in_url', (string)$body['sign_in_url']);
@@ -723,15 +757,130 @@ function llmProvisionFenLlm(mysqli $conn, $email, $name, $secret) {
     return [false, llmFenLlmErrorMessage($status, $body)];
 }
 
+// Brings an already-provisioned instance's FenLLM model rows up to the full
+// catalogue. Provisioning originally seeded only the one model the signup
+// response named, so instances installed before pro/max existed never got
+// them; this runs on every boot and is a no-op once they are there.
+//
+// Returns [addedCount, transcribeDefaultSet]. Only newly added chat models are
+// granted — to every active plan, like the provisioned model — because an
+// admin may have un-granted an existing one deliberately and re-granting would
+// undo that. Existing rows are never written through llmAddModel either: its
+// ON DUPLICATE KEY clause would overwrite an admin-edited label.
+function llmEnsureFenLlmCatalogue(mysqli $conn) {
+    $provider = llmProviderByCode($conn, 'fenllm');
+    if (!$provider || !llmProviderHasKey($provider)) return [0, false];
+    $providerId = (int)$provider['id'];
+
+    $stmt = $conn->prepare("SELECT id, model_code FROM llm_models WHERE provider_id = ?");
+    $stmt->bind_param('i', $providerId);
+    $stmt->execute();
+    $existing = [];
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) $existing[$row['model_code']] = (int)$row['id'];
+    $stmt->close();
+
+    $added = 0;
+    $newChatIds = [];
+    foreach (llmProviderCatalogue()['fenllm']['models'] as [$modelCode, $label, $kind]) {
+        if (isset($existing[$modelCode])) continue;
+        llmAddModel($conn, $providerId, $modelCode, $label, $kind);
+        $added++;
+
+        // insert_id is not trustworthy through ON DUPLICATE KEY UPDATE — look
+        // the row up instead.
+        $stmt = $conn->prepare("SELECT id FROM llm_models WHERE provider_id = ? AND model_code = ?");
+        $stmt->bind_param('is', $providerId, $modelCode);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $newId = $row ? (int)$row['id'] : null;
+        if ($newId !== null) {
+            $existing[$modelCode] = $newId;
+            if ($kind === 'chat') $newChatIds[] = $newId;
+        }
+    }
+
+    if ($newChatIds) {
+        $grant = $conn->prepare("INSERT IGNORE INTO plan_llm_models (plan_id, model_id) VALUES (?, ?)");
+        foreach (getActivePlans($conn) as $plan) {
+            $planId = (int)$plan['id'];
+            foreach ($newChatIds as $modelId) {
+                $grant->bind_param('ii', $planId, $modelId);
+                $grant->execute();
+            }
+        }
+        $grant->close();
+    }
+
+    // The transcription default is applied exactly once per instance: the
+    // owner wants FenLLM Max as the shipped default, but the flag keeps a
+    // later boot from stomping a choice the admin has since made.
+    $defaultSet = false;
+    if (overrideSetting($conn, 'fenllm_transcribe_default_applied') !== '1' && isset($existing['max'])) {
+        setAppSetting($conn, 'llm_transcribe_model_id', (string)$existing['max']);
+        setAppSetting($conn, 'fenllm_transcribe_default_applied', '1');
+        $defaultSet = true;
+    }
+
+    return [$added, $defaultSet];
+}
+
 // --- Transcription ----------------------------------------------------------
 
 // Voice notes are common on WhatsApp, so a bot that ignores them looks broken.
-// OpenAI's is the only transcription API wired up; the admin picks the model.
+// Two providers can transcribe: OpenAI via its dedicated multipart endpoint,
+// and FenLLM via chat completions with an input_audio part (its gateway serves
+// no /audio/transcriptions). The admin picks the model.
 function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
-    if (($auth['provider'] ?? '') !== 'openai') {
-        return ['ok' => false, 'error' => 'Transcription needs an OpenAI-compatible provider', 'text' => ''];
+    switch ($auth['provider'] ?? '') {
+        case 'openai': return llmTranscribeOpenAi($auth, $audioBytes, $filename);
+        case 'fenllm': return llmTranscribeFenLlm($auth, $audioBytes, $filename);
+        default:
+            return ['ok' => false, 'error' => 'Transcription needs an OpenAI-compatible provider', 'text' => ''];
+    }
+}
+
+// The request body for a FenLLM transcription: an ordinary chat completion
+// whose user message carries the audio as a base64 input_audio part. $model is
+// the model_code (transcription needs a model with the 'audio' capability —
+// today that is max).
+function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
+    $ext = strtolower(pathinfo((string)$filename, PATHINFO_EXTENSION));
+    $format = in_array($ext, ['ogg', 'oga', 'opus'], true) ? 'ogg'
+        : (in_array($ext, ['mp3', 'wav', 'm4a'], true) ? $ext : 'ogg');
+
+    return [
+        'model' => $model,
+        'messages' => [[
+            'role' => 'user',
+            'content' => [
+                ['type' => 'text', 'text' => 'Transcribe this voice message verbatim, in its original language. Reply with the transcript only — no preamble, no quotes, no notes.'],
+                ['type' => 'input_audio', 'input_audio' => ['data' => base64_encode($audioBytes), 'format' => $format]],
+            ],
+        ]],
+        'max_tokens' => 1000,
+    ];
+}
+
+function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
+    $base = $auth['base_url'] ?: llmProviderCatalogue()['fenllm']['base_url'];
+    [$status, $body, $err] = llmHttpJson(rtrim($base, '/') . '/chat/completions',
+        ['Authorization: Bearer ' . $auth['key']],
+        llmFenLlmTranscribePayload($auth['model'], $audioBytes, $filename),
+        120);
+
+    if ($err) return ['ok' => false, 'error' => llmScrubSecret($err, $auth['key']), 'text' => ''];
+    if ($status !== 200) {
+        return ['ok' => false, 'text' => '',
+                'error' => llmScrubSecret(llmFenLlmErrorMessage($status, $body), $auth['key'])];
     }
 
+    $text = trim((string)($body['choices'][0]['message']['content'] ?? ''));
+    return ['ok' => $text !== '', 'text' => $text, 'error' => $text === '' ? 'Empty transcription' : null];
+}
+
+function llmTranscribeOpenAi(array $auth, $audioBytes, $filename) {
     $base = $auth['base_url'] ?: llmProviderCatalogue()['openai']['base_url'];
     $tmp = tempnam(sys_get_temp_dir(), 'wa-audio-');
     file_put_contents($tmp, $audioBytes);

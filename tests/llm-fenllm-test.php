@@ -91,8 +91,34 @@ group('FenLLM is listed first and points at its own API');
 $cat = llmProviderCatalogue();
 equals('first provider is fenllm', 'fenllm', array_key_first($cat));
 equals('base url', 'https://api.fenllm.com/v1', $cat['fenllm']['base_url']);
-equals('no transcription', false, $cat['fenllm']['transcribe']);
+equals('transcribes via chat completions', true, $cat['fenllm']['transcribe']);
 equals('default provider constant names it', 'fenllm', LLM_DEFAULT_PROVIDER);
+equals('model codes in order', ['basic', 'pro', 'max'],
+    array_map(function ($m) { return $m[0]; }, $cat['fenllm']['models']));
+
+// --- Transcription capability ------------------------------------------------
+
+group('A model transcribes by kind or by catalogue audio capability');
+
+check('fenllm max (chat + audio)', llmModelTranscribes(
+    ['provider_code' => 'fenllm', 'model_code' => 'max', 'kind' => 'chat']));
+check('fenllm pro does not', !llmModelTranscribes(
+    ['provider_code' => 'fenllm', 'model_code' => 'pro', 'kind' => 'chat']));
+check('openai whisper (kind transcribe)', llmModelTranscribes(
+    ['provider_code' => 'openai', 'model_code' => 'whisper-1', 'kind' => 'transcribe']));
+
+// --- FenLLM transcription payload ---------------------------------------------
+
+group('The FenLLM transcription payload is a chat completion with input_audio');
+
+$payload = llmFenLlmTranscribePayload('max', 'abc', 'voice.ogg');
+equals('model', 'max', $payload['model']);
+equals('audio part type', 'input_audio', $payload['messages'][0]['content'][1]['type']);
+equals('ogg format', 'ogg', $payload['messages'][0]['content'][1]['input_audio']['format']);
+equals('audio is base64', base64_encode('abc'), $payload['messages'][0]['content'][1]['input_audio']['data']);
+equals('mp3 format', 'mp3', llmFenLlmTranscribePayload('max', 'a', 'x.mp3')['messages'][0]['content'][1]['input_audio']['format']);
+equals('unknown extension defaults to ogg', 'ogg',
+    llmFenLlmTranscribePayload('max', 'a', 'x.bin')['messages'][0]['content'][1]['input_audio']['format']);
 
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

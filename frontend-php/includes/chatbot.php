@@ -980,7 +980,7 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
     if (!$modelId) return [null, 'no transcription model configured'];
 
     $model = llmModelById($conn, $modelId);
-    if (!$model || $model['kind'] !== 'transcribe' || empty($model['is_enabled']) || empty($model['provider_enabled'])) {
+    if (!$model || !llmModelTranscribes($model) || empty($model['is_enabled']) || empty($model['provider_enabled'])) {
         return [null, 'transcription model unavailable'];
     }
     $key = decryptSecret($model['api_key_encrypted'] ?? null, LLM_CONTEXT);
