@@ -196,33 +196,39 @@ require_once dirname(__DIR__) . '/includes/header.php';
         <div class="card">
             <div class="card-header"><?= $account ? 'Edit Cloud API connection' : 'Connect an official Cloud API number' ?></div>
             <div class="card-body">
-                <form method="POST">
+                <?php // autocomplete="off" on the form plus "new-password" on the
+                      // secret fields: browsers otherwise fill the login email into
+                      // the first text field and a saved password into the token. ?>
+                <form method="POST" autocomplete="off">
                     <?= csrfField() ?>
                     <div class="mb-3">
                         <label class="form-label">Account Label</label>
-                        <input type="text" name="label" class="form-control" maxlength="100"
+                        <input type="text" name="label" class="form-control" maxlength="100" autocomplete="off"
+                               placeholder="e.g. Main shop line"
                                value="<?= sanitize($_POST['label'] ?? ($account['label'] ?? '')) ?>">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Phone number id</label>
                         <input type="text" name="cloud_phone_number_id" class="form-control" required
+                               inputmode="numeric" autocomplete="off" placeholder="e.g. 123456789012345"
                                value="<?= sanitize($_POST['cloud_phone_number_id'] ?? ($account['cloud_phone_number_id'] ?? '')) ?>">
-                        <div class="form-text">Meta for Developers → your app → WhatsApp → API setup.</div>
+                        <div class="form-text">The numeric id shown under the “From” number on Meta’s API Setup page — not the phone number itself. See step 3 on the right.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">WhatsApp Business Account id <span class="text-muted">(optional)</span></label>
-                        <input type="text" name="cloud_waba_id" class="form-control"
+                        <input type="text" name="cloud_waba_id" class="form-control" inputmode="numeric" autocomplete="off"
                                value="<?= sanitize($_POST['cloud_waba_id'] ?? ($account['cloud_waba_id'] ?? '')) ?>">
+                        <div class="form-text">Shown at the top of the API Setup page. See step 2.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Access token <?= $account ? '<span class="text-muted">(leave blank to keep the stored one)</span>' : '' ?></label>
-                        <input type="password" name="access_token" class="form-control" autocomplete="off" <?= $account ? '' : 'required' ?>>
-                        <div class="form-text">A permanent System User token. It is stored encrypted and never shown again.</div>
+                        <input type="password" name="access_token" class="form-control" autocomplete="new-password" <?= $account ? '' : 'required' ?>>
+                        <div class="form-text">A permanent System User token (step 5), not the temporary one from API Setup. Stored encrypted and never shown again.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">App secret <?= $account ? '<span class="text-muted">(leave blank to keep the stored one)</span>' : '' ?></label>
-                        <input type="password" name="app_secret" class="form-control" autocomplete="off" <?= $account ? '' : 'required' ?>>
-                        <div class="form-text">Verifies that webhook deliveries really come from Meta. Also stored encrypted and never shown again.</div>
+                        <input type="password" name="app_secret" class="form-control" autocomplete="new-password" <?= $account ? '' : 'required' ?>>
+                        <div class="form-text">From App settings → Basic (step 4). Verifies that webhook deliveries really come from Meta. Also stored encrypted and never shown again.</div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100">
                         <i class="bi bi-cloud me-2"></i><?= $account ? 'Save and verify' : 'Verify and connect' ?>
@@ -232,10 +238,10 @@ require_once dirname(__DIR__) . '/includes/header.php';
         </div>
     </div>
 
-    <?php if ($account): ?>
     <div class="col-lg-6">
+    <?php if ($account): ?>
         <div class="card">
-            <div class="card-header">Webhook settings for your Meta app</div>
+            <div class="card-header">Step 6 · Webhook settings for your Meta app</div>
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label">Callback URL</label>
@@ -260,18 +266,50 @@ require_once dirname(__DIR__) . '/includes/header.php';
                     <button type="submit" class="btn btn-sm btn-outline-warning">Regenerate verify token</button>
                 </form>
                 <h6 class="fw-600">In the Meta dashboard:</h6>
-                <ol class="small text-muted">
-                    <li>Open Meta for Developers → your app → WhatsApp → Configuration.</li>
-                    <li>Paste the Callback URL and Verify token above, then click <strong>Verify and save</strong>.</li>
-                    <li>Under Webhook fields, subscribe to <code>messages</code>.</li>
-                    <li>Use a permanent System User token with <code>whatsapp_business_messaging</code> and <code>whatsapp_business_management</code> permissions.</li>
-                    <li>While the app is in development mode, only numbers on its allowed list can be messaged.</li>
+                <ol class="small text-muted mb-3">
+                    <li>Open <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">Meta for Developers</a> → your app → <strong>Use cases → Customize → Configuration</strong> (older apps: <strong>WhatsApp → Configuration</strong>).</li>
+                    <li>Under <strong>Webhook</strong> click <strong>Edit</strong>, paste the Callback URL and Verify token above, then click <strong>Verify and save</strong>.</li>
+                    <li>Click <strong>Manage</strong> next to Webhook fields and subscribe to <code>messages</code>.</li>
+                    <li>Send a WhatsApp message from an allowed number to this business number — it appears under <a href="<?= APP_URL ?>/whatsapp/chats.php">Chats</a> and the bot replies.</li>
                 </ol>
-                <p class="x-small text-muted mb-0">The access token and app secret are never shown again after saving.</p>
+                <h6 class="fw-600">Good to know</h6>
+                <ul class="small text-muted mb-0">
+                    <li>While the Meta app is in <strong>development mode</strong>, only the numbers on its “To” allowed list (max 5) can be messaged.</li>
+                    <li>Meta only allows free-form replies within <strong>24 hours</strong> of the customer’s last message; proactive messages outside that window need an approved template.</li>
+                    <li>If you reset the app secret or the token in Meta, paste the new value in the form on the left — the stored ones are never shown again.</li>
+                </ul>
             </div>
         </div>
-    </div>
+    <?php else: ?>
+        <div class="card">
+            <div class="card-header">Where to find these in Meta</div>
+            <div class="card-body">
+                <ol class="small text-muted mb-3 ps-3">
+                    <li class="mb-2">
+                        <strong>Create the app.</strong> Go to <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">developers.facebook.com/apps</a> → <strong>Create App</strong> → name + email → use case <strong>Connect with customers through WhatsApp</strong> → pick or create a Business portfolio → <strong>Create app</strong>.
+                    </li>
+                    <li class="mb-2">
+                        <strong>WhatsApp Business Account id.</strong> On the Quickstart page click <strong>Start using the API</strong>. On the <strong>API Setup</strong> page connect (or create) a WhatsApp Business account — its id is shown at the top. Optional here.
+                    </li>
+                    <li class="mb-2">
+                        <strong>Phone number id.</strong> Same API Setup page: under <strong>From</strong>, a free test number is pre-created. Its <strong>Phone number ID</strong> (a 15-digit number) is shown under it — copy that, not the phone number. To use your own number choose <strong>Add phone number</strong> and complete the SMS/call verification first.
+                        <div class="mt-1">Also add your own WhatsApp number under <strong>To</strong> — in development mode only those numbers can be messaged — send the test message and <strong>reply to it from your phone</strong>.</div>
+                    </li>
+                    <li class="mb-2">
+                        <strong>App secret.</strong> Left sidebar → <strong>App settings → Basic</strong> → <strong>App secret → Show</strong>. A 32-character string.
+                    </li>
+                    <li class="mb-2">
+                        <strong>Permanent access token.</strong> The token on API Setup expires in 24 hours — do not use it. Instead open <a href="https://business.facebook.com/latest/settings" target="_blank" rel="noopener">Business settings</a> → <strong>Users → System users → Add</strong> (role Admin) → <strong>Assign assets</strong>: your app (<em>Manage app</em>) and your WhatsApp account (<em>Manage WhatsApp Business accounts</em>) → <strong>Generate token</strong> → expiry <strong>Never</strong> → permissions <code>whatsapp_business_messaging</code>, <code>whatsapp_business_management</code>, <code>business_management</code>. Copy it straight away; Meta never shows it again.
+                    </li>
+                    <li>
+                        <strong>Webhook.</strong> Fill in the form and click <strong>Verify and connect</strong>. The Callback URL and Verify token for Meta’s webhook are generated on save and shown on the next page, together with the remaining steps.
+                    </li>
+                </ol>
+                <p class="x-small text-muted mb-0">Your credentials are checked against Meta before anything is stored, and are kept encrypted.</p>
+            </div>
+        </div>
     <?php endif; ?>
+    </div>
 </div>
 <?php endif; ?>
 
