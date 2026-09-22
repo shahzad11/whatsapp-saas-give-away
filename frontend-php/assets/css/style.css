@@ -2533,3 +2533,139 @@ details[open].settings-collapse > summary::after {
     font-size: var(--fs-lg);
     margin-top: 1px;
 }
+
+/* Setup guide (Cloud API connect page): a numbered stepper next to the form.
+   One bold title per step, the Meta menu path as a breadcrumb, and chips for
+   the exact values to copy — so the eye lands on what to do, not on prose. */
+.setup-steps {
+    list-style: none;
+    counter-reset: setup-step;
+    margin: 0;
+    padding: 0;
+}
+
+.setup-steps > li {
+    counter-increment: setup-step;
+    position: relative;
+    padding: 0 0 var(--space-5) 44px;
+}
+
+.setup-steps > li:last-child { padding-bottom: 0; }
+
+.setup-steps > li::before {
+    content: counter(setup-step);
+    position: absolute;
+    left: 0;
+    top: -2px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--primary-light);
+    color: var(--primary);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.setup-steps > li:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 13px;
+    top: 30px;
+    bottom: 6px;
+    width: 2px;
+    background: var(--border-color);
+}
+
+.setup-step-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: var(--fs-base);
+    line-height: 28px;
+    margin-bottom: var(--space-1);
+}
+
+.setup-optional {
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--secondary-light);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-left: var(--space-1);
+    vertical-align: middle;
+}
+
+.setup-step-path {
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    margin-bottom: var(--space-1);
+}
+
+.setup-step-path span {
+    color: var(--text-secondary);
+    margin: 0 4px;
+}
+
+.setup-step-note {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+.setup-step-note + .setup-step-note { margin-top: var(--space-1); }
+
+.setup-chip {
+    display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--fs-xs);
+    color: var(--primary);
+    background: var(--primary-light);
+    border-radius: var(--radius-sm);
+    padding: 1px 7px;
+    margin: 1px 0;
+    white-space: nowrap;
+}
+
+.setup-step-warn {
+    display: flex;
+    gap: var(--space-2);
+    align-items: flex-start;
+    margin-top: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--warning-light);
+    color: #92400e;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+.setup-step-warn i { margin-top: 2px; }
+
+.setup-tips {
+    margin-top: var(--space-5);
+    padding: var(--space-3) var(--space-4);
+    background: var(--body-bg);
+    border-radius: var(--radius);
+}
+
+.setup-tips-title {
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    margin-bottom: var(--space-2);
+}
+
+.setup-tips-title i { color: var(--warning); margin-right: 4px; }
+
+.setup-tips ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+.setup-tips li + li { margin-top: var(--space-1); }

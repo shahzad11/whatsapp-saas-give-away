@@ -18,7 +18,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="<?= APP_URL ?>/assets/css/style.css" rel="stylesheet">
+    <link href="<?= APP_URL ?>/assets/css/style.css?v=<?= (int)@filemtime(dirname(__DIR__) . '/assets/css/style.css') ?>" rel="stylesheet">
 </head>
 <body>
 <?php // #33 §17. The first tab stop on the page, so a keyboard or screen-reader
