@@ -16,5 +16,5 @@ if (empty($sessionId)) {
 
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
 
-$resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/status');
+$resp = waSessionStatus($conn, $sessionId);
 echo json_encode($resp ?: ['ok' => false, 'error' => 'Backend error']);

@@ -300,8 +300,7 @@ function apptEventPayload(array $appt, array $opts): array {
 // callBackendApi() hop, same metering, same mark-read.
 function apptSendNativeEvent(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, array $appt, $method, array $opts): bool {
     $payload = apptEventPayload($appt, $opts + ['method' => $method]);
-    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/chats/' . urlencode($chatId) . '/event', $payload, $tenantId, 30);
+    $resp = waSendEvent($conn, $sessionId, $chatId, $payload, $tenantId, 30);
 
     if (!$resp || empty($resp['ok'])) return false;
     incrementUsage($conn, $userId, 'messages_sent');

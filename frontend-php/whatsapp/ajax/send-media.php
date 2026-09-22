@@ -138,14 +138,7 @@ $filename = basename((string)($file['name'] ?? ''));
 // base64 encode above is.
 set_time_limit(180);
 
-$resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
-    . '/chats/' . urlencode($chatId) . '/media', [
-    'kind' => $kind,
-    'data' => base64_encode($data),
-    'mimetype' => $mime,
-    'fileName' => $filename !== '' ? $filename : null,
-    'caption' => $caption,
-], null, 150);
+$resp = waSendMedia($conn, $sessionId, $chatId, $kind, $data, $mime, $filename, $caption, null, 150);
 
 // Only a send that actually left the building costs the tenant a message.
 if ($resp && !empty($resp['ok'])) {

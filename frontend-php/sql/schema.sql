@@ -497,6 +497,129 @@ PREPARE stmt_add_media_meta FROM @add_media_meta;
 EXECUTE stmt_add_media_meta;
 DEALLOCATE PREPARE stmt_add_media_meta;
 
+-- Meta WhatsApp Cloud API as a second connection type (Phase 27).
+--
+-- `provider` is the isolation guarantee: it defaults to 'baileys', so every
+-- existing row and every existing query behaves exactly as before, and only an
+-- account a tenant explicitly creates through connect-cloud.php is 'cloud'.
+-- The cloud_* columns hold the per-tenant Meta app credentials; the token and
+-- app secret are stored encrypted (encryptSecret(…, 'wa-cloud-v1')) and are
+-- never returned to any page.
+SET @add_provider := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN provider VARCHAR(16) NOT NULL DEFAULT ''baileys''',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'provider'
+);
+PREPARE stmt_add_provider FROM @add_provider;
+EXECUTE stmt_add_provider;
+DEALLOCATE PREPARE stmt_add_provider;
+
+SET @add_cloud_pnid := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_phone_number_id VARCHAR(32) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_phone_number_id'
+);
+PREPARE stmt_add_cloud_pnid FROM @add_cloud_pnid;
+EXECUTE stmt_add_cloud_pnid;
+DEALLOCATE PREPARE stmt_add_cloud_pnid;
+
+-- One Meta phone number id can only be wired to one account; Meta delivers to
+-- whichever webhook the app points at, so two rows claiming the same id would
+-- silently split the traffic.
+SET @add_cloud_pnid_idx := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE UNIQUE INDEX uniq_wa_cloud_pnid ON wa_accounts (cloud_phone_number_id)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND INDEX_NAME = 'uniq_wa_cloud_pnid'
+);
+PREPARE stmt_add_cloud_pnid_idx FROM @add_cloud_pnid_idx;
+EXECUTE stmt_add_cloud_pnid_idx;
+DEALLOCATE PREPARE stmt_add_cloud_pnid_idx;
+
+SET @add_cloud_waba := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_waba_id VARCHAR(32) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_waba_id'
+);
+PREPARE stmt_add_cloud_waba FROM @add_cloud_waba;
+EXECUTE stmt_add_cloud_waba;
+DEALLOCATE PREPARE stmt_add_cloud_waba;
+
+SET @add_cloud_token := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_access_token_encrypted TEXT DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_access_token_encrypted'
+);
+PREPARE stmt_add_cloud_token FROM @add_cloud_token;
+EXECUTE stmt_add_cloud_token;
+DEALLOCATE PREPARE stmt_add_cloud_token;
+
+SET @add_cloud_secret := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_app_secret_encrypted TEXT DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_app_secret_encrypted'
+);
+PREPARE stmt_add_cloud_secret FROM @add_cloud_secret;
+EXECUTE stmt_add_cloud_secret;
+DEALLOCATE PREPARE stmt_add_cloud_secret;
+
+-- The per-account webhook key is what makes webhooks/meta.php unguessable; it
+-- goes in the callback URL, so it must be unique across accounts.
+SET @add_cloud_key := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_webhook_key VARCHAR(64) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_webhook_key'
+);
+PREPARE stmt_add_cloud_key FROM @add_cloud_key;
+EXECUTE stmt_add_cloud_key;
+DEALLOCATE PREPARE stmt_add_cloud_key;
+
+SET @add_cloud_key_idx := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE UNIQUE INDEX uniq_wa_cloud_webhook_key ON wa_accounts (cloud_webhook_key)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND INDEX_NAME = 'uniq_wa_cloud_webhook_key'
+);
+PREPARE stmt_add_cloud_key_idx FROM @add_cloud_key_idx;
+EXECUTE stmt_add_cloud_key_idx;
+DEALLOCATE PREPARE stmt_add_cloud_key_idx;
+
+SET @add_cloud_verify := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_verify_token VARCHAR(64) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_verify_token'
+);
+PREPARE stmt_add_cloud_verify FROM @add_cloud_verify;
+EXECUTE stmt_add_cloud_verify;
+DEALLOCATE PREPARE stmt_add_cloud_verify;
+
+SET @add_cloud_err := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE wa_accounts ADD COLUMN cloud_last_error VARCHAR(255) DEFAULT NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_accounts' AND COLUMN_NAME = 'cloud_last_error'
+);
+PREPARE stmt_add_cloud_err FROM @add_cloud_err;
+EXECUTE stmt_add_cloud_err;
+DEALLOCATE PREPARE stmt_add_cloud_err;
+
 -- ---------------------------------------------------------------------------
 -- LLM chatbot (issues #9, #14, #16, #22)
 -- ---------------------------------------------------------------------------

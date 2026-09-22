@@ -945,8 +945,7 @@ function chatbotGenerateReply(mysqli $conn, $userId, array $config, array $histo
 // so this asks the process that actually holds the thread.
 function chatbotFetchHistory($sessionId, $chatId, $tenantId, $limit = 10) {
     if ($limit <= 0) return [];
-    $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/chats/' . urlencode($chatId) . '/messages', null, $tenantId, 15);
+    $resp = waFetchHistory(null, $sessionId, $chatId, $tenantId, $limit);
     if (!$resp || empty($resp['ok']) || !is_array($resp['messages'] ?? null)) return [];
 
     // Text only: an image in the history has no words for the model to read,
@@ -960,19 +959,8 @@ function chatbotFetchHistory($sessionId, $chatId, $tenantId, $limit = 10) {
 // Fetches a voice note's bytes so it can be transcribed. Streams into memory on
 // purpose — a voice note is small, and it goes straight to the vendor.
 function chatbotFetchMedia($sessionId, $messageId, $tenantId) {
-    $url = BACKEND_URL . '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/messages/' . urlencode($messageId) . '/media';
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 60,
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_HTTPHEADER => backendHeaders($tenantId),
-    ]);
-    $body = curl_exec($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    return ($status === 200 && $body !== false && $body !== '') ? $body : null;
+    $r = waFetchMediaBytes(null, $sessionId, $messageId, $tenantId);
+    return !empty($r['ok']) ? $r['bytes'] : null;
 }
 
 // Turns a voice note into text, if the admin enabled it, the tenant enabled it,
@@ -1798,8 +1786,7 @@ function chatbotRecheckedAvailability(mysqli $conn, $userId, array $config, arra
 // function is to have decided the bot may speak, and every one of those
 // decisions — including the handover check — is made before the send.
 function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $text) {
-    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/chats/' . urlencode($chatId) . '/messages', ['text' => $text], $tenantId, 30);
+    $resp = waSendText($conn, $sessionId, $chatId, $text, $tenantId, 30);
 
     if (!$resp || empty($resp['ok'])) return false;
     incrementUsage($conn, $userId, 'messages_sent');
@@ -1812,14 +1799,7 @@ function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId,
 // tenant sent is a message the tenant sent, and a delivered one still marks
 // the conversation read for the same reason a text reply does.
 function chatbotSendDocument(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $bytes, $filename, $mime, $caption) {
-    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/chats/' . urlencode($chatId) . '/media', [
-        'kind' => 'document',
-        'data' => base64_encode($bytes),
-        'mimetype' => $mime,
-        'fileName' => $filename,
-        'caption' => $caption,
-    ], $tenantId, 30);
+    $resp = waSendMedia($conn, $sessionId, $chatId, 'document', $bytes, $mime, $filename, $caption, $tenantId, 30);
 
     if (!$resp || empty($resp['ok'])) return false;
     incrementUsage($conn, $userId, 'messages_sent');
@@ -1833,9 +1813,7 @@ function chatbotSendDocument(mysqli $conn, $userId, $tenantId, $sessionId, $chat
 // never notice. The short timeout is for the same reason — this must never be
 // what makes an inbound message time out.
 function chatbotMarkChatRead($tenantId, $sessionId, $chatId) {
-    $resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId)
-        . '/chats/' . urlencode($chatId) . '/read', null, $tenantId, 10);
-    return (bool)($resp['ok'] ?? false);
+    return waMarkRead(null, $sessionId, $chatId, $tenantId, 10);
 }
 
 // Hands the conversation to a person: records it, tells the customer, and nudges

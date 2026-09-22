@@ -328,7 +328,7 @@ function waApplyBackendStatus(mysqli $conn, int $userId, array $acc, array $resp
 function waRefreshAccountIdentity(mysqli $conn, int $userId, int $maxRows = 10): void {
     $stmt = $conn->prepare(
         "SELECT id, session_id FROM wa_accounts
-         WHERE user_id = ? AND status = 'connected'
+         WHERE user_id = ? AND status = 'connected' AND provider = 'baileys'
            AND (phone_number IS NULL OR phone_number = '' OR connected_at IS NULL)
          LIMIT " . max(1, $maxRows)
     );

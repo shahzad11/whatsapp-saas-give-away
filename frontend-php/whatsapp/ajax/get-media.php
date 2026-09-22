@@ -18,6 +18,25 @@ if (empty($sessionId) || empty($messageId)) {
 
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId, false);
 
+// Cloud media lives behind Meta's CDN, not the backend: the stored
+// media_meta.cloud.mediaId resolves to the bytes, which are small enough that
+// a buffered answer is fine (voice notes and images, not 166 MB videos).
+if (waIsCloud($conn, $sessionId)) {
+    $r = waFetchMediaBytes($conn, $sessionId, $messageId);
+    if (empty($r['ok'])) {
+        http_response_code(404);
+        echo 'Media not available';
+        exit;
+    }
+    header('Content-Type: ' . ($r['mime'] ?: 'application/octet-stream'));
+    header('Content-Length: ' . strlen($r['bytes']));
+    header('Content-Disposition: inline; filename="'
+        . preg_replace('/[^\w.\-]+/', '_', basename((string)($r['filename'] ?: 'media'))) . '"');
+    header('Cache-Control: private, max-age=3600');
+    echo $r['bytes'];
+    exit;
+}
+
 // The backend location is server infrastructure, not a user-tunable value.
 // Using the BACKEND_URL constant keeps this consistent with callBackendApi()
 // and prevents a user-supplied URL from turning this proxy into an SSRF hole.

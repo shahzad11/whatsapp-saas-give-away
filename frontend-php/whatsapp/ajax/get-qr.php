@@ -16,6 +16,13 @@ if (empty($sessionId)) {
 
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
 
+// A Cloud API number has no QR code to show — asking the backend for one
+// would only produce a confusing error.
+if (waIsCloud($conn, $sessionId)) {
+    echo json_encode(['ok' => false, 'error' => 'This account is connected through the Cloud API and has no QR code.']);
+    exit;
+}
+
 $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/qr');
 
 if ($resp && ($resp['ok'] ?? false) && ($resp['status'] ?? '') === 'connected') {

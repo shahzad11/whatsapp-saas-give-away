@@ -232,6 +232,7 @@ function planFeatureDefinitions() {
         'voice_transcription' => ['label' => 'Voice note understanding', 'help' => 'Incoming voice notes are transcribed, then answered. Needs the AI chatbot and a transcription model.'],
         'media_send'          => ['label' => 'Send media',              'help' => 'Attachments, images, video and voice notes in the composer.'],
         'csv_export'          => ['label' => 'CSV export',              'help' => 'Export contacts to CSV.'],
+        'cloud_api'           => ['label' => 'Meta Cloud API connection', 'help' => 'Tenant may connect an official WhatsApp Business (Cloud API) number instead of, or as well as, QR-linked numbers.'],
     ];
 }
 

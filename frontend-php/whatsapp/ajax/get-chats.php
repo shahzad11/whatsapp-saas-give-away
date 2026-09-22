@@ -17,7 +17,11 @@ if (empty($sessionId)) {
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
 $userTz = getUserTimezone($conn, $userId);
 
-$resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats');
+// For a Cloud account the chats are already in MySQL — the webhook writes
+// them, and there is no backend process to ask. Everything below (the upsert,
+// the cap, the read) is provider-blind and just sees "nothing new".
+$resp = waIsCloud($conn, $sessionId) ? null
+    : callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats');
 
 // The plan's contact cap. A contact appears here as a side effect of sync, so
 // the cap can only stop *growth*: chats already stored keep syncing normally,

@@ -57,7 +57,10 @@ if ($mark !== null && !$needsBackfill) {
     if ($sinceMs > 0) $sinceParam = '?since=' . $sinceMs;
 }
 
-$resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages' . $sinceParam);
+// Cloud messages arrive through the webhook and are already stored, so the
+// backend fetch is skipped for them; the SELECT below is the real read path.
+$resp = waIsCloud($conn, $sessionId) ? null
+    : callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages' . $sinceParam);
 
 if ($resp && !empty($resp['ok']) && !empty($resp['messages'])) {
     // INSERT IGNORE skips a row that already exists, so a sender name resolved

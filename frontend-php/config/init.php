@@ -36,6 +36,9 @@ require_once $basePath . '/includes/crypto.php';
 require_once $basePath . '/includes/mailer.php';
 require_once $basePath . '/includes/mail-templates.php';
 require_once $basePath . '/includes/plan.php';
+// After crypto + plan: the transport layer decrypts Cloud credentials and the
+// chatbot/calendar/ajax callers below all dispatch through it.
+require_once $basePath . '/includes/wa-transport.php';
 require_once $basePath . '/includes/billing.php';
 require_once $basePath . '/includes/profile.php';
 // llm before chatbot: the chatbot resolves models and decrypts provider keys

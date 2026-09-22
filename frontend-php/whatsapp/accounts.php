@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($_POST['action'] === 'delete') {
         $accountId = (int)($_POST['account_id'] ?? 0);
-        $stmt = $conn->prepare("SELECT session_id FROM wa_accounts WHERE id = ? AND user_id = ?");
+        $stmt = $conn->prepare("SELECT session_id, provider FROM wa_accounts WHERE id = ? AND user_id = ?");
         $stmt->bind_param("ii", $accountId, $userId);
         $stmt->execute();
         $acc = $stmt->get_result()->fetch_assoc();
@@ -27,7 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             formRespond(false, 'That account is no longer linked to your dashboard.', $self);
         }
 
-        callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/logout');
+        // A Cloud API account has no backend session to log out of — removing
+        // the row is the whole delete.
+        if (($acc['provider'] ?? 'baileys') !== 'cloud') {
+            callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/logout');
+        }
         $stmt = $conn->prepare("DELETE FROM wa_accounts WHERE id = ? AND user_id = ?");
         $stmt->bind_param("ii", $accountId, $userId);
         $stmt->execute();
@@ -37,7 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 
     if ($_POST['action'] === 'sync') {
-        $stmt = $conn->prepare("SELECT id, session_id FROM wa_accounts WHERE user_id = ?");
+        $stmt = $conn->prepare("SELECT * FROM wa_accounts WHERE user_id = ?");
         $stmt->bind_param("i", $userId);
         $stmt->execute();
         $accounts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -50,6 +54,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $failed = 0;
 
         foreach ($accounts as $acc) {
+            // A Cloud row's "status" is whether its stored credentials still
+            // pass Meta's check — there is no session directory to ask.
+            if (($acc['provider'] ?? 'baileys') === 'cloud') {
+                $r = waVerifyCloudAccount($conn, $acc);
+                $r['ok'] ? $synced++ : $failed++;
+                continue;
+            }
             $resp = callBackendApi('GET', '/api/v1/wa/sessions/' . urlencode($acc['session_id']) . '/status');
             if ($resp && ($resp['ok'] ?? false)) {
                 waApplyBackendStatus($conn, $userId, $acc, $resp);
@@ -78,7 +89,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 // for it once here, so a linked phone does not render as "-".
 waRefreshAccountIdentity($conn, $userId);
 
-$stmt = $conn->prepare("SELECT id, session_id, label, status, phone_number, push_name, connected_at, created_at FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC");
+$stmt = $conn->prepare("SELECT id, session_id, label, status, phone_number, push_name, connected_at, created_at, provider, cloud_last_error FROM wa_accounts WHERE user_id = ? ORDER BY created_at DESC");
 $stmt->bind_param("i", $userId);
 $stmt->execute();
 $accounts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -132,7 +143,14 @@ require_once dirname(__DIR__) . '/includes/header.php';
                 <tbody>
                     <?php foreach ($accounts as $acc): ?>
                     <tr data-session="<?= sanitize($acc['session_id']) ?>">
-                        <td class="fw-500" data-label="Label"><?= sanitize($acc['label'] ?: 'Unnamed') ?></td>
+                        <td class="fw-500" data-label="Label">
+                            <?= sanitize($acc['label'] ?: 'Unnamed') ?>
+                            <?php if (($acc['provider'] ?? 'baileys') === 'cloud'): ?>
+                                <span class="badge bg-info-subtle text-info-emphasis ms-1">Cloud API</span>
+                            <?php else: ?>
+                                <span class="badge bg-light text-dark ms-1">QR link</span>
+                            <?php endif; ?>
+                        </td>
                         <td data-label="Number">
                             <?php if ($acc['push_name'] || $acc['phone_number']): ?>
                                 <?php if ($acc['push_name']): ?>
@@ -147,6 +165,9 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         </td>
                         <td data-label="Status">
                             <span class="badge-status <?= waStatusClass($acc['status']) ?>"><?= sanitize(waStatusLabel($acc['status'])) ?></span>
+                            <?php if (($acc['provider'] ?? 'baileys') === 'cloud' && !empty($acc['cloud_last_error'])): ?>
+                                <div class="x-small text-danger"><?= sanitize($acc['cloud_last_error']) ?></div>
+                            <?php endif; ?>
                             <?php if ($acc['connected_at']): ?>
                                 <div class="x-small text-muted">since <?= timeAgo($acc['connected_at']) ?></div>
                             <?php endif; ?>
@@ -163,7 +184,14 @@ require_once dirname(__DIR__) . '/includes/header.php';
                                       // which answers with the pairing page. It is a
                                       // navigation to somewhere the tenant has to look at a
                                       // QR code, not an in-place change to this table. ?>
-                                <?php if (waStatusNeedsRelink($acc['status'])): ?>
+                                <?php if (($acc['provider'] ?? 'baileys') === 'cloud'): ?>
+                                <?php // Cloud accounts are not re-paired by QR; "re-link" for
+                                      // them means editing the stored Meta credentials. ?>
+                                <a href="<?= APP_URL ?>/whatsapp/connect-cloud.php?account=<?= (int)$acc['id'] ?>"
+                                   class="btn btn-sm btn-outline-secondary" title="Edit Cloud API connection">
+                                    <i class="bi bi-gear"></i>
+                                </a>
+                                <?php elseif (waStatusNeedsRelink($acc['status'])): ?>
                                 <form method="POST" action="<?= APP_URL ?>/whatsapp/link.php" class="d-inline">
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="relink">

@@ -89,7 +89,7 @@ require_once dirname(__DIR__) . '/includes/header.php';
 <?php endif; ?>
 
 <?php if (!$sessionId): ?>
-<div class="row justify-content-center">
+<div class="row">
     <div class="col-lg-6">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -119,6 +119,31 @@ require_once dirname(__DIR__) . '/includes/header.php';
                         <i class="bi bi-qr-code me-2"></i>Generate QR Code
                     </button>
                 </form>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <?php // The other way in: an official Cloud API number. Gated on the
+              // plan's cloud_api feature — when it is off the card explains
+              // rather than linking, so the option is visible but not
+              // reachable. ?>
+        <div class="card h-100">
+            <div class="card-header">Connect an official Cloud API number</div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    Use Meta's official WhatsApp Business Platform instead of scanning a QR code.
+                    You will need a Meta app with a phone number id, a permanent access token,
+                    and its app secret.
+                </p>
+                <?php if (planHasFeature($plan, 'cloud_api')): ?>
+                    <a href="<?= APP_URL ?>/whatsapp/connect-cloud.php" class="btn btn-outline-primary w-100">
+                        <i class="bi bi-cloud me-2"></i>Connect Cloud API
+                    </a>
+                <?php else: ?>
+                    <button type="button" class="btn btn-outline-secondary w-100" disabled>
+                        <i class="bi bi-cloud me-2"></i>Not included in your plan
+                    </button>
                 <?php endif; ?>
             </div>
         </div>

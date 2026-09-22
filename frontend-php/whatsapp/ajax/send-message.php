@@ -43,9 +43,7 @@ if (!$quotaOk) {
     exit;
 }
 
-$resp = callBackendApi('POST', '/api/v1/wa/sessions/' . urlencode($sessionId) . '/chats/' . urlencode($chatId) . '/messages', [
-    'text' => $text
-]);
+$resp = waSendText($conn, $sessionId, $chatId, $text, null, 30);
 
 // Only count sends that actually left the building.
 if ($resp && !empty($resp['ok'])) {
