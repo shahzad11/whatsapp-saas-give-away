@@ -289,15 +289,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
 <?php if ($showSetup): ?>
 <div class="card mb-4 admin-setup-card">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span><i class="bi bi-rocket-takeoff me-2"></i>Getting started —
             <?= (int)$setupOutstanding ?> of <?= count($setupSteps) ?> steps left</span>
-        <form method="POST" class="d-inline">
-            <?= csrfField() ?>
-            <input type="hidden" name="action" value="dismiss_setup">
-            <button class="btn btn-sm btn-link text-muted text-decoration-none" type="submit"
-                    title="Hides this card. Nothing is marked as done.">Hide this</button>
-        </form>
+        <div class="d-flex align-items-center gap-3">
+            <a href="<?= APP_URL ?>/admin/help.php" class="btn btn-sm btn-link text-decoration-none">
+                <i class="bi bi-journal-text me-1"></i>View admin guide
+            </a>
+            <form method="POST" class="d-inline">
+                <?= csrfField() ?>
+                <input type="hidden" name="action" value="dismiss_setup">
+                <button class="btn btn-sm btn-link text-muted text-decoration-none" type="submit"
+                        title="Hides this card. Nothing is marked as done.">Hide this</button>
+            </form>
+        </div>
     </div>
     <div class="card-body">
         <p class="text-muted small">

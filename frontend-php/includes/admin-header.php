@@ -121,6 +121,12 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                 <h1 class="h5 mb-0"><?= sanitize($pageTitle) ?></h1>
             </div>
             <div class="d-flex align-items-center gap-3">
+                <a href="<?= APP_URL ?>/admin/help.php" class="btn btn-sm btn-link text-secondary text-decoration-none topbar-help-link"
+                   aria-label="Help Center" title="Help Center"
+                   <?= $currentPage === 'help' ? 'aria-current="page"' : '' ?>>
+                    <i class="bi bi-question-circle"></i>
+                    <span class="d-none d-md-inline ms-1">Help</span>
+                </a>
                 <a href="<?= APP_URL ?>/logout.php" class="btn btn-sm btn-link text-secondary text-decoration-none">
                     <i class="bi bi-box-arrow-right me-1"></i>Log out
                 </a>

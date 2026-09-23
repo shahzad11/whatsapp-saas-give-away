@@ -250,6 +250,29 @@ $schemaHasColumn = str_contains($schema, "COLUMN_NAME = 'must_change_password'")
     && str_contains($schema, 'ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0');
 check('the column is added idempotently and defaults to 0 for existing accounts', $schemaHasColumn);
 
+group('The admin help-image route serves only its allowlist');
+
+$helpImage = file_exists($app . '/admin/help-image.php')
+    ? file_get_contents($app . '/admin/help-image.php') : '';
+check('admin/help-image.php exists', $helpImage !== '',
+    'the guide references it — a missing route is a broken image');
+if ($helpImage !== '') {
+    check('filenames come from a fixed allowlist, not the query string',
+        str_contains($helpImage, 'in_array($file, $allowed, true)'),
+        'reading $path directly from the request would allow traversal');
+    check('the served path is built inside includes/admin-help-images',
+        str_contains($helpImage, "admin-help-images"),
+        'the directory the vhost denies is what keeps these files off the public web');
+    check('unknown names are a 404, not an error with content',
+        str_contains($helpImage, 'http_response_code(404)'));
+    check('responses are marked private and non-sniffable',
+        str_contains($helpImage, 'X-Content-Type-Options: nosniff')
+        && str_contains($helpImage, 'Cache-Control: private, no-store'));
+}
+check('guide screenshots are not in the publicly served assets tree',
+    !is_dir($app . '/assets/images/admin-help') && !glob($app . '/assets/**/admin-*.png'),
+    'anything under assets/ is downloadable without a session');
+
 // ---------------------------------------------------------------------------
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);
