@@ -108,15 +108,20 @@ if (isAdmin() && !instanceSetupDismissed($conn)) {
       // claiming anything is finished. ?>
 <?php if ($showTenantSetup): ?>
 <div class="card mb-4 border-primary">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span><i class="bi bi-rocket-takeoff"></i>Getting started —
             <?= (int)$tenantOutstanding ?> of <?= count($tenantSteps) ?> steps left</span>
-        <form method="POST" class="d-inline">
-            <?= csrfField() ?>
-            <input type="hidden" name="action" value="dismiss_setup">
-            <button class="btn btn-sm btn-link text-muted text-decoration-none" type="submit"
-                    title="Hides this card. Nothing is marked as done.">Hide this</button>
-        </form>
+        <div class="d-flex align-items-center gap-3">
+            <a href="<?= APP_URL ?>/help.php" class="btn btn-sm btn-link text-decoration-none">
+                <i class="bi bi-journal-text me-1"></i>View illustrated guide
+            </a>
+            <form method="POST" class="d-inline">
+                <?= csrfField() ?>
+                <input type="hidden" name="action" value="dismiss_setup">
+                <button class="btn btn-sm btn-link text-muted text-decoration-none" type="submit"
+                        title="Hides this card. Nothing is marked as done.">Hide this</button>
+            </form>
+        </div>
     </div>
     <div class="card-body">
         <ol class="list-unstyled mb-0">

@@ -55,6 +55,12 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                         <?= $topbarActions ?>
                     </div>
                 <?php endif; ?>
+                <a href="<?= APP_URL ?>/help.php" class="btn btn-link topbar-help-link"
+                   aria-label="Help Center" title="Help Center"
+                   <?= $currentPage === 'help' ? 'aria-current="page"' : '' ?>>
+                    <i class="bi bi-question-circle"></i>
+                    <span class="d-none d-md-inline ms-1">Help</span>
+                </a>
                 <div class="dropdown">
                     <button class="btn btn-link dropdown-toggle user-menu-btn" data-bs-toggle="dropdown">
                         <div class="user-avatar-sm">
