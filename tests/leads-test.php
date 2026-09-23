@@ -265,7 +265,7 @@ check('the upsert keeps source_query and source_location current',
 check('the ledger records the area the search ran with, not the one sent',
     str_contains($ajax, '$usedLocation = (string)($result[\'location\'] ?? $location);'));
 check('the saved-leads table has a Category and an Area column',
-    str_contains($page, '<th>Category</th>') && str_contains($page, '<th>Area searched</th>'));
+    str_contains($page, '<th>Category</th>') && str_contains($page, '<th>Search area</th>'));
 check('and the CSV export carries both',
     str_contains($page, "'Category searched', 'Area searched'"));
 check('both are filterable', str_contains($page, 'name="category"') && str_contains($page, 'name="area"'));

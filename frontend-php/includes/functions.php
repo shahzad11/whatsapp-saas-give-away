@@ -292,11 +292,11 @@ function waStatusHint($status) {
         case 'qr_required':
             return 'Waiting for someone to scan the QR code.';
         case 'logged_out':
-            return 'The phone unlinked this device. The tenant has to re-link and scan a new QR code.';
+            return 'The phone unlinked this device. The customer needs to relink and scan a new QR code.';
         case 'failed':
-            return 'Connecting failed repeatedly. The tenant has to re-link and scan a new QR code.';
+            return 'Connecting failed repeatedly. The customer needs to relink and scan a new QR code.';
         case 'disconnected':
-            return 'Reconnecting automatically. If it stays here, the tenant should re-link.';
+            return 'Reconnecting automatically. If it does not recover, the customer should relink.';
         default:
             return '';
     }

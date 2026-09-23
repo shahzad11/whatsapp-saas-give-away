@@ -253,7 +253,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <?= csrfField() ?>
 
     <div class="card mb-4">
-        <div class="card-header">SMTP Server</div>
+        <div class="card-header">SMTP server</div>
         <div class="card-body">
             <div class="row g-3">
                 <div class="col-md-6">
@@ -279,9 +279,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                           // Your provider's own setup page is the authority, so the guidance is
                           // "use the common one unless told otherwise" rather than a lecture. ?>
                     <div class="form-text">
-                        Almost always <strong>STARTTLS on port 587</strong>. Use SSL/TLS (465) only if your
-                        provider's instructions say so. Never use None over the public internet — the
-                        password and the message would travel unencrypted.
+                        For most providers, use <strong>STARTTLS on port 587</strong>. Use SSL/TLS on
+                        port 465 only when your provider requires it. Never use None over the public
+                        internet because credentials and messages would be unencrypted.
                     </div>
                     <?= eErr('smtp_encryption') ?>
                 </div>
@@ -360,30 +360,30 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <i class="bi bi-plug me-1"></i>Save &amp; test connection
                         </button>
                     </div>
-                    <div class="form-text">Testing the connection proves the host, port, encryption and
-                        password are right — it sends nothing.</div>
+                    <div class="form-text">Tests whether the host, port, encryption, username and
+                        password are accepted. No message is sent.</div>
                 </div>
             </div>
         </div>
     </div>
 
     <div class="card mb-4">
-        <div class="card-header">Messages This Instance Sends</div>
+        <div class="card-header">Emails sent by this app</div>
         <div class="card-body">
             <ul class="list-unstyled small mb-0">
-                <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Account activation (on signup)</li>
+                <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>New-customer password setup</li>
                 <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Password reset</li>
                 <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Plan expiry / renewal reminder
                     <span class="text-muted">— sent from
                     <a href="<?= APP_URL ?>/admin/payments.php">Payments</a></span></li>
                 <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Human handover alerts
-                    <span class="text-muted">— when a tenant asks for one on their Chatbot page.
-                    That field stays disabled for tenants until email works here.</span></li>
+                    <span class="text-muted">— when a customer asks for one on their Chatbot page.
+                    That field stays disabled for customers until email works here.</span></li>
             </ul>
         </div>
     </div>
 
-    <button type="submit" name="action" value="save" class="btn btn-primary">Save Settings</button>
+    <button type="submit" name="action" value="save" class="btn btn-primary">Save settings</button>
 </form>
 
 <?php require_once dirname(__DIR__) . '/includes/admin-footer.php'; ?>

@@ -486,7 +486,8 @@ function leadsTestKey(mysqli $conn, $candidateKey = null) {
     if (!empty($body['error'])) return [false, leadsScrubKey((string)$body['error'], $key)];
 
     $count = count($body['local_results'] ?? []);
-    return [true, 'Key works — the test search returned ' . $count . ' result(s). One credit was used.'];
+    return [true, 'Key works — the test search returned ' . $count . ' '
+        . ($count === 1 ? 'result' : 'results') . '. One credit was used.'];
 }
 
 // --- Storing what came back -------------------------------------------------

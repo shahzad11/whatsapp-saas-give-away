@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // when your own account is the one that is about to be suspended.
     if (in_array($action, ['suspend', 'toggle_admin'], true) && wouldOrphanInstance($conn, $targetId)) {
         formRespond(false, 'That is the last account that can administer this instance. '
-            . 'Give another tenant admin rights first.', $self);
+            . 'Give another customer administrator access first.', $self);
     }
 
     // Creating a tenant (#48, #49). The rules live in createTenant() so this
@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
         $stmt->close();
         logAudit($conn, 'admin.user.' . $action, 'user', $targetId);
-        formRespond(true, 'User ' . $action . 'd.', $self);
+        formRespond(true, $action === 'suspend' ? 'Customer suspended.' : 'Customer reactivated.', $self);
     }
 
     if ($action === 'change_plan') {
@@ -109,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute();
         $stmt->close();
         logAudit($conn, 'admin.user.toggle_admin', 'user', $targetId);
-        formRespond(true, 'Admin flag toggled.', $self);
+        formRespond(true, 'Administrator access updated.', $self);
     }
 
     // Every branch above exits, so this is only reached by a POST naming an
@@ -202,7 +202,7 @@ $filtered = $q !== '' || $fStatus !== '' || $fPlan > 0 || $fSince !== '';
 // server-side check in createTenant() cannot disagree about it.
 $canEmail = smtpConfigured($conn);
 
-$pageTitle = 'Tenants';
+$pageTitle = 'Customers';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
@@ -247,9 +247,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
 <div class="page-toolbar">
     <div>
-        <p class="page-toolbar-title">Tenants</p>
+        <p class="page-toolbar-title">Customers</p>
         <p class="page-toolbar-subtitle">
-            <?= number_format(count($users)) ?> <?= $filtered ? 'matching' : 'total' ?>
+            <?= number_format(count($users)) ?> <?= count($users) === 1 ? 'customer' : 'customers' ?> <?= $filtered ? 'matching' : 'total' ?>
         </p>
     </div>
     <div class="page-toolbar-actions">
@@ -258,8 +258,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
               // forms.js promoted the card into. ?>
         <a href="#tenantShell" class="btn btn-sm btn-primary"
            data-modal-target="#tenantModal" data-modal-reset="on"
-           data-modal-title="New tenant">
-            <i class="bi bi-plus-lg me-1"></i>New tenant
+           data-modal-title="New customer">
+            <i class="bi bi-plus-lg me-1"></i>New customer
         </a>
     </div>
 </div>
@@ -299,7 +299,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </select>
             </div>
             <div class="col-md-2">
-                <label class="form-label x-small text-muted mb-1">Signed up after</label>
+                <label class="form-label x-small text-muted mb-1">Created after</label>
                 <input type="date" name="since" class="form-control form-control-sm" value="<?= sanitize($fSince) ?>">
             </div>
             <div class="col-md-2">
@@ -307,7 +307,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <select name="sort" class="form-select form-select-sm" onchange="this.form.requestSubmit()">
                     <?php foreach ([
                         'created_desc' => 'Newest first', 'created_asc' => 'Oldest first',
-                        'name' => 'Name', 'login_desc' => 'Recent login', 'wa_desc' => 'Most accounts',
+                        'name' => 'Name', 'login_desc' => 'Most recent login', 'wa_desc' => 'Most accounts',
                     ] as $v => $l): ?>
                         <option value="<?= $v ?>" <?= $sort === $v ? 'selected' : '' ?>><?= $l ?></option>
                     <?php endforeach; ?>
@@ -326,27 +326,27 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
 <div class="card table-card">
     <div class="card-header">
-        <span>Tenants</span>
+        <span>Customers</span>
     </div>
     <div class="table-responsive">
         <table class="table align-middle table-stack">
             <thead>
                 <tr>
-                    <th>Tenant</th>
+                    <th>Customer</th>
                     <th>Plan</th>
-                    <th>WA</th>
+                    <th>WhatsApp</th>
                     <th>Status</th>
-                    <th>Last Login</th>
+                    <th>Last login</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
             <?php if (!$users): ?>
-                <tr><td colspan="6" class="text-muted small">No tenants match those filters.</td></tr>
+                <tr><td colspan="6" class="text-muted small">No customers match those filters.</td></tr>
             <?php endif; ?>
             <?php foreach ($users as $u): ?>
                 <tr>
-                    <td data-label="Tenant" class="cell-block">
+                    <td data-label="Customer" class="cell-block">
                         <div class="fw-500">
                             <?php // href is the full detail page, which is what a click does
                                   // with JavaScript off. With it, the same URL is fetched as a
@@ -359,10 +359,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                data-modal-title="<?= sanitize($u['company_name'] ?: $u['name']) ?>">
                                 <?= sanitize($u['company_name'] ?: $u['name']) ?>
                             </a>
-                            <?php if ($u['is_admin']): ?><span class="badge bg-dark ms-1">admin</span><?php endif; ?>
+                            <?php if ($u['is_admin']): ?><span class="badge bg-dark ms-1">Admin</span><?php endif; ?>
                         </div>
                         <div class="text-muted small"><?= sanitize($u['email']) ?></div>
-                        <div class="text-muted x-small">tenant id: t<?= (int)$u['id'] ?></div>
+                        <div class="text-muted x-small">Customer ID: t<?= (int)$u['id'] ?></div>
                     </td>
                     <td data-label="Plan" class="cell-block">
                         <form method="POST" class="d-flex gap-1" data-ajax>
@@ -376,20 +376,20 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                     </option>
                                 <?php endforeach; ?>
                             </select>
-                            <button class="btn btn-sm btn-outline-primary">Set</button>
+                            <button class="btn btn-sm btn-outline-primary">Change plan</button>
                         </form>
                     </td>
-                    <td data-label="WA"><?= (int)$u['wa_count'] ?></td>
+                    <td data-label="WhatsApp"><?= (int)$u['wa_count'] ?></td>
                     <td data-label="Status">
                         <?php if (!$u['is_active']): ?>
-                            <span class="badge bg-secondary">unactivated</span>
+                            <span class="badge bg-secondary">Not activated</span>
                         <?php elseif ($u['status'] === 'suspended'): ?>
-                            <span class="badge bg-danger">suspended</span>
+                            <span class="badge bg-danger">Suspended</span>
                         <?php else: ?>
-                            <span class="badge bg-success">active</span>
+                            <span class="badge bg-success">Active</span>
                         <?php endif; ?>
                     </td>
-                    <td class="text-muted small" data-label="Last Login">
+                    <td class="text-muted small" data-label="Last login">
                         <?= $u['last_login_at'] ? sanitize(timeAgo($u['last_login_at'])) : '—' ?>
                     </td>
                     <td>
@@ -426,12 +426,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                       // the harmless additive case that a dialog would devalue. ?>
                                 <button class="btn btn-sm btn-outline-dark"
                                     data-confirm="<?= $u['is_admin']
-                                        ? 'Remove admin rights from ' . sanitize($u['email']) . '? They keep their own tenant account and lose the admin console.'
-                                        : 'Give ' . sanitize($u['email']) . ' admin rights? They will be able to see and change every tenant on this instance.' ?>">Admin</button>
+                                        ? 'Remove admin rights from ' . sanitize($u['email']) . '? They keep their customer account but lose access to the admin console.'
+                                        : 'Give ' . sanitize($u['email']) . ' admin rights? They will be able to view and manage every customer in this app.' ?>"><?= $u['is_admin'] ? 'Remove admin' : 'Make admin' ?></button>
                             </form>
                         </div>
                         <?php else: ?>
-                            <span class="text-muted small">you</span>
+                            <span class="text-muted small">You</span>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -466,8 +466,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
       // time, so there is nothing for the server to populate and a round trip to
       // ask for a blank form would be a request for nothing. data-modal-reset
       // on the trigger clears it between opens. ?>
-<div class="card mt-4" id="tenantShell" data-modal-shell="tenantModal" data-modal-title="New tenant">
-    <div class="card-header">New Tenant</div>
+<div class="card mt-4" id="tenantShell" data-modal-shell="tenantModal" data-modal-title="New customer">
+    <div class="card-header">New customer</div>
     <div class="card-body">
         <?php require __DIR__ . '/partials/tenant-form.php'; ?>
     </div>

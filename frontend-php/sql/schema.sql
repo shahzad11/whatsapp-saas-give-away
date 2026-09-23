@@ -460,6 +460,19 @@ CREATE TABLE IF NOT EXISTS wa_messages (
     INDEX idx_account_time (account_id, message_timestamp)
 ) ENGINE=InnoDB;
 
+-- The admin overview's 60-day outbound-activity series scans by timestamp
+-- alone, which the per-account indexes above do not cover.
+SET @add_message_time_idx := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_message_time ON wa_messages (message_timestamp)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_messages' AND INDEX_NAME = 'idx_message_time'
+);
+PREPARE stmt_add_message_time_idx FROM @add_message_time_idx;
+EXECUTE stmt_add_message_time_idx;
+DEALLOCATE PREPARE stmt_add_message_time_idx;
+
 -- Who actually spoke, inside a group. key.remoteJid is the group; the sender is
 -- key.participant. Stored alongside the resolved name so the name can be
 -- re-resolved later: a participant's contact entry usually arrives after their

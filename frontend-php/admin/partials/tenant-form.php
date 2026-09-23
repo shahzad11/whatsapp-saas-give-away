@@ -35,13 +35,13 @@ if (!function_exists('csrfField')) {
             <label class="form-label" for="tenantEmail">Email <span class="text-danger">*</span></label>
             <input type="email" name="email" id="tenantEmail" class="form-control"
                    maxlength="255" required placeholder="jane@example.com">
-            <div class="form-text">They sign in with this, so it has to be unique and real.</div>
+            <div class="form-text">The customer uses this address to sign in. It must be unique and accessible to them.</div>
         </div>
         <div class="col-md-6">
             <label class="form-label" for="tenantCompany">Company</label>
             <input type="text" name="company_name" id="tenantCompany"
                    class="form-control" maxlength="150" placeholder="Optional">
-            <div class="form-text">Shown instead of their name in this list.</div>
+            <div class="form-text">Used as the customer’s display name in admin lists.</div>
         </div>
         <div class="col-md-3">
             <label class="form-label" for="tenantPlan">Plan</label>
@@ -64,7 +64,7 @@ if (!function_exists('csrfField')) {
                 <option value="active">Active</option>
                 <option value="suspended">Suspended</option>
             </select>
-            <div class="form-text">Suspended cannot sign in yet.</div>
+            <div class="form-text">Suspended customers cannot sign in until they are reactivated.</div>
         </div>
     </div>
 
@@ -81,10 +81,10 @@ if (!function_exists('csrfField')) {
             <input class="form-check-input" type="radio" name="onboarding" id="onboardInvite"
                    value="invite" <?= $canEmail ? 'checked' : 'disabled' ?>>
             <label class="form-check-label" for="onboardInvite">
-                Email them a password-setup link
+                Email a password-setup link
                 <span class="text-muted small d-block">
-                    A single-use link, good for 7 days. They choose their own password and
-                    nobody else ever knows it.
+                    Sends a single-use link that expires after 7 days. The customer chooses
+                    their own password.
                 </span>
             </label>
         </div>
@@ -95,8 +95,8 @@ if (!function_exists('csrfField')) {
             <label class="form-check-label" for="onboardTemp">
                 Set a temporary password now
                 <span class="text-muted small d-block">
-                    Shown once, on this page, for you to pass on. They must replace it before
-                    they can use the account.
+                    The temporary password is shown once so you can share it securely with the
+                    customer. They must replace it before using the account.
                 </span>
             </label>
         </div>
@@ -112,6 +112,6 @@ if (!function_exists('csrfField')) {
     </fieldset>
 
     <div class="mt-4">
-        <button type="submit" class="btn btn-primary" data-busy-label="Creating…">Create tenant</button>
+        <button type="submit" class="btn btn-primary" data-busy-label="Creating…">Create customer</button>
     </div>
 </form>

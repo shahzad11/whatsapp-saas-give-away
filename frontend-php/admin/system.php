@@ -188,8 +188,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <div class="small text-muted"><?= $dbOk ? 'Connected — ' . sanitize($dbVersion) : 'Unavailable' ?></div>
                     <?php if (!$dbOk): ?>
                         <div class="x-small text-danger mt-1">
-                            <strong>What to do:</strong> check <code>docker compose logs mysql --since 10m</code> on the server.
-                            You are seeing this page at all, so the connection failed after login.
+                            The initial connection succeeded, but a later database check failed.
+                            Review the MySQL container logs.
                         </div>
                     <?php endif; ?>
                 </div>
@@ -242,7 +242,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php elseif (($reminderQueue['overdue'] ?? 0) > 0): ?>
                         <div class="x-small text-warning mt-1">
                             <strong><?= (int)$reminderQueue['overdue'] ?> more than 15 minutes overdue.</strong>
-                            The scheduler is alive, so these are failing to send — usually a tenant's WhatsApp
+                            The scheduler is alive, so these are failing to send — usually a customer's WhatsApp
                             account needing a re-link, or a monthly message allowance already spent.
                         </div>
                     <?php endif; ?>
@@ -255,17 +255,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 <div class="row g-4 mb-4">
     <div class="col-lg-7">
         <div class="card table-card h-100">
-            <div class="card-header">Accounts Needing Attention</div>
+            <div class="card-header">Accounts needing attention</div>
             <div class="table-responsive">
                 <table class="table align-middle mb-0 table-stack">
-                    <thead><tr><th>Tenant</th><th>Account</th><th>Status</th><th>Since</th><th></th></tr></thead>
+                    <thead><tr><th>Customer</th><th>Account</th><th>Status</th><th>Since</th><th></th></tr></thead>
                     <tbody>
                     <?php if (!$needsAttention): ?>
                         <tr><td colspan="5" class="text-muted small">Every linked account is connected.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($needsAttention as $a): ?>
                         <tr>
-                            <td class="small" data-label="Tenant">
+                            <td class="small" data-label="Customer">
                                 <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$a['user_id'] ?>" class="text-decoration-none">
                                     <?= sanitize($a['tenant_name']) ?>
                                 </a>
@@ -301,7 +301,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                     </form>
                                 <?php else: ?>
                                     <a class="btn btn-sm btn-outline-secondary"
-                                       href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$a['user_id'] ?>">Tenant</a>
+                                       href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$a['user_id'] ?>">Customer</a>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -311,10 +311,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
             <div class="card-body border-top">
                 <p class="text-muted x-small mb-0">
-                    <strong>What to do:</strong> "Logged out" and "Connection failed" cannot recover on their
-                    own. The tenant has to open <em>WhatsApp accounts</em> and press <strong>Re-link</strong>,
-                    then scan the QR code with that phone — their chats and messages are kept.
-                    "Disconnected" is retried automatically and usually needs nothing.
+                    “Logged out” and “Connection failed” require the customer to relink the account
+                    and scan a new QR code. “Disconnected” accounts are retried automatically;
+                    investigate only if the status does not recover.
                 </p>
             </div>
         </div>
@@ -322,17 +321,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
     <div class="col-lg-5">
         <div class="card table-card h-100">
-            <div class="card-header">Linked Accounts per Tenant</div>
+            <div class="card-header">Linked accounts by customer</div>
             <div class="table-responsive">
                 <table class="table align-middle mb-0 table-stack">
-                    <thead><tr><th>Tenant</th><th>Connected</th><th>Total</th></tr></thead>
+                    <thead><tr><th>Customer</th><th>Connected</th><th>Total</th></tr></thead>
                     <tbody>
                     <?php if (!$sessionCounts): ?>
                         <tr><td colspan="3" class="text-muted small">No accounts linked yet.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($sessionCounts as $s): ?>
                         <tr>
-                            <td class="small" data-label="Tenant"><a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$s['id'] ?>" class="text-decoration-none"><?= sanitize($s['name']) ?></a></td>
+                            <td class="small" data-label="Customer"><a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$s['id'] ?>" class="text-decoration-none"><?= sanitize($s['name']) ?></a></td>
                             <td class="small" data-label="Connected"><?= (int)$s['connected'] ?></td>
                             <td class="small" data-label="Total"><?= (int)$s['total'] ?></td>
                         </tr>
@@ -425,7 +424,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <p class="text-muted x-small mb-0">
             Showing page <?= (int)$page ?> of <?= number_format($totalPages) ?> — <?= (int)$perPage ?> entries
             per page, <?= number_format($auditTotal) ?> matching. The audit log records actions and their
-            metadata only — tenant message contents are never exposed here.
+            metadata only — customer message contents are never exposed here.
         </p>
     </div>
 </div>

@@ -225,14 +225,14 @@ function formatPrice($plan) {
 // see planHasFeature()'s callers in the reply path.
 function planFeatureDefinitions() {
     return [
-        'chatbot'             => ['label' => 'AI chatbot',              'help' => 'Tenant may run an LLM chatbot on their WhatsApp accounts.'],
-        'llm_byok'            => ['label' => 'Bring your own LLM key',  'help' => 'Tenant may supply their own provider API key.'],
+        'chatbot'             => ['label' => 'AI chatbot',              'help' => 'Customers can run an AI chatbot on their WhatsApp accounts.'],
+        'llm_byok'            => ['label' => 'Bring your own LLM key',  'help' => 'Customers can supply their own provider API key.'],
         'appointments'        => ['label' => 'Appointment booking',     'help' => 'Customers may book, reschedule and cancel in the chat. Needs the AI chatbot.'],
         'handoff'             => ['label' => 'Human handover',          'help' => 'Customers may reach a person, and Live chats is available. Needs the AI chatbot.'],
         'voice_transcription' => ['label' => 'Voice note understanding', 'help' => 'Incoming voice notes are transcribed, then answered. Needs the AI chatbot and a transcription model.'],
         'media_send'          => ['label' => 'Send media',              'help' => 'Attachments, images, video and voice notes in the composer.'],
         'csv_export'          => ['label' => 'CSV export',              'help' => 'Export contacts to CSV.'],
-        'cloud_api'           => ['label' => 'Meta Cloud API connection', 'help' => 'Tenant may connect an official WhatsApp Business (Cloud API) number instead of, or as well as, QR-linked numbers.'],
+        'cloud_api'           => ['label' => 'Meta Cloud API connection', 'help' => 'Customers can connect an official WhatsApp Business (Cloud API) number alongside or instead of QR-linked numbers.'],
     ];
 }
 

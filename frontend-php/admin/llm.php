@@ -84,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // by the redirect a plain submit follows and by the reload forms.js does
         // after a successful AJAX save — the admin sees it either way.
         if (!empty($_POST['is_enabled']) && !llmProviderHasKey(llmProviderByCode($conn, $code))) {
-            flash('error', 'This provider is enabled but has no API key — tenants cannot use it until you add one.');
+            flash('error', 'This provider is enabled but has no API key — customers cannot use it until you add one.');
         }
         formRespond(true, $message, $self);
     }
@@ -118,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // One condition, two possible culprits, so the field error is chosen from
         // which of them failed — marking the model id when a provider was never
         // selected would point at the wrong box.
-        formRespond(false, 'Enter the model id exactly as the vendor documents it.', $self,
+        formRespond(false, 'Enter the model ID exactly as the vendor documents it.', $self,
             $providerId > 0
                 ? ['model_code' => 'Required, max 100 characters.']
                 : ['provider_id' => 'Choose the provider this model belongs to.']);
@@ -144,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // configured" rather than to someone else's model.
         llmDeleteModel($conn, (int)($_POST['model_id'] ?? 0));
         logAudit($conn, 'llm.model_deleted', 'llm_model', (string)($_POST['model_id'] ?? ''));
-        formRespond(true, 'Model removed. Tenants using it will need to pick another.', $self);
+        formRespond(true, 'Model removed. Customers using it will need to pick another.', $self);
     }
 
     if ($action === 'save_access') {
@@ -243,7 +243,7 @@ foreach ($plans as $plan) {
     $planAccess[$plan['id']] = llmPlanModelIds($conn, (int)$plan['id']);
 }
 
-$pageTitle = 'AI / LLM';
+$pageTitle = 'AI providers & models';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
@@ -264,7 +264,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     was opened automatically at install and is already configured and selected as the default — for most
     instances there is nothing to do here. To use another provider instead, there are three steps:
     add its <em>API key</em> below, decide which <em>models</em> may be used, and choose which
-    <a href="<?= APP_URL ?>/admin/plans.php">plans</a> may use which model. Tenants then pick from what
+    <a href="<?= APP_URL ?>/admin/plans.php">plans</a> may use which model. Customers then pick from what
     their plan allows, on their own Chatbot page. You pay the provider directly for what is used.
 </details>
 
@@ -276,10 +276,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <p class="text-muted small">
                     An <strong>API key</strong> is the password for your account with that company —
                     it is how they know the usage is yours to pay for. Keys are encrypted at rest and never
-                    displayed again. Leave the key field blank to keep the stored one. A provider with no
-                    key cannot be selected by any tenant. You only need one provider for the chatbot to work
+                    displayed again. Leave the key field blank to keep the stored one. Models from a provider without a
+                    stored key are unavailable to customers. You only need one provider for the chatbot to work
                     — <strong>FenLLM</strong>, listed first, was pre-configured at install and is the
-                    default model for tenants who have not picked one.
+                    default model for customers who have not selected one.
                 </p>
                 <p class="form-text">
                     Base URL is optional — only change it if you route through a proxy or a compatible
@@ -354,7 +354,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                    placeholder="<?= $p['has_key'] ? 'Stored — leave blank to keep' : sanitize($p['meta']['key_hint']) ?>">
                             <?php if (!empty($p['meta']['console_url'])): ?>
                                 <div class="form-text">
-                                    Don't have one? Create a key at
+                                    Create an API key at
                                     <a href="<?= sanitize($p['meta']['console_url']) ?>" target="_blank" rel="noopener noreferrer">
                                         <?= sanitize(parse_url($p['meta']['console_url'], PHP_URL_HOST)) ?>
                                     </a>
@@ -405,8 +405,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <div class="border rounded p-3 mb-3 bg-light">
                         <?php if ($p['has_key']): ?>
                             <p class="small text-muted mb-2">
-                                Your own account at fenllm.com was created automatically at install with
-                                free trial credit. Nothing to configure.
+                                Your FenLLM trial account was created during installation. Refresh the
+                                balance below to check its available credit.
                             </p>
                             <?php if ($fenllmBalance !== null): ?>
                                 <?php
@@ -458,7 +458,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php elseif ($fenllmStatus === 'account_exists'): ?>
                             <p class="small mb-2">
                                 A FenLLM account already exists for this admin email — the trial key from
-                                that signup cannot be fetched again.
+                                that account cannot be fetched again.
                                 <?php if ($fenllmSignIn): ?>
                                     <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener">Sign in to your account</a>
                                     and paste its API key into the card above.
@@ -490,7 +490,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="card-body">
                 <p class="text-muted small">
                     A <strong>model</strong> is the particular AI a provider offers — they differ in
-                    quality and in price per message. A <strong>model id</strong> is the exact name the
+                    quality and in price per message. A <strong>model ID</strong> is the exact name the
                     vendor uses for one, like <code>gpt-4o-mini</code>. Saving a provider above adds its
                     well-known models here automatically; you only need this form for a model
                     the vendor released later. Models are listed explicitly, never fetched from the vendor:
@@ -523,7 +523,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                           // every tenant currently using it. Enabling is additive, and a
                                           // dialog on a harmless action teaches people to dismiss dialogs. ?>
                                     <button class="btn btn-outline-secondary btn-sm" type="submit"
-                                        <?= $m['is_enabled'] ? 'data-confirm="Disable this model? Tenants using it will have to pick another."' : '' ?>>
+                                        <?= $m['is_enabled'] ? 'data-confirm="Disable this model? Customers using it will have to pick another."' : '' ?>>
                                         <?= $m['is_enabled'] ? 'Disable' : 'Enable' ?>
                                     </button>
                                 </form>
@@ -532,7 +532,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                     <input type="hidden" name="action" value="delete_model">
                                     <input type="hidden" name="model_id" value="<?= (int)$m['id'] ?>">
                                     <button class="btn btn-outline-danger btn-sm" type="submit"
-                                            data-confirm="Remove this model? Tenants using it will have to pick another.">Remove</button>
+                                            data-confirm="Remove this model? Customers using it will have to pick another.">Remove</button>
                                 </form>
                             </td>
                         </tr>
@@ -561,7 +561,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small">Model id</label>
+                        <label class="form-label small">Model ID</label>
                         <input type="text" name="model_code" class="form-control form-control-sm"
                                placeholder="gpt-4o-mini" required>
                     </div>
@@ -595,11 +595,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" name="llm_allow_byo_keys" value="1"
                                id="byo" <?= llmAllowByoKeys($conn) ? 'checked' : '' ?>>
-                        <label class="form-check-label" for="byo">Allow tenants to use their own API key</label>
+                        <label class="form-check-label" for="byo">Allow customers to use their own API key</label>
                         <div class="form-text">
-                            Also called "BYO keys": the tenant pays the AI provider directly instead of you.
-                            A tenant still needs the <strong>Bring your own LLM key</strong> feature switched on
-                            for their plan, over on <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
+                            Also called “bring your own keys”: the customer pays the AI provider directly.
+                            Their plan must include <strong>Bring your own LLM key</strong>, over on
+                            <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
                             Their key is encrypted and never shown back to them either.
                         </div>
                     </div>
@@ -612,7 +612,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             Off by default: every voice note becomes a paid transcription request.
                             Needs a transcription model below — saving without one is refused, because
                             the switch would otherwise be on while voice notes were silently ignored.
-                            Tenants must also switch it on for their own bot, and their plan needs the
+                            Customers must also switch it on for their own chatbot, and their plan needs the
                             <strong>Voice note understanding</strong> feature on
                             <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
                         </div>
@@ -642,17 +642,16 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         </div>
                     </div>
 
-                    <button class="btn btn-primary btn-sm" type="submit">Save toggles</button>
+                    <button class="btn btn-primary btn-sm" type="submit">Save AI settings</button>
                 </form>
             </div>
         </div>
 
         <div class="card">
-            <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>Which plans get which model</div>
+            <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>Model access by plan</div>
             <div class="card-body">
                 <p class="text-muted small">
-                    No row means no access. A model a plan has not been granted cannot be selected —
-                    and is re-checked when a reply is generated, so a downgrade takes effect at once.
+                    Unchecked models are unavailable to that plan. Access changes take effect immediately.
                 </p>
                 <form method="post" data-ajax>
                     <?= csrfField() ?>

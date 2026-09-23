@@ -155,7 +155,7 @@ function validateTenantInput(array $input) {
 
     $onboarding = (string)($input['onboarding'] ?? 'invite');
     if (!in_array($onboarding, ['invite', 'temp_password'], true)) {
-        $errors['onboarding'] = 'Choose how this tenant gets their first login.';
+        $errors['onboarding'] = 'Choose how this customer gets their first login.';
     }
 
     return [[
@@ -189,7 +189,7 @@ function createTenant(mysqli $conn, array $input, $actingUserId = null) {
         $stmt->execute();
         $taken = $stmt->get_result()->num_rows > 0;
         $stmt->close();
-        if ($taken) $errors['email'] = 'A tenant with this email already exists.';
+        if ($taken) $errors['email'] = 'A customer with this email already exists.';
     }
 
     // Fall back to the instance default so a tenant always has a plan to read
@@ -248,7 +248,7 @@ function createTenant(mysqli $conn, array $input, $actingUserId = null) {
         // cannot close. Reported as the same field error, so the admin sees one
         // behaviour whichever path caught it.
         if ($e->getCode() === 1062) {
-            return ['ok' => false, 'errors' => ['email' => 'A tenant with this email already exists.'],
+            return ['ok' => false, 'errors' => ['email' => 'A customer with this email already exists.'],
                     'message' => 'That email address is already taken.', 'user_id' => null,
                     'temp_password' => null, 'invited' => false, 'invite_link' => null];
         }
@@ -280,7 +280,7 @@ function createTenant(mysqli $conn, array $input, $actingUserId = null) {
         logAudit($conn, 'admin.user.temp_password', 'user', $userId, [], $actingUserId);
         return ['ok' => true, 'errors' => [], 'user_id' => $userId, 'temp_password' => $tempPassword,
                 'invited' => false, 'invite_link' => null,
-                'message' => 'Tenant created. Give them the temporary password below — it is shown once.'];
+                'message' => 'Customer created. Give them the temporary password below — it is shown once.'];
     }
 
     [$sent, $link] = sendTenantInvite($conn, $userId, $clean['name'], $clean['email']);
@@ -293,8 +293,8 @@ function createTenant(mysqli $conn, array $input, $actingUserId = null) {
     return ['ok' => true, 'errors' => [], 'user_id' => $userId, 'temp_password' => null,
             'invited' => true, 'invite_link' => $sent ? null : $link,
             'message' => $sent
-                ? 'Tenant created and an invitation was emailed to ' . $clean['email'] . '.'
-                : 'Tenant created, but the invitation email could not be sent. Copy the link below to them.'];
+                ? 'Customer created and an invitation was emailed to ' . $clean['email'] . '.'
+                : 'Customer created, but the invitation email could not be sent. Copy the link below to them.'];
 }
 
 // Issues a single-use, expiring password-setup link and emails it.
@@ -433,12 +433,12 @@ function auditActionLabel($action) {
         'admin.setup.dismissed'         => 'Getting-started checklist hidden',
         'admin.smtp.update'             => 'Email settings updated',
         'admin.smtp.test'               => 'Test email sent',
-        'admin.user.create'             => 'Tenant created by an admin',
+        'admin.user.create'             => 'Customer created by an administrator',
         'admin.user.invite_sent'        => 'Password-setup invitation sent',
         'admin.user.temp_password'      => 'Temporary password issued',
-        'admin.user.suspend'            => 'Tenant suspended',
-        'admin.user.activate'           => 'Tenant reactivated',
-        'admin.user.change_plan'        => "Tenant's plan changed",
+        'admin.user.suspend'            => 'Customer suspended',
+        'admin.user.activate'           => 'Customer reactivated',
+        'admin.user.change_plan'        => "Customer’s plan changed",
         'admin.user.toggle_admin'       => 'Admin rights granted / revoked',
         'admin.serpapi.update'          => 'Lead search settings updated',
         'admin.serpapi.test'            => 'SerpApi key tested (1 credit)',

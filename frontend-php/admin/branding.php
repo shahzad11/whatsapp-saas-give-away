@@ -103,7 +103,7 @@ $assets = brandAssets($conn, true);
 $logoUrlNow = brandLogoUrl($conn);
 $faviconUrlNow = brandFaviconUrl($conn);
 
-$pageTitle = 'App Branding';
+$pageTitle = 'Branding';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
@@ -132,7 +132,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             </div>
         </div>
         <p class="text-muted x-small mt-2 mb-0">
-            This is what is currently saved — edits typed below are not reflected here until you save.
+            Preview of the saved branding. Unsaved changes do not appear here.
         </p>
     </div>
 </div>
@@ -153,10 +153,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                            value="<?= sanitize($stored['brand_name']) ?>" maxlength="100"
                            placeholder="<?= sanitize(APP_NAME) ?>">
                     <div class="form-text">
-                        Shown in the sidebar, on every page title, on the login and sign-up pages, and in
-                        every email this instance sends. Leave blank to use the deployment's own name
-                        (<strong><?= sanitize(APP_NAME) ?></strong>, from <code>APP_NAME</code> in
-                        <code>.env</code>).
+                        Shown in the sidebar, page titles, sign-in and password-reset pages, and
+                        emails. Leave blank to use the default application name.
                     </div>
                     <?= bErr('brand_name') ?>
                 </div>
@@ -201,7 +199,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?= bErr('logo_file') ?>
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">…or link to one</label>
+                    <label class="form-label">Or use an image URL</label>
                     <input type="url" name="brand_logo_url" class="form-control<?= bCls('brand_logo_url') ?>"
                            value="<?= sanitize($stored['brand_logo_url']) ?>" placeholder="https://example.com/logo.png">
                     <div class="form-text">A URL here takes precedence over an uploaded file.</div>
@@ -240,7 +238,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?= bErr('favicon_file') ?>
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">…or link to one</label>
+                    <label class="form-label">Or use an image URL</label>
                     <input type="url" name="brand_favicon_url" class="form-control<?= bCls('brand_favicon_url') ?>"
                            value="<?= sanitize($stored['brand_favicon_url']) ?>" placeholder="https://example.com/favicon.ico">
                     <?= bErr('brand_favicon_url') ?>
@@ -257,7 +255,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <?php endif; ?>
     </div>
 
-    <button type="submit" class="btn btn-primary">Save Branding</button>
+    <button type="submit" class="btn btn-primary">Save branding</button>
 </form>
 
 <?php // Outside the form above — nested forms are invalid HTML and the browser
@@ -276,11 +274,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-header">Where this appears</div>
     <div class="card-body">
         <ul class="list-unstyled small mb-0">
-            <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Sign-in, sign-up and password-reset pages</li>
-            <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Tenant sidebar, page titles and browser tab</li>
+            <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Sign-in and password-reset pages</li>
+            <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Customer sidebar, page titles and browser tab</li>
             <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>This admin console</li>
             <li class="mb-1"><i class="bi bi-check2 text-success me-2"></i>Every email — subject line, header band and footer</li>
-            <li class="mb-0"><i class="bi bi-info-circle text-muted me-2"></i>Changes take effect immediately; no redeploy needed</li>
+            <li class="mb-0"><i class="bi bi-info-circle text-muted me-2"></i>Changes appear immediately after saving.</li>
         </ul>
     </div>
 </div>

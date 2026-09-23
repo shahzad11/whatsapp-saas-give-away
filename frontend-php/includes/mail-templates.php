@@ -64,17 +64,19 @@ function mailActivation($name, $link) {
 }
 
 function mailPasswordReset($name, $link, $expiryHours = 1) {
+    $hours = max(1, (int)$expiryHours);
+    $window = $hours === 1 ? '1 hour' : $hours . ' hours';
     $html = mailLayout(
         'Reset your password',
         '<p>Hello ' . sanitize($name) . ',</p>'
         . '<p>We received a request to reset your password. This link expires in '
-        . (int)$expiryHours . ' hour(s).</p>'
+        . sanitize($window) . '.</p>'
         . mailButton($link, 'Choose a new password')
         . '<p style="margin-top:20px;color:#64748b;font-size:13px;">'
         . 'If you did not request this, no action is needed — your password has not changed.</p>'
     );
     $text = "Hello {$name},\n\nReset your password using the link below. "
-        . "It expires in {$expiryHours} hour(s).\n\n{$link}\n\n"
+        . "It expires in {$window}.\n\n{$link}\n\n"
         . "If you did not request this, no action is needed.\n";
     return [$html, $text];
 }
@@ -113,7 +115,7 @@ function mailTenantInvite($name, $link, $expiryHours = 168) {
 
 function mailPlanExpiring($name, $planName, $endDate, $instructions, $billingUrl) {
     $days = (int)ceil((strtotime($endDate) - time()) / 86400);
-    $when = $days > 0 ? "in {$days} day(s)" : 'today';
+    $when = $days > 0 ? 'in ' . $days . ($days === 1 ? ' day' : ' days') : 'today';
 
     $body = '<p>Hello ' . sanitize($name) . ',</p>'
         . '<p>Your <strong>' . sanitize($planName) . '</strong> plan period ends ' . sanitize($when)

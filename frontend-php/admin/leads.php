@@ -160,7 +160,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <span class="kpi-icon"><i class="bi bi-coin"></i></span>
             <div>
                 <div class="kpi-value"><?= number_format((int)$spend['credits']) ?></div>
-                <div class="kpi-label">Credits used (30 days)</div>
+                <div class="kpi-label">Search credits used (30 days)</div>
             </div>
         </div>
     </div>
@@ -177,7 +177,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <button type="button" class="btn btn-sm btn-outline-secondary"
                 data-bs-toggle="collapse" data-bs-target="#leadSearchPanel"
                 aria-expanded="<?= $totalLeads === 0 ? 'true' : 'false' ?>" aria-controls="leadSearchPanel">
-            <i class="bi bi-chevron-down me-1"></i>Search panel
+            <i class="bi bi-chevron-down me-1"></i>Search options
         </button>
     </div>
     <div class="collapse<?= $totalLeads === 0 ? ' show' : '' ?>" id="leadSearchPanel">
@@ -194,7 +194,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <?php foreach ($categories as $c): ?>
                         <option value="<?= sanitize($c['query']) ?>"><?= sanitize($c['label']) ?></option>
                     <?php endforeach; ?>
-                    <option value="">— type my own —</option>
+                    <option value="">Custom category</option>
                 </select>
             </div>
             <div class="col-md-3">
@@ -203,7 +203,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                        placeholder="dentist" value="<?= sanitize($categories[0]['query'] ?? '') ?>">
             </div>
             <div class="col-md-3">
-                <label class="form-label x-small text-muted mb-1" for="leadLocation">Area</label>
+                <label class="form-label x-small text-muted mb-1" for="leadLocation">Location</label>
                 <?php // Pre-filled, not placeheld. A placeholder reads as a value:
                       // the grey "Lahore, Pakistan" that used to sit here looked
                       // filled in, the field went to SerpApi empty, and Google
@@ -222,7 +222,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <input type="number" id="leadRadius" class="form-control form-control-sm"
                        min="<?= LEADS_MIN_RADIUS_KM ?>" max="<?= LEADS_MAX_RADIUS_KM ?>" step="1"
                        value="<?= leadsRadiusMToKm($settings['radius_m']) ?>">
-                <div class="form-text x-small">Around the area or pin — also the circle shown on the map.</div>
+                <div class="form-text x-small">Search within this distance of the selected area or map pin.</div>
             </div>
             <div class="col-md-3">
                 <label class="form-label x-small text-muted mb-1" for="leadMinRating">Minimum rating</label>
@@ -391,9 +391,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <table class="table align-middle mb-0 table-stack">
             <thead>
                 <tr>
-                    <th>Business</th><th>Category</th><th>Area searched</th>
+                    <th>Business</th><th>Category</th><th>Search area</th>
                     <th>Phone</th><th>Website</th>
-                    <th>Rating</th><th>Seen</th><th></th>
+                    <th>Rating</th><th>Last seen</th><th></th>
                 </tr>
             </thead>
             <tbody>
@@ -423,12 +423,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <span class="text-muted">—</span>
                         <?php endif; ?>
                     </td>
-                    <td class="small" data-label="Area searched">
+                    <td class="small" data-label="Search area">
                         <?php if ($l['source_location']): ?>
                             <a class="text-decoration-none" href="<?= $self ?>?<?= sanitize(http_build_query(
                                 ['area' => $l['source_location']] + $filters)) ?>"><?= sanitize($l['source_location']) ?></a>
                         <?php else: ?>
-                            <span class="text-muted" title="Found before the area was recorded">not recorded</span>
+                            <span class="text-muted" title="Found before the area was recorded">Not recorded</span>
                         <?php endif; ?>
                     </td>
                     <td class="small" data-label="Phone">
@@ -453,7 +453,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                             <a href="<?= sanitize($l['website']) ?>" target="_blank" rel="noopener noreferrer"
                                class="text-decoration-none"><?= sanitize(parse_url($l['website'], PHP_URL_HOST) ?: 'site') ?></a>
                         <?php else: ?>
-                            <span class="badge bg-warning text-dark">no website</span>
+                            <span class="badge bg-warning text-dark">No website</span>
                         <?php endif; ?>
                     </td>
                     <td class="small" data-label="Rating">
@@ -467,7 +467,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <td class="small text-muted" data-label="Seen"><?= sanitize(timeAgo($l['last_seen_at'])) ?></td>
                     <td>
                         <a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener"
-                           href="https://www.google.com/maps/place/?q=place_id:<?= rawurlencode($l['place_id']) ?>">Map</a>
+                           href="https://www.google.com/maps/place/?q=place_id:<?= rawurlencode($l['place_id']) ?>">Open map</a>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -491,8 +491,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <?php endif; ?>
     <div class="card-body border-top">
         <p class="text-muted x-small mb-0">
-            Leads are never deleted and never shown to tenants — this list is
-            the platform owner's, and <code>leads</code> has no tenant column at all.
+            Saved leads are visible only to platform administrators and are never
+            shown to customers.
         </p>
     </div>
 </div>
@@ -542,7 +542,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     function ensureTable() {
         if (table) return table;
         out.innerHTML = '<table class="table align-middle mb-0">'
-            + '<thead><tr><th></th><th>Business</th><th>Category</th><th>Area searched</th>'
+            + '<thead><tr><th></th><th>Business</th><th>Category</th><th>Search area</th>'
             + '<th>Phone</th><th>Website</th>'
             + '<th>Rating</th><th>Open</th><th></th></tr></thead><tbody></tbody></table>';
         table = out.querySelector('tbody');
@@ -559,7 +559,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         var site = r.website
             ? '<a href="' + esc(r.website) + '" target="_blank" rel="noopener noreferrer" '
               + 'class="text-decoration-none">site</a>'
-            : '<span class="badge bg-warning text-dark">no website</span>';
+            : '<span class="badge bg-warning text-dark">No website</span>';
 
         var rating = r.rating
             ? esc(r.rating) + ' <span class="text-muted">(' + esc(r.reviews || 0) + ')</span>'
@@ -584,7 +584,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             + '<td class="small">' + rating + '</td>'
             + '<td class="small text-muted">' + esc(r.open_state || '') + '</td>'
             + '<td><a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="'
-            + esc(r.maps_url) + '">Map</a></td>'
+            + esc(r.maps_url) + '">Open map</a></td>'
             + '</tr>';
     }
 
@@ -663,7 +663,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     if (ll) map.setView([parseFloat(ll[1]), parseFloat(ll[2])], 11);
                 }
 
-                status.innerHTML = ran + '<span class="text-muted">' + res.results.length + ' result(s), '
+                status.innerHTML = ran + '<span class="text-muted">' + res.results.length + (res.results.length === 1 ? ' result, ' : ' results, ')
                     + res.new_count + ' new, ' + res.seen_count + ' already known.</span>';
 
                 nextUrl = res.next_url || null;

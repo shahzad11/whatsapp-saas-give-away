@@ -185,7 +185,7 @@ function instanceSetupSteps(mysqli $conn) {
             // Named as the only transport on purpose (#15): there is deliberately
             // no local MTA in the frontend container, so an admin who skips this
             // step is not falling back to something that half-works.
-            'why'   => 'The only mail transport there is — without SMTP, activation, password reset and reminder emails are silently undeliverable.',
+            'why'   => 'The only email transport available. Without SMTP, password-setup invitations, password resets and renewal reminders cannot be delivered.',
             'url'   => APP_URL . '/admin/email.php',
             'done'  => smtpConfigured($conn),
         ],
@@ -200,13 +200,13 @@ function instanceSetupSteps(mysqli $conn) {
         ],
         [
             'label' => 'Turn the chatbot on for a plan and grant it a model',
-            'why'   => 'A plan with the feature but no granted model shows tenants "no models available".',
+            'why'   => 'A plan with the feature but no granted model shows customers “no models available”.',
             'url'   => APP_URL . '/admin/plans.php',
             'done'  => $planReady > 0,
         ],
         [
             'label' => 'Check currency, timezone and the default plan',
-            'why'   => 'Prices, every timestamp and the plan every new tenant starts on all come from here.',
+            'why'   => 'Prices, timestamps and the plan assigned to every new customer all come from here.',
             'url'   => APP_URL . '/admin/settings.php',
             // Saving the page once writes both rows; until then the instance is
             // running on the built-in defaults, which may be the wrong country.

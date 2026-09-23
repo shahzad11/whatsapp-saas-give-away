@@ -21,7 +21,7 @@ $tenant = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
 if (!$tenant) {
-    flash('error', 'Tenant not found.');
+    flash('error', 'Customer not found.');
     redirect(APP_URL . '/admin/tenants.php');
 }
 
@@ -59,7 +59,7 @@ $stmt->execute();
 $audit = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-$pageTitle = 'Tenant — ' . tenantDisplayName($tenant, $profile);
+$pageTitle = 'Customer — ' . tenantDisplayName($tenant, $profile);
 
 // The detail, on its own, for the modal on admin/tenants.php to load (#49).
 //
@@ -78,13 +78,13 @@ if (!$fragment) {
             <p class="page-toolbar-title">
                 <?= sanitize(tenantDisplayName($tenant, $profile)) ?>
                 <?php if (!$tenant['is_active']): ?>
-                    <span class="badge bg-secondary">unactivated</span>
+                    <span class="badge bg-secondary">Not activated</span>
                 <?php elseif ($tenant['status'] === 'suspended'): ?>
-                    <span class="badge bg-danger">suspended</span>
+                    <span class="badge bg-danger">Suspended</span>
                 <?php else: ?>
-                    <span class="badge bg-success">active</span>
+                    <span class="badge bg-success">Active</span>
                 <?php endif; ?>
-                <?php if ($tenant['is_admin']): ?><span class="badge bg-dark">admin</span><?php endif; ?>
+                <?php if ($tenant['is_admin']): ?><span class="badge bg-dark">Admin</span><?php endif; ?>
             </p>
             <p class="page-toolbar-subtitle">
                 <?= sanitize($tenant['email']) ?> · <code>t<?= (int)$tenant['id'] ?></code>
@@ -92,7 +92,7 @@ if (!$fragment) {
         </div>
         <div class="page-toolbar-actions">
             <a href="<?= APP_URL ?>/admin/tenants.php" class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-arrow-left me-1"></i>All tenants
+                <i class="bi bi-arrow-left me-1"></i>All customers
             </a>
         </div>
     </div>
@@ -110,18 +110,18 @@ if (!$fragment) {
                     <dd class="col-7"><?= sanitize($tenant['name']) ?></dd>
                     <dt class="col-5 text-muted fw-normal">Email</dt>
                     <dd class="col-7"><?= sanitize($tenant['email']) ?></dd>
-                    <dt class="col-5 text-muted fw-normal">Tenant id</dt>
+                    <dt class="col-5 text-muted fw-normal">Customer ID</dt>
                     <dd class="col-7"><code>t<?= (int)$tenant['id'] ?></code></dd>
                     <dt class="col-5 text-muted fw-normal">Status</dt>
                     <dd class="col-7">
                         <?php if (!$tenant['is_active']): ?>
-                            <span class="badge bg-secondary">unactivated</span>
+                            <span class="badge bg-secondary">Not activated</span>
                         <?php elseif ($tenant['status'] === 'suspended'): ?>
-                            <span class="badge bg-danger">suspended</span>
+                            <span class="badge bg-danger">Suspended</span>
                         <?php else: ?>
-                            <span class="badge bg-success">active</span>
+                            <span class="badge bg-success">Active</span>
                         <?php endif; ?>
-                        <?php if ($tenant['is_admin']): ?><span class="badge bg-dark">admin</span><?php endif; ?>
+                        <?php if ($tenant['is_admin']): ?><span class="badge bg-dark">Admin</span><?php endif; ?>
                     </dd>
                     <dt class="col-5 text-muted fw-normal">Plan</dt>
                     <dd class="col-7"><?= sanitize($tenant['plan_name'] ?? '—') ?>
@@ -140,7 +140,7 @@ if (!$fragment) {
             <div class="card-header">Profile</div>
             <div class="card-body">
                 <?php if (!hasProfileDetail($profile)): ?>
-                    <p class="text-muted small mb-0">This tenant has not filled in their profile.</p>
+                    <p class="text-muted small mb-0">This customer has not completed their profile.</p>
                 <?php else: ?>
                     <dl class="row small mb-0">
                         <?php if ($profile['company_name']): ?>
@@ -174,7 +174,7 @@ if (!$fragment) {
 
     <div class="col-lg-7">
         <div class="card mb-4">
-            <div class="card-header">Usage This Month</div>
+            <div class="card-header">Usage this month</div>
             <div class="card-body">
                 <?php foreach ($usage as $label => [$used, $limit]): ?>
                     <div class="small mb-3">
@@ -199,9 +199,9 @@ if (!$fragment) {
         </div>
 
         <div class="card mb-4 table-card">
-            <div class="card-header">WhatsApp Accounts</div>
+            <div class="card-header">WhatsApp accounts</div>
             <?php if (!$accounts): ?>
-                <div class="card-body"><p class="text-muted small mb-0">No linked accounts.</p></div>
+                <div class="card-body"><p class="text-muted small mb-0">This customer has not linked a WhatsApp account.</p></div>
             <?php else: ?>
             <div class="table-responsive">
                 <table class="table align-middle mb-0 table-stack">
@@ -222,9 +222,9 @@ if (!$fragment) {
         </div>
 
         <div class="card table-card">
-            <div class="card-header">Recent Activity</div>
+            <div class="card-header">Recent activity</div>
             <?php if (!$audit): ?>
-                <div class="card-body"><p class="text-muted small mb-0">Nothing logged yet.</p></div>
+                <div class="card-body"><p class="text-muted small mb-0">No administrative activity has been recorded for this customer.</p></div>
             <?php else: ?>
             <div class="table-responsive">
                 <table class="table align-middle mb-0 table-stack">

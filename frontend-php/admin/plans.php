@@ -42,7 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Deactivating the plan new tenants are assigned would leave signup
         // unable to give anyone a plan, and quota checks with nothing to read.
         if ((int)$plan['is_active'] === 1 && $plan['code'] === defaultPlanCode($conn)) {
-            formRespond(false, 'This is the default plan for new tenants. Choose a different default in Settings first.', $self);
+            formRespond(false, 'This is the default plan for new customers. Choose a different default in Settings first.', $self);
         }
 
         $stmt = $conn->prepare("UPDATE plans SET is_active = 1 - is_active WHERE id = ?");
@@ -237,7 +237,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
 
 <div class="card table-card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Packages</span>
+        <span>Plans</span>
         <?php // href is a real link to the same page's form, so this works with
               // JavaScript off; the data-* attributes upgrade it to the modal. ?>
         <a href="<?= APP_URL ?>/admin/plans.php#planShell" class="btn btn-sm btn-primary"
@@ -252,46 +252,63 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-body">
         <div class="row g-3">
             <?php foreach ($plans as $p): ?>
+                <?php
+                $priceText = formatPrice($p);
+                $pricePeriod = '';
+                if ((int)$p['price_cents'] > 0 && ($p['billing_period'] ?? 'month') !== 'none') {
+                    $pricePeriod = ($p['billing_period'] ?? 'month') === 'year' ? '/year' : '/month';
+                    $priceText = substr($priceText, 0, -strlen($pricePeriod));
+                }
+                ?>
                 <div class="col-12 col-lg-6 col-xxl-4">
-                    <div class="card plan-card h-100<?= $p['is_active'] ? '' : ' is-inactive' ?>">
-                        <div class="card-body plan-card-main d-flex flex-column gap-2">
-                            <div class="d-flex align-items-center gap-2 flex-wrap">
-                                <span class="fw-600"><?= sanitize($p['name']) ?></span>
-                                <?php if ($p['code'] === $defaultCode): ?>
-                                    <span class="badge-tag" title="Assigned to new tenants">default</span>
+                    <div class="card plan-card h-100<?= $p['code'] === $defaultCode ? ' is-default' : '' ?><?= $p['is_active'] ? '' : ' is-inactive' ?>">
+                        <div class="card-body plan-card-main d-flex flex-column">
+                            <div class="plan-card-head">
+                                <div class="plan-card-title-row">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                                        <span class="plan-name"><?= sanitize($p['name']) ?></span>
+                                        <?php if ($p['code'] === $defaultCode): ?>
+                                            <span class="plan-state plan-state-default" title="Assigned to new customers"><i class="bi bi-star-fill"></i>Default</span>
+                                        <?php endif; ?>
+                                        <?php if (!$p['is_active']): ?>
+                                            <span class="plan-state plan-state-inactive"><i class="bi bi-pause-circle"></i>Inactive</span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <code class="plan-code"><?= sanitize($p['code']) ?></code>
+                                </div>
+                                <div class="plan-price-line"><span class="plan-price"><?= sanitize($priceText) ?></span><?php if ($pricePeriod !== ''): ?><span class="plan-price-period"><?= $pricePeriod ?></span><?php endif; ?></div>
+                                <?php if (trim((string)$p['description']) !== ''): ?>
+                                    <div class="plan-description"><?= sanitize($p['description']) ?></div>
+                                <?php else: ?>
+                                    <div class="plan-description is-empty">No description</div>
                                 <?php endif; ?>
-                                <?php if (!$p['is_active']): ?>
-                                    <span class="badge-tag">inactive</span>
-                                <?php endif; ?>
-                                <code class="x-small text-muted ms-auto"><?= sanitize($p['code']) ?></code>
                             </div>
-                            <div class="plan-price"><?= sanitize(formatPrice($p)) ?></div>
-                            <?php if (trim((string)$p['description']) !== ''): ?>
-                                <div class="text-muted small"><?= sanitize($p['description']) ?></div>
-                            <?php endif; ?>
-                            <dl class="plan-limits">
-                                <dt>WhatsApp accounts</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_wa_accounts'))) ?></dd>
-                                <dt>Contacts</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_contacts'))) ?></dd>
-                                <dt>Messages / month</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_messages_per_month'))) ?></dd>
-                                <dt>AI replies / month</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_chatbot_replies'))) ?></dd>
-                                <dt>Bookable services</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_services'))) ?></dd>
-                            </dl>
-                            <div class="d-flex gap-1 flex-wrap">
+                            <div class="plan-limit-panel">
+                                <div class="plan-panel-label"><i class="bi bi-speedometer2"></i>Usage limits</div>
+                                <dl class="plan-limits">
+                                    <dt>WhatsApp accounts</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_wa_accounts'))) ?></dd>
+                                    <dt>Contacts</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_contacts'))) ?></dd>
+                                    <dt>Messages / month</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_messages_per_month'))) ?></dd>
+                                    <dt>AI replies / month</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_chatbot_replies'))) ?></dd>
+                                    <dt>Bookable services</dt><dd><?= sanitize(formatLimit(planLimit($p, 'max_services'))) ?></dd>
+                                </dl>
+                            </div>
+                            <div class="plan-feature-list">
                                 <?php $on = array_keys(array_filter(planFeatures($p))); ?>
-                                <?php if (!$on): ?><span class="text-muted x-small">No features</span><?php endif; ?>
+                                <?php if (!$on): ?><span class="plan-no-features">No features</span><?php endif; ?>
                                 <?php foreach ($on as $key): ?>
-                                    <span class="badge-tag"><?= sanitize(planFeatureDefinitions()[$key]['label'] ?? $key) ?></span>
+                                    <span class="plan-feature-chip"><i class="bi bi-check2"></i><?= sanitize(planFeatureDefinitions()[$key]['label'] ?? $key) ?></span>
                                 <?php endforeach; ?>
                             </div>
                         </div>
-                        <div class="card-footer d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                            <span class="text-muted small"><?= number_format((int)$p['tenant_count']) ?> <?= (int)$p['tenant_count'] === 1 ? 'tenant' : 'tenants' ?></span>
+                        <div class="card-footer plan-card-footer d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                            <span class="plan-tenant-count"><i class="bi bi-people"></i><?= (int)$p['tenant_count'] === 0 ? 'No customers' : number_format((int)$p['tenant_count']) . ' ' . ((int)$p['tenant_count'] === 1 ? 'customer' : 'customers') ?></span>
                             <div class="d-flex gap-1">
                                 <a href="<?= APP_URL ?>/admin/plans.php?edit=<?= (int)$p['id'] ?>#planShell"
-                                   class="btn btn-sm btn-outline-primary"
+                                   class="btn btn-sm btn-outline-primary plan-card-action"
                                    data-modal-target="#planModal"
                                    data-modal-url="<?= APP_URL ?>/admin/plans.php?edit=<?= (int)$p['id'] ?>"
-                                   data-modal-title="Edit <?= sanitize($p['name']) ?>">Edit</a>
+                                   data-modal-title="Edit <?= sanitize($p['name']) ?>"><i class="bi bi-pencil"></i>Edit</a>
                                 <form method="POST" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="toggle_active">
@@ -300,11 +317,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                           // signup and from the tenant comparison. Activating is
                                           // additive, and a dialog on a harmless action teaches people
                                           // to dismiss dialogs. ?>
-                                    <button class="btn btn-sm btn-outline-secondary"
+                                    <button class="btn btn-sm <?= $p['is_active'] ? 'btn-outline-secondary' : 'btn-primary' ?> plan-card-action"
                                         <?php if ($p['is_active']): ?>
-                                            data-confirm="Deactivate <?= sanitize($p['name']) ?>? It stops being offered to new tenants. The <?= number_format((int)$p['tenant_count']) ?> tenant(s) already on it keep it."
+                                            data-confirm="Deactivate <?= sanitize($p['name']) ?>? New customers will no longer be offered this plan. <?= (int)$p['tenant_count'] === 1 ? '1 current customer will' : number_format((int)$p['tenant_count']) . ' current customers will' ?> keep it."
                                         <?php endif; ?>>
-                                        <?= $p['is_active'] ? 'Disable' : 'Enable' ?>
+                                        <i class="bi <?= $p['is_active'] ? 'bi-pause-circle' : 'bi-play-circle' ?>"></i><?= $p['is_active'] ? 'Deactivate' : 'Activate' ?>
                                     </button>
                                 </form>
                             </div>
@@ -316,8 +333,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
     <div class="card-body border-top">
         <p class="text-muted x-small mb-0">
-            Plans are disabled, never deleted — tenants, subscriptions and payment records all
-            reference them, and removing one would erase what a tenant was charged for.
+            Plans are deactivated, never deleted — customers, subscriptions and payment records
+            depend on them. Removing a plan would erase what a customer was charged.
             A blank limit means <strong>unlimited</strong>; <strong>0</strong> means none allowed.
         </p>
     </div>

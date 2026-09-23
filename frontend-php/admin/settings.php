@@ -264,7 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             logAudit($conn, 'admin.plans.relabel_currency', 'plans', null, [
                 'from' => $previousCurrency, 'to' => $currency, 'rows' => $affected,
             ]);
-            $message = 'Settings saved. ' . $affected . ' plan(s) relabelled to ' . $currency . ' (amounts unchanged).';
+            $message = 'Settings saved. ' . $affected . ' ' . ($affected === 1 ? 'plan' : 'plans') . ' relabelled to ' . $currency . ' (amounts unchanged).';
         } else {
             $message = 'Settings saved.';
         }
@@ -279,8 +279,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // carries it in the same sentence rather than losing it.
         foreach ($plans as $p) {
             if ($p['code'] === $planCode && !$p['is_active']) {
-                $warning = 'Careful: "' . $p['name'] . '" is an inactive plan. New sign-ups will be put on it, '
-                    . 'and it is not shown to tenants as an option. Activate it on Plans if that is not intended.';
+                $warning = 'Careful: "' . $p['name'] . '" is an inactive plan. New customers will be put on it, '
+                    . 'and it is not shown to customers as an option. Activate it on Plans if that is not intended.';
                 if (!isXhrRequest()) flash('error', $warning);
                 else $message .= ' ' . $warning;
                 break;
@@ -326,7 +326,7 @@ $repriceable = plansInCurrency($conn, $current['currency']);
 $serp = leadsSettings($conn);
 $serpConfigured = serpApiConfigured($conn);
 
-$pageTitle = 'Instance Settings';
+$pageTitle = 'Settings';
 require_once dirname(__DIR__) . '/includes/admin-header.php';
 ?>
 
@@ -337,12 +337,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
               // only lengthen the scroll it was added to shorten. ?>
         <nav class="settings-nav" aria-label="Settings sections">
             <div class="nav-section-title px-3 mb-1">On this page</div>
-            <a href="#set-localisation">Localisation</a>
-            <a href="#set-tenants">New tenants</a>
+            <a href="#set-localisation">Regional settings</a>
+            <a href="#set-tenants">New customers</a>
             <a href="#set-security">Login security</a>
             <a href="#set-handover">Handover notifications</a>
             <a href="#set-payment">Payment instructions</a>
-            <a href="#set-sales">Sales contact</a>
+            <a href="#set-sales">Plan enquiry contact</a>
             <a href="#set-leads">Lead search</a>
         </nav>
     </div>
@@ -352,7 +352,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <?= csrfField() ?>
 
     <div class="card mb-4" id="set-localisation">
-        <div class="card-header">Localisation</div>
+        <div class="card-header">Regional settings</div>
         <div class="card-body">
             <div class="row g-3">
                 <div class="col-md-6">
@@ -377,7 +377,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <div class="form-check mb-1">
                             <input class="form-check-input" type="checkbox" name="relabel_plans" id="relabelPlans">
                             <label class="form-check-label small fw-500" for="relabelPlans">
-                                Also relabel <?= (int)$repriceable ?> existing paid plan(s) to the new currency
+                                Also relabel <?= (int)$repriceable ?> existing paid <?= (int)$repriceable === 1 ? 'plan' : 'plans' ?> to the new currency
                             </label>
                         </div>
                         <div class="x-small mb-0">
@@ -401,8 +401,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php endforeach; ?>
                     </select>
                     <div class="form-text">
-                        Default for new tenants (<?= sanitize(timezoneOffsetLabel($current['timezone'])) ?>).
-                        A tenant who sets their own keeps it.
+                        Default for new customers (<?= sanitize(timezoneOffsetLabel($current['timezone'])) ?>).
+                        A customer who chooses their own timezone keeps it.
                     </div>
                     <?= sErr('timezone') ?>
                 </div>
@@ -411,7 +411,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4" id="set-tenants">
-        <div class="card-header">New tenants</div>
+        <div class="card-header">New customers</div>
         <div class="card-body">
             <?php // The "Allow public sign-ups" switch was here, and is gone (#48).
                   //
@@ -421,12 +421,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                   // toggle. Tenants exist because an admin made one. ?>
             <div class="alert alert-secondary py-2 small">
                 <i class="bi bi-shield-lock me-1"></i>
-                This instance is <strong>invite-only</strong>. There is no public sign-up form —
-                add tenants from <a href="<?= APP_URL ?>/admin/tenants.php">Tenants</a>, where you
-                can email them a password-setup link or hand over a temporary password.
+                This app is <strong>invite-only</strong>. There is no public registration —
+                add customers from <a href="<?= APP_URL ?>/admin/tenants.php">Customers</a>, where you
+                can email a password-setup link or hand over a temporary password.
             </div>
             <div class="col-md-5 px-0">
-                <label class="form-label">Default plan for new tenants</label>
+                <label class="form-label">Default plan for new customers</label>
                 <select name="default_plan_code" class="form-select<?= sCls('default_plan_code') ?>">
                     <?php foreach ($plans as $p): ?>
                         <option value="<?= sanitize($p['code']) ?>" <?= $current['default_plan_code'] === $p['code'] ? 'selected' : '' ?>>
@@ -447,12 +447,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <div class="form-text">
                     <?php if ($defaultPlanRow && !$defaultPlanRow['is_active']): ?>
                         <span class="text-danger">
-                            This plan is <strong>inactive</strong>, so new sign-ups get a plan tenants are never
-                            offered — and possibly one with no features.
+                            This plan is <strong>inactive</strong>, so new customers will be assigned a plan
+                            that is not offered as an option and may have no features.
                             <a href="<?= APP_URL ?>/admin/plans.php">Review plans</a>.
                         </span>
                     <?php else: ?>
-                        Applied to every new sign-up. Manage what each plan includes on
+                        Assigned to every customer created by an administrator. Manage plan contents on
                         <a href="<?= APP_URL ?>/admin/plans.php">Plans</a>.
                     <?php endif; ?>
                 </div>
@@ -461,7 +461,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4" id="set-security">
-        <div class="card-header">Login Security</div>
+        <div class="card-header">Login security</div>
         <div class="card-body">
             <div class="row g-3">
                 <div class="col-md-4">
@@ -484,7 +484,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4" id="set-handover">
-        <div class="card-header">Handover Notifications</div>
+        <div class="card-header">Handover notifications</div>
         <div class="card-body">
             <div class="col-md-5 px-0">
                 <label class="form-label">Fallback WhatsApp number</label>
@@ -492,13 +492,12 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                        class="form-control<?= sCls('handoff_notify_number') ?>"
                        value="<?= sanitize($current['handoff_notify_number']) ?>" placeholder="923001234567">
                 <div class="form-text">
-                    Alerted when a customer asks for a person and the tenant has set no number of
-                    their own. Their value always wins. Country code, no leading zero, no spaces —
-                    it is used as a WhatsApp address, not displayed.
+                    Used when a customer asks for a person and the account owner has not set a
+                    notification number. The account owner’s number takes priority. Enter digits in
+                    international format, including the country code, with no leading zero or spaces.
                     <?php // Worth stating: the alert is a real WhatsApp message and is
                           // metered like one, against the tenant whose customer asked. ?>
-                    Each alert is sent from the tenant's own linked account and counts as one of
-                    their messages.
+                    Each alert is sent from the customer’s linked account and counts as one message.
                 </div>
                 <?= sErr('handoff_notify_number') ?>
             </div>
@@ -506,15 +505,15 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="card mb-4" id="set-payment">
-        <div class="card-header">Payment Instructions</div>
+        <div class="card-header">Payment instructions</div>
         <div class="card-body">
-            <label class="form-label">Shown to tenants on their billing page</label>
+            <label class="form-label">Shown to customers on their billing page</label>
             <textarea name="payment_instructions" rows="5" maxlength="5000"
                       class="form-control<?= sCls('payment_instructions') ?>"
                       placeholder="e.g. Bank transfer to Meezan Bank, account 1234-5678. Email the receipt to billing@example.com and we will activate your plan."><?= sanitize($current['payment_instructions']) ?></textarea>
             <div class="form-text">
-                There is no payment gateway: tenants pay out of band and an admin records it.
-                Leave blank to hide the section.
+                Payments are collected outside this app and recorded manually by an administrator.
+                Leave blank to hide this section.
             </div>
             <?= sErr('payment_instructions') ?>
         </div>
@@ -525,19 +524,17 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
           // name already in the message — so an enquiry arrives saying which plan
           // it is about. ?>
     <div class="card mb-4" id="set-sales">
-        <div class="card-header">Sales Contact</div>
+        <div class="card-header">Plan enquiry contact</div>
         <div class="card-body">
             <?php if (!$current['billing_contact_methods']): ?>
                 <div class="alert alert-warning py-2 small">
                     <i class="bi bi-exclamation-triangle me-1"></i>
-                    <strong>No contact method is configured.</strong>
-                    Tenants who want a different plan are shown the payment instructions if you have
-                    written any, and otherwise told to contact their administrator — with no address or
-                    number to use. Tick a method below and fill in its detail.
+                    Customers currently have no direct way to request a plan change.
+                    Select at least one contact method below.
                 </div>
             <?php endif; ?>
 
-            <label class="form-label">Methods tenants may use</label>
+            <label class="form-label">Methods customers may use</label>
             <div class="row g-3">
                 <div class="col-md-4">
                     <?php foreach (billingContactMethodChoices() as $code => $label): ?>
@@ -551,8 +548,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         </div>
                     <?php endforeach; ?>
                     <div class="form-text">
-                        Tick as many as you actually watch. Each becomes a button on every plan the
-                        tenant is not already on.
+                        Select every channel your team actively monitors. Each becomes a button on
+                        plans the customer is not already using.
                     </div>
                 </div>
                 <div class="col-md-8" id="salesContactDetails">
@@ -567,8 +564,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                   // plan buttons pointed at the SMTP sender address, which on most
                                   // instances is a no-reply mailbox nobody reads. ?>
                             <div class="form-text">
-                                A mailbox someone reads. It is never taken from your SMTP sender
-                                address, which is usually a no-reply mailbox.
+                                Use a monitored mailbox. This is kept separate from the SMTP sender
+                                address, which may be a no-reply address.
                             </div>
                             <?= sErr('billing_contact_email') ?>
                         </div>
@@ -614,7 +611,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     </div>
 
     <div class="sticky-save">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <button type="submit" class="btn btn-primary">Save settings</button>
     </div>
 </form>
 
@@ -630,9 +627,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="card-header d-flex justify-content-between align-items-center">
         <span>Lead search (SerpApi)</span>
         <?php if ($serpConfigured): ?>
-            <span class="badge bg-success">key stored</span>
+            <span class="badge bg-success">Key stored</span>
         <?php else: ?>
-            <span class="badge bg-secondary">not configured</span>
+            <span class="badge bg-secondary">Not configured</span>
         <?php endif; ?>
     </div>
     <form method="POST" data-ajax>

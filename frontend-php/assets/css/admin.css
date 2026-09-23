@@ -315,36 +315,758 @@
     border-left: 4px solid var(--admin-accent);
 }
 
+.overview-trend-card .trend-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.trend-stat {
+    display: flex;
+    flex-direction: column;
+    gap: .15rem;
+}
+.trend-label {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    font-weight: var(--fw-label);
+}
+.trend-value {
+    font-size: 1.6rem;
+    font-weight: var(--fw-title);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+.trend-comparison {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+.trend-legend {
+    display: inline-flex;
+    gap: 1rem;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+.trend-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+}
+.trend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+}
+.trend-swatch.is-messages {
+    background: var(--admin-accent);
+}
+.trend-swatch.is-ai {
+    background: #64748b;
+}
+.trend-chart {
+    display: block;
+    width: 100%;
+    min-height: 180px;
+}
+.trend-grid {
+    stroke: var(--border-color);
+    stroke-width: 1;
+}
+.trend-line {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.trend-line.is-messages {
+    stroke: var(--admin-accent);
+}
+.trend-line.is-ai {
+    stroke: #64748b;
+}
+.trend-axis {
+    display: flex;
+    justify-content: space-between;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    margin-top: .35rem;
+}
+
+.quota-row {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .55rem 0;
+    border-bottom: 1px solid var(--border-color);
+    text-decoration: none;
+    color: var(--text-primary);
+}
+.quota-row:last-child {
+    border-bottom: 0;
+}
+.quota-row:hover .quota-name {
+    color: var(--admin-accent);
+}
+.quota-tenant {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1 1 30%;
+}
+.quota-name {
+    font-weight: var(--fw-label);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.quota-plan {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+.quota-resource {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.quota-usage {
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+}
+.quota-bar {
+    flex: 1 1 20%;
+    height: 6px;
+    border-radius: 999px;
+    background: #eef2f7;
+    overflow: hidden;
+}
+.quota-fill {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--admin-accent);
+    max-width: 100%;
+}
+.quota-fill.is-full {
+    background: var(--admin-destructive);
+}
+.quota-pct {
+    font-weight: var(--fw-title);
+    font-size: var(--fs-sm);
+    min-width: 3ch;
+    text-align: right;
+}
+
+.insight-card .insight-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .9rem 1rem;
+    margin-bottom: 1rem;
+}
+.insight-metric {
+    display: flex;
+    flex-direction: column;
+    gap: .1rem;
+}
+.insight-value {
+    font-size: 1.35rem;
+    font-weight: var(--fw-title);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+}
+.insight-label {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+.insight-status {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    font-size: var(--fs-sm);
+    border-radius: var(--radius);
+    padding: .55rem .75rem;
+}
+.insight-status.is-ok {
+    background: #f0fdf4;
+    color: #166534;
+}
+.insight-status.is-warn {
+    background: #fffbeb;
+    color: #92400e;
+}
+.insight-status.is-danger {
+    background: var(--admin-accent-soft);
+    color: var(--admin-accent);
+}
+.insight-status.is-neutral {
+    background: #f8fafc;
+    color: var(--text-secondary);
+}
+.insight-list {
+    display: flex;
+    flex-direction: column;
+}
+.insight-row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .45rem 0;
+    border-bottom: 1px solid var(--border-color);
+    min-width: 0;
+}
+.insight-row:last-child {
+    border-bottom: 0;
+}
+.insight-row .small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.engagement-bar {
+    flex: 1 1 auto;
+    height: 6px;
+    border-radius: 999px;
+    background: #eef2f7;
+    overflow: hidden;
+}
+.engagement-fill {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--admin-accent);
+}
+.activity-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    flex: 0 0 26px;
+    border-radius: 8px;
+    background: var(--admin-accent-soft);
+    color: var(--admin-accent);
+    font-size: .8rem;
+}
+
+@media (max-width: 767.98px) {
+    .overview-trend-card .trend-summary,
+    .insight-card .insight-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .quota-row {
+        flex-wrap: wrap;
+        row-gap: .35rem;
+    }
+    .quota-bar {
+        flex-basis: 100%;
+        order: 5;
+    }
+}
+@media (max-width: 575.98px) {
+    .overview-trend-card .trend-summary {
+        grid-template-columns: 1fr;
+    }
+    .trend-chart {
+        min-height: 150px;
+    }
+    .quota-row {
+        flex-wrap: wrap;
+    }
+    .insight-row {
+        flex-wrap: wrap;
+        row-gap: .25rem;
+    }
+    .insight-row .ms-auto {
+        margin-left: 0 !important;
+    }
+}
+
+.webzeto-partner {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #1a1014 0%, #28151b 58%, #3b171d 100%);
+    border: 1px solid rgba(254, 202, 202, .24);
+    color: #fff;
+    box-shadow: 0 14px 36px rgba(15, 23, 42, .16);
+}
+.webzeto-partner::before {
+    content: "";
+    position: absolute;
+    top: -80px;
+    right: -60px;
+    width: 240px;
+    height: 240px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(185, 28, 28, .28), transparent 70%);
+    pointer-events: none;
+}
+.webzeto-partner-main {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 2rem;
+    padding: 1.75rem;
+}
+.webzeto-partner-copy {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+}
+.webzeto-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--admin-accent), var(--admin-accent-hover));
+    color: #fff;
+    font-size: 1.35rem;
+    font-weight: var(--fw-title);
+    box-shadow: 0 6px 16px rgba(185, 28, 28, .4);
+}
+.webzeto-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    color: #fecaca;
+    font-size: .7rem;
+    font-weight: var(--fw-title);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin-bottom: .35rem;
+}
+.webzeto-partner h2 {
+    margin: 0 0 .5rem;
+    font-size: 1.5rem;
+    font-weight: var(--fw-title);
+}
+.webzeto-partner h2 a {
+    color: #fff;
+    text-decoration: none;
+}
+.webzeto-partner h2 a:hover,
+.webzeto-partner h2 a:focus-visible {
+    text-decoration: underline;
+}
+.webzeto-partner p {
+    margin: 0;
+    max-width: 720px;
+    color: rgba(255, 255, 255, .72);
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+}
+.webzeto-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: .5rem;
+}
+.webzeto-action {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    min-height: 40px;
+    padding: .6rem .85rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, .22);
+    background: rgba(255, 255, 255, .08);
+    color: #fff;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-title);
+    text-decoration: none;
+    transition: background-color .15s ease, transform .15s ease, border-color .15s ease;
+}
+.webzeto-action:hover,
+.webzeto-action:focus-visible {
+    background: rgba(255, 255, 255, .14);
+    color: #fff;
+    transform: translateY(-1px);
+}
+.webzeto-action:focus-visible {
+    box-shadow: 0 0 0 3px rgba(185, 28, 28, .5);
+    outline: none;
+}
+.webzeto-action-primary {
+    background: var(--admin-accent);
+    border-color: var(--admin-accent);
+}
+.webzeto-action-primary:hover,
+.webzeto-action-primary:focus-visible {
+    background: var(--admin-accent-hover);
+    border-color: var(--admin-accent-hover);
+}
+.webzeto-contact-strip {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    padding: .85rem 1.75rem;
+    border-top: 1px solid rgba(255, 255, 255, .1);
+    background: rgba(0, 0, 0, .14);
+    color: rgba(255, 255, 255, .7);
+    font-size: var(--fs-xs);
+}
+.webzeto-contact-strip > a,
+.webzeto-contact-strip > span {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+}
+.webzeto-contact-strip > a {
+    color: inherit;
+    text-decoration: none;
+}
+.webzeto-contact-strip > a:hover,
+.webzeto-contact-strip > a:focus-visible {
+    color: #fff;
+}
+@media (max-width: 991.98px) {
+    .webzeto-partner-main {
+        grid-template-columns: 1fr;
+    }
+    .webzeto-actions {
+        justify-content: flex-start;
+    }
+}
+@media (max-width: 575.98px) {
+    .webzeto-partner-main {
+        padding: 1.25rem;
+        gap: 1.25rem;
+    }
+    .webzeto-partner-copy {
+        align-items: flex-start;
+    }
+    .webzeto-mark {
+        width: 44px;
+        height: 44px;
+        flex-basis: 44px;
+        font-size: 1.15rem;
+    }
+    .webzeto-partner h2 {
+        font-size: 1.3rem;
+    }
+    .webzeto-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+    }
+    .webzeto-action {
+        justify-content: center;
+        width: 100%;
+    }
+    .webzeto-contact-strip {
+        display: grid;
+        gap: .65rem;
+        padding: 1rem 1.25rem;
+    }
+    .webzeto-contact-strip > a,
+    .webzeto-contact-strip > span {
+        align-items: flex-start;
+    }
+}
+
 /* Plans as cards. The 11-column table hid everything past "Contacts" on a
  * phone and overflowed its own card at desktop width; a card per plan keeps
  * every limit visible at any width. */
+.admin-console .plan-card {
+    position: relative;
+    overflow: hidden;
+    border-color: #dbe3ee;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, .06);
+    transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+    .admin-console .plan-card:hover {
+        transform: translateY(-2px);
+        border-color: #cbd5e1;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, .09);
+    }
+}
+.admin-console .plan-card.is-default::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--admin-accent);
+}
+.admin-console .plan-card.is-default.is-inactive::before {
+    background: #94a3b8;
+}
+.admin-console .plan-card-main {
+    padding: 1.25rem;
+    gap: 1rem;
+}
+.admin-console .plan-card-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+}
+.admin-console .plan-name {
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-title);
+}
+.admin-console .plan-code {
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: .25rem .45rem;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.admin-console .plan-state {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    font-size: .7rem;
+    font-weight: var(--fw-title);
+    border-radius: 999px;
+    padding: .15rem .55rem;
+}
+.admin-console .plan-state-default {
+    background: var(--admin-accent-soft);
+    color: var(--admin-accent);
+    border: 1px solid var(--admin-accent-border);
+}
+.admin-console .plan-state-inactive {
+    background: #f1f5f9;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+.admin-console .plan-price-line {
+    display: flex;
+    align-items: baseline;
+    gap: .35rem;
+}
 .admin-console .plan-card .plan-price {
-    font-size: 1.5rem;
+    font-size: 1.75rem;
     font-weight: var(--fw-title);
     font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+.admin-console .plan-price-period {
+    font-size: .875rem;
+    color: var(--text-secondary);
+    font-weight: var(--fw-label);
+}
+.admin-console .plan-description {
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    min-height: 2.9em;
+}
+.admin-console .plan-description.is-empty {
+    font-style: italic;
+    opacity: .65;
+}
+.admin-console .plan-limit-panel {
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 1rem;
+}
+.admin-console .plan-panel-label {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .68rem;
+    font-weight: var(--fw-title);
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--text-secondary);
+    margin-bottom: .5rem;
 }
 .admin-console .plan-limits {
     display: grid;
     grid-template-columns: auto 1fr;
     column-gap: var(--space-4);
-    row-gap: 2px;
+    row-gap: 5px;
     font-size: var(--fs-sm);
     margin: 0;
 }
 .admin-console .plan-limits dt {
     color: var(--text-secondary);
-    font-weight: var(--fw-label);
+    font-weight: normal;
 }
 .admin-console .plan-limits dd {
     margin: 0;
     text-align: right;
+    font-weight: var(--fw-label);
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
 }
-/* An inactive plan is de-emphasised through its content only: dimming the
- * whole card dims the Enable button, which is the one thing on the card that
- * must stay obvious. */
-.admin-console .plan-card.is-inactive .plan-card-main {
-    opacity: 0.55;
+.admin-console .plan-feature-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .375rem;
+}
+.admin-console .plan-feature-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .25rem;
+    padding: .3rem .5rem;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-label);
+    border: 1px solid var(--admin-accent-border);
+    background: var(--admin-accent-soft);
+    color: #7f1d1d;
+    border-radius: 999px;
+}
+.admin-console .plan-no-features {
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    font-style: italic;
+}
+.admin-console .plan-card-footer {
+    background: #f8fafc;
+    padding: .75rem 1rem;
+    border-top: 1px solid var(--border-color);
+}
+.admin-console .plan-tenant-count {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: .2rem .6rem;
+}
+.admin-console .plan-card-action {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+}
+/* An inactive plan keeps its content readable — only the card's surface and
+ * border are neutralised, so the Enable button stays obvious. */
+.admin-console .plan-card.is-inactive {
+    border-color: #cbd5e1;
+    border-style: dashed;
+    background: #fafbfc;
+}
+
+/* Plan editor (#planModal): the flat row of 20+ fields with <hr> separators
+ * read as one undifferentiated wall, so the form is grouped into section
+ * cards with an icon, title and hint, and the feature/model grants become
+ * selectable cards that light up when checked — all CSS only, the markup and
+ * POST names are unchanged. */
+#planModal .modal-dialog {
+    max-width: 1040px;
+}
+#planModal .modal-header {
+    border-bottom: 0;
+    padding: 1.25rem 1.5rem;
+    background: linear-gradient(135deg, var(--admin-accent-soft), #fff 72%);
+}
+#planModal .modal-title {
+    font-weight: var(--fw-title);
+}
+#planModal .modal-body {
+    padding: 1.5rem;
+    background: #f8fafc;
+}
+.plan-editor-form {
+    display: grid;
+    gap: 1rem;
+}
+.plan-form-section {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
+.plan-form-section-head {
+    display: flex;
+    align-items: center;
+    gap: .875rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.plan-form-section-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+    border-radius: 10px;
+    background: var(--admin-accent-soft);
+    color: var(--admin-accent);
+    font-size: 1.05rem;
+}
+.plan-form-section-head h6 {
+    margin: 0;
+    font-weight: var(--fw-title);
+}
+.plan-form-section-head p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+}
+.plan-form-section-body {
+    padding: 1.25rem;
+}
+/* Feature switches and model grants render as cards: the checked state
+ * recolours the card via :has(), and :focus-within keeps keyboard focus
+ * visible on the card itself. */
+.plan-option-card {
+    height: 100%;
+    min-height: 82px;
+    padding: 1rem 1rem 1rem 3.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--card-bg);
+    transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+}
+.plan-option-card .form-check-input {
+    margin-left: -2.25rem;
+}
+.plan-option-card:hover {
+    border-color: var(--admin-accent-border);
+}
+.plan-option-card:has(.form-check-input:checked) {
+    border-color: var(--admin-accent);
+    background: var(--admin-accent-soft);
+}
+.plan-option-card:focus-within {
+    border-color: var(--admin-accent);
+    box-shadow: var(--focus-ring);
+}
+.plan-model-card {
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+}
+/* Active toggle + submit ride the bottom of the scrollable modal body so the
+ * save action is reachable without scrolling past the limits and models. */
+.plan-form-actions {
+    position: sticky;
+    bottom: -1.5rem;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: #fff;
+    border-top: 1px solid var(--border-color);
+    box-shadow: 0 -4px 12px rgba(15, 23, 42, .06);
+    padding: 1rem 1.25rem;
+    margin: 0 -1.5rem -1.5rem;
+}
+.plan-form-actions .btn {
+    min-width: 132px;
 }
 
 /* On a phone-width viewport a promoted modal is a tall floating dialog with
@@ -371,6 +1093,44 @@
         top: 0;
         z-index: 2;
         background: var(--card-bg);
+    }
+    #planModal .modal-header {
+        padding: 1rem;
+    }
+    #planModal .modal-body {
+        padding: 1rem;
+        background: #f8fafc;
+    }
+    .plan-form-section {
+        border-radius: 12px;
+    }
+    .plan-form-section-head,
+    .plan-form-section-body {
+        padding: 1rem;
+    }
+    .plan-form-actions {
+        bottom: -1rem;
+        margin: 0 -1rem -1rem;
+    }
+    .admin-console .plan-card-main {
+        padding: 1rem;
+    }
+    .admin-console .plan-card .plan-price {
+        font-size: 1.55rem;
+    }
+    .admin-console .plan-description {
+        min-height: 0;
+    }
+    .admin-console .plan-card-footer {
+        align-items: center;
+    }
+}
+@media (max-width: 420px) {
+    .plan-form-actions {
+        flex-wrap: wrap;
+    }
+    .plan-form-actions .btn {
+        flex: 1 1 auto;
     }
 }
 

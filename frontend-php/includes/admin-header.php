@@ -60,7 +60,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                     <i class="bi bi-speedometer2"></i><span>Overview</span>
                 </a>
                 <a href="<?= APP_URL ?>/admin/tenants.php" class="nav-link-item <?= in_array($currentPage, ['tenants', 'tenant'], true) ? 'active' : '' ?>">
-                    <i class="bi bi-people"></i><span>Tenants</span>
+                    <i class="bi bi-people"></i><span>Customers</span>
                 </a>
                 <a href="<?= APP_URL ?>/admin/plans.php" class="nav-link-item <?= $currentPage === 'plans' ? 'active' : '' ?>">
                     <i class="bi bi-box-seam"></i><span>Plans</span>
@@ -87,16 +87,16 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
                     <i class="bi bi-envelope-at"></i><span>Email / SMTP</span>
                 </a>
                 <a href="<?= APP_URL ?>/admin/llm.php" class="nav-link-item <?= $currentPage === 'llm' ? 'active' : '' ?>">
-                    <i class="bi bi-robot"></i><span>AI / LLM</span>
+                    <i class="bi bi-robot"></i><span>AI &amp; models</span>
                 </a>
                 <a href="<?= APP_URL ?>/admin/system.php" class="nav-link-item <?= $currentPage === 'system' ? 'active' : '' ?>">
-                    <i class="bi bi-activity"></i><span>System &amp; Audit</span>
+                    <i class="bi bi-activity"></i><span>System &amp; audit</span>
                 </a>
             </div>
             <div class="nav-section">
                 <span class="nav-section-title">Your account</span>
                 <a href="<?= APP_URL ?>/dashboard.php" class="nav-link-item">
-                    <i class="bi bi-box-arrow-left"></i><span>Exit to app</span>
+                    <i class="bi bi-box-arrow-left"></i><span>Back to app</span>
                 </a>
             </div>
         </nav>
@@ -122,7 +122,7 @@ $brandFavicon = brandFaviconUrl($conn ?? null);
             </div>
             <div class="d-flex align-items-center gap-3">
                 <a href="<?= APP_URL ?>/logout.php" class="btn btn-sm btn-link text-secondary text-decoration-none">
-                    <i class="bi bi-box-arrow-right me-1"></i>Logout
+                    <i class="bi bi-box-arrow-right me-1"></i>Log out
                 </a>
             </div>
         </nav>

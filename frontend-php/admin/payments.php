@@ -46,7 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($failed > 0) {
             formRespond(false, "Sent {$sent}, failed {$failed}. Check Email / SMTP settings.", $self);
         }
-        formRespond(true, "Sent {$sent} renewal reminder(s).", $self);
+        formRespond(true, "Sent {$sent} renewal " . ((int)$sent === 1 ? "reminder." : "reminders."), $self);
     }
 
     $userId = (int)($_POST['user_id'] ?? 0);
@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt = $conn->prepare("SELECT id FROM users WHERE id = ?");
     $stmt->bind_param('i', $userId);
     $stmt->execute();
-    if ($stmt->get_result()->num_rows === 0) $errors['user_id'] = 'Select a tenant.';
+    if ($stmt->get_result()->num_rows === 0) $errors['user_id'] = 'Select a customer.';
     $stmt->close();
 
     if (!isValidCurrency($currency) || !array_key_exists($currency, currencyFormats())) {
@@ -166,7 +166,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
               // the page needs a way back to it. The href is the same anchor the
               // lapsing list uses, which is the plain page with the form on it. ?>
         <a href="<?= APP_URL ?>/admin/payments.php#logForm" class="btn btn-sm btn-primary"
-           data-modal-target="#paymentModal" data-modal-title="Log a Payment">
+           data-modal-target="#paymentModal" data-modal-title="Log a payment">
             <i class="bi bi-plus-lg me-1"></i>Log a payment
         </a>
     </div>
@@ -189,7 +189,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 <?php endif; ?>
                 <div class="kpi-label">Received this month</div>
                 <div class="kpi-sub">
-                    <?= $totals ? (int)array_sum(array_column($totals, 'payments')) : 0 ?> payment(s)
+                    <?php $payCount = $totals ? (int)array_sum(array_column($totals, 'payments')) : 0; ?><?= $payCount ?> <?= $payCount === 1 ? 'payment' : 'payments' ?>
                 </div>
             </div>
         </div>
@@ -197,7 +197,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="col-lg-6">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Needs Attention</span>
+                <span>Needs attention</span>
                 <?php if ($lapsing): ?>
                     <form method="POST" data-ajax>
                         <?= csrfField() ?>
@@ -206,7 +206,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                         <?php // Confirmed because it leaves the instance and cannot be recalled:
                               // one press sends real email to every lapsing tenant. ?>
                         <button class="btn btn-sm btn-outline-primary"
-                                data-confirm="Email a renewal reminder to all <?= count($lapsing) ?> tenant(s)?"
+                                data-confirm="Email a renewal reminder to <?= count($lapsing) === 1 ? 'this customer' : 'all ' . count($lapsing) . ' customers' ?>?"
                             <?= smtpConfigured($conn) ? '' : 'disabled title="Configure SMTP first"' ?>>
                             <i class="bi bi-envelope me-1"></i>Remind all
                         </button>
@@ -250,18 +250,18 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
       //
       // No data-modal-url fragment here, unlike the plan editor: this form only
       // ever creates, so there is nothing per-row for the server to populate. ?>
-<div class="card mb-4" id="logForm" data-modal-shell="paymentModal" data-modal-title="Log a Payment"
+<div class="card mb-4" id="logForm" data-modal-shell="paymentModal" data-modal-title="Log a payment"
      <?= $openLogForm ? 'data-modal-open="1"' : '' ?>>
-    <div class="card-header">Log a Payment</div>
+    <div class="card-header">Log a payment</div>
     <div class="card-body">
         <form method="POST" data-ajax>
             <?= csrfField() ?>
-            <h6 class="fw-600 mb-3">Tenant &amp; plan</h6>
+            <h6 class="fw-600 mb-3">Customer &amp; plan</h6>
             <div class="row g-3">
                 <div class="col-md-5">
-                    <label class="form-label">Tenant <span class="text-danger">*</span></label>
+                    <label class="form-label">Customer <span class="text-danger">*</span></label>
                     <select name="user_id" class="form-select<?= yCls('user_id') ?>" required>
-                        <option value="">— Select tenant —</option>
+                        <option value="">— Select customer —</option>
                         <?php foreach ($tenants as $t): ?>
                             <option value="<?= (int)$t['id'] ?>" <?= $prefillUser === (int)$t['id'] ? 'selected' : '' ?>>
                                 <?= sanitize($t['name']) ?> (<?= sanitize($t['email']) ?>)
@@ -332,20 +332,21 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <div class="form-check form-switch mt-3 mb-3">
                 <input class="form-check-input" type="checkbox" name="apply_to_plan" id="applyToPlan" checked>
                 <label class="form-check-label" for="applyToPlan">
-                    Move the tenant onto this plan and extend their period to the end date
+                    Apply this plan and billing period to the customer
                 </label>
                 <div class="form-text">
-                    Turn off when back-filling a historical payment — otherwise it would move a live period.
+                    Turn this off when recording a past payment without changing the customer’s
+                    current plan or billing period.
                 </div>
             </div>
 
             <hr class="my-4">
-            <h6 class="fw-600 mb-3">Reference</h6>
+            <h6 class="fw-600 mb-3">Payment details</h6>
             <div class="row g-3">
                 <div class="col-md-6">
                     <label class="form-label">Reference</label>
                     <input type="text" name="reference" class="form-control<?= yCls('reference') ?>"
-                           maxlength="120" placeholder="Transaction id / cheque no.">
+                           maxlength="120" placeholder="Transaction ID or cheque number">
                     <?= yErr('reference') ?>
                 </div>
                 <div class="col-md-6">
@@ -355,18 +356,18 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </div>
             </div>
 
-            <button type="submit" class="btn btn-primary">Log Payment</button>
+            <button type="submit" class="btn btn-primary">Log payment</button>
         </form>
     </div>
 </div>
 
 <div class="card table-card">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <span>Payment History</span>
+        <span>Payment history</span>
         <div class="d-flex gap-2 align-items-center flex-wrap">
             <form method="GET" class="d-flex gap-2">
                 <input type="search" name="q" class="form-control form-control-sm" style="width:220px"
-                       placeholder="Tenant or reference" value="<?= sanitize($search) ?>">
+                       placeholder="Customer or reference" value="<?= sanitize($search) ?>">
                 <button class="btn btn-sm btn-outline-secondary">Search</button>
                 <?php if ($search !== ''): ?>
                     <a href="<?= APP_URL ?>/admin/payments.php" class="btn btn-sm btn-link">Clear</a>
@@ -377,7 +378,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
     <div class="table-responsive">
         <table class="table align-middle mb-0 table-stack">
             <thead>
-                <tr><th>Date</th><th>Tenant</th><th>Amount</th><th>Plan</th><th>Period</th><th>Method</th><th>Reference</th><th>Logged by</th></tr>
+                <tr><th>Date</th><th>Customer</th><th>Amount</th><th>Plan</th><th>Period</th><th>Method</th><th>Reference</th><th>Logged by</th></tr>
             </thead>
             <tbody>
             <?php if (!$payments): ?>
@@ -386,7 +387,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
             <?php foreach ($payments as $p): ?>
                 <tr>
                     <td class="small text-muted" data-label="Date"><?= sanitize(date('M j, Y', strtotime($p['created_at']))) ?></td>
-                    <td class="small" data-label="Tenant">
+                    <td class="small" data-label="Customer">
                         <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$p['user_id'] ?>" class="text-decoration-none">
                             <?= sanitize($p['tenant_name']) ?>
                         </a>
