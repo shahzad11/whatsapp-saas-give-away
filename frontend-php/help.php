@@ -79,7 +79,7 @@ require_once __DIR__ . '/includes/header.php';
                 Either way you land on the <a href="<?= APP_URL ?>/dashboard.php">Dashboard</a>.
                 Until everything is set up it shows a <strong>Getting started</strong> checklist —
                 each step links to the page that completes it, and you can hide the card any time.
-                Below it, four tiles summarise today: connected accounts, messages this month,
+                Below it, four tiles summarise your account: connected accounts, messages this month,
                 live chats waiting for a human, and upcoming appointments. If something needs
                 attention — a disconnected number or a waiting customer — a banner tells you and
                 links to the fix.
@@ -95,8 +95,8 @@ require_once __DIR__ . '/includes/header.php';
             <ol class="help-steps">
                 <li>Go to <a href="<?= APP_URL ?>/whatsapp/accounts.php">Accounts</a> and click <strong>Link account</strong>.</li>
                 <li>Give it a label like <em>Sales</em> or <em>Support</em> (optional, helps later), then click <strong>Generate QR code</strong>.</li>
-                <li>On the phone that holds that WhatsApp number, open <strong>WhatsApp → Settings → Linked Devices → Link a Device</strong>.</li>
-                <li>Point the camera at the QR code on screen. The badge flips to <strong>Connected</strong> when it pairs.</li>
+                <li>On the phone that holds that WhatsApp number, open <strong>WhatsApp → Settings → Linked Devices → Link a Device</strong> — this uses WhatsApp's own <a href="https://faq.whatsapp.com/1317564962315842/?cms_platform=android" target="_blank" rel="noopener noreferrer">linked devices</a> feature, the same way WhatsApp Web works.</li>
+                <li>Point the camera at the QR code on screen — only ever scan a QR code you just generated yourself, never one someone sends you. The badge flips to <strong>Connected</strong> when it pairs.</li>
             </ol>
             <?php helpFigure('link-account.png',
                 'Link a New WhatsApp Account form with an optional Account Label field and a Generate QR code button.',
@@ -106,7 +106,7 @@ require_once __DIR__ . '/includes/header.php';
                 'Accounts before the first link. Once linked, every number appears here with its status — a dropped connection can be fixed with <strong>Re-link</strong>, which keeps your chat history. <a href="' . APP_URL . '/whatsapp/accounts.php">Open accounts</a>'); ?>
             <div class="help-note">
                 <i class="bi bi-info-circle"></i>
-                <div>QR links stay paired until you remove them here or unlink the device on the phone. <strong>Remove</strong> deletes the account's chats from the dashboard — use <strong>Re-link</strong> instead if you only need to reconnect.</div>
+                <div>QR links stay paired until you remove them here or unlink the device on the phone. <strong>Remove</strong> deletes the account's chats from the dashboard — use <strong>Re-link</strong> instead if you only need to reconnect. This QR pairing is separate from Meta's official Cloud API in the next section — you do not need both.</div>
             </div>
         </section>
 
@@ -119,12 +119,23 @@ require_once __DIR__ . '/includes/header.php';
                 <a href="<?= APP_URL ?>/billing.php">Billing &amp; Usage</a> lists plans that do.
             </p>
             <ol class="help-steps">
-                <li>In <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">Meta for Developers</a>, create an app with the <strong>Connect with customers through WhatsApp</strong> use case.</li>
-                <li>Copy the <strong>Phone number id</strong> (under "From" on API Setup) and, optionally, the <strong>WhatsApp Business Account id</strong>.</li>
-                <li>Create a permanent <strong>System User access token</strong> and copy your <strong>App secret</strong> (App settings → Basic).</li>
+                <li>In <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer">Meta for Developers — My apps</a>, create an app with the <strong>Connect with customers through WhatsApp</strong> use case.</li>
+                <li>Copy the <strong>Phone number id</strong> (under "From" on API Setup) — this is a numeric ID Meta assigns, not your public phone number — and, optionally, the <strong>WhatsApp Business Account id</strong>.</li>
+                <li>In <a href="https://business.facebook.com/latest/settings" target="_blank" rel="noopener noreferrer">Meta Business settings</a>, create a <strong>System user</strong>, grant it access to the WhatsApp assets, and generate a token with the WhatsApp permissions. Use that token — the short-lived token on the API Setup page expires. Also copy your <strong>App secret</strong> (App settings → Basic) and keep it private.</li>
                 <li>Paste them into <a href="<?= APP_URL ?>/whatsapp/connect-cloud.php">Connect Cloud API</a> and click <strong>Verify and connect</strong> — the details are checked with Meta before anything is saved, and the token is stored encrypted and never shown again.</li>
-                <li>On the saved connection, copy the <strong>Callback URL</strong> and <strong>Verify token</strong> into your Meta app's webhook settings and subscribe to <strong>messages</strong>.</li>
+                <li>After the connection saves here, copy the <strong>Callback URL</strong> and <strong>Verify token</strong> it shows into your Meta app's webhook settings and subscribe to <strong>messages</strong> — replies cannot arrive until Meta has both values.</li>
             </ol>
+            <div class="help-note">
+                <i class="bi bi-info-circle"></i>
+                <div>
+                    <ul class="help-steps">
+                        <li>While your Meta app is in development mode it can only message test numbers you register; reaching customers requires going live, which may involve Meta's approval and display-number requirements — check Meta's console for what yours needs.</li>
+                        <li>Meta enforces a 24-hour service window: free-form replies only work within 24 hours of the customer's last message, after which approved templates are required.</li>
+                        <li>Meta bills Cloud API usage separately from your plan here — non-template replies inside the 24-hour window are free, while template charges depend on category, recipient country and service-window rules; see <a href="https://developers.facebook.com/docs/whatsapp/pricing/updates-to-pricing/" target="_blank" rel="noopener noreferrer">Meta's pricing documentation</a>.</li>
+                        <li>If a key is ever exposed, rotate it in Meta first, then update it here — never paste tokens into chats or emails.</li>
+                    </ul>
+                </div>
+            </div>
             <?php helpFigure('connect-cloud.png',
                 'Connect Cloud API form with fields for label, phone number id, WhatsApp Business Account id, access token and app secret.',
                 'The Cloud API form — the right-hand panel explains where each value is found in Meta. <a href="' . APP_URL . '/whatsapp/connect-cloud.php">Open Cloud API setup</a>'); ?>
@@ -173,10 +184,19 @@ require_once __DIR__ . '/includes/header.php';
 
             <h4 class="help-sub">Model</h4>
             <ol class="help-steps">
-                <li>Open the <a href="<?= APP_URL ?>/settings.php#tab-model">Model</a> tab and pick a model.</li>
-                <li>Optionally enter your own provider and API key — usage is then billed to you, and the key is stored securely and never shown again.</li>
+                <li>Open the <a href="<?= APP_URL ?>/settings.php#tab-model">Model</a> tab and pick a model — models granted by your administrator need no key from you.</li>
+                <li>If your plan allows bring-your-own keys you can instead enter your own provider, API key and the exact <strong>Model id</strong> the vendor uses; usage is then billed directly by that provider, and the key is stored securely and never shown again.</li>
                 <li>Click <strong>Save settings</strong>.</li>
             </ol>
+            <p>
+                API keys are created on each provider's own dashboard — model IDs and billing are
+                vendor-specific, and key or billing questions belong on the provider's console:
+            </p>
+            <ul class="help-steps">
+                <?php foreach (llmProviderCatalogue() as $prov): ?>
+                <li><strong><?= sanitize($prov['label']) ?></strong> — <a href="<?= sanitize($prov['console_url']) ?>" target="_blank" rel="noopener noreferrer"><?= sanitize(ltrim(parse_url($prov['console_url'], PHP_URL_HOST) . parse_url($prov['console_url'], PHP_URL_PATH), '/')) ?></a></li>
+                <?php endforeach; ?>
+            </ul>
             <?php helpFigure('settings-model.png',
                 'Bot settings Model tab with the model selector and the optional bring-your-own API key fields.',
                 '<a href="' . APP_URL . '/settings.php#tab-model">Open the Model tab</a>'); ?>
@@ -208,7 +228,7 @@ require_once __DIR__ . '/includes/header.php';
                 <li>Open the <a href="<?= APP_URL ?>/settings.php#tab-handoff">Handover</a> tab.</li>
                 <li>List the trigger phrases that should pass a chat to a human.</li>
                 <li>Write what the customer is told, and optionally what they are told when you resolve the chat.</li>
-                <li>Add a WhatsApp number or email to be notified, then click <strong>Save settings</strong>.</li>
+                <li>Add a WhatsApp number or email to be notified, then click <strong>Save settings</strong>. Email notifications only work if your administrator has configured sending email — if unsure, use a WhatsApp number or ask them.</li>
             </ol>
             <?php helpFigure('settings-handoff.png',
                 'Bot settings Handover tab with trigger phrases, customer-facing messages and WhatsApp or email notification fields.',
@@ -265,8 +285,8 @@ require_once __DIR__ . '/includes/header.php';
             <ol class="help-steps">
                 <li>Open <a href="<?= APP_URL ?>/billing.php">Billing &amp; Usage</a> — the first card shows your current plan and renewal.</li>
                 <li>Check <strong>Usage this month</strong>: messages, AI replies and accounts against your plan's limits.</li>
-                <li>If shown for your account, <strong>How to pay</strong> and <strong>Payment history</strong> cover invoices and receipts.</li>
-                <li>Compare the available plans below. If an upgrade is offered, use its contact button to request it; there is no automatic checkout. Any quota wall or locked feature elsewhere links here.</li>
+                <li>If shown for your account, follow the <strong>How to pay</strong> instructions exactly as your administrator wrote them — payments are made manually, there is no checkout here. <strong>Payment history</strong> lists the payments logged on your account; it is not a source of invoices or receipts.</li>
+                <li>Compare the available plans below. If an upgrade is offered, its contact button opens the email, WhatsApp or phone channel your administrator configured — write and send the request yourself; the administrator then applies the plan change manually. Any quota wall or locked feature elsewhere links here.</li>
             </ol>
             <?php helpFigure('billing.png',
                 'Billing and Usage page for a demo tenant with a Pro plan card, zero usage meters and no available upgrade.',
@@ -295,6 +315,9 @@ require_once __DIR__ . '/includes/header.php';
                 <li><strong>The bot gives wrong answers</strong> — update the <a href="<?= APP_URL ?>/settings.php#tab-kb">Knowledge base</a>, save, then check it in the <a href="<?= APP_URL ?>/settings.php#tab-test">Test</a> tab.</li>
                 <li><strong>Customers ask for a person and nothing happens</strong> — add that phrase under <a href="<?= APP_URL ?>/settings.php#tab-handoff">Handover triggers</a> and set a notification number or email.</li>
                 <li><strong>A feature says "not included in your plan"</strong> — it is plan-gated; <a href="<?= APP_URL ?>/billing.php">Billing &amp; Usage</a> shows which plans include it.</li>
+                <li><strong>No models are available in the Model tab</strong> — your administrator grants models to your plan; ask them to enable one for you.</li>
+                <li><strong>Cloud API connection fails to verify or messages do not arrive</strong> — check the token, phone number id and webhook values in your <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer">Meta app</a> first, then correct them on the <a href="<?= APP_URL ?>/whatsapp/connect-cloud.php">Connect Cloud API</a> form.</li>
+                <li><strong>Handover emails are not arriving</strong> — email sending depends on the administrator's mail setup; switch the notification to a WhatsApp number or ask them to check it.</li>
             </ul>
         </section>
 
