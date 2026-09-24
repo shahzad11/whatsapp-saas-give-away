@@ -256,6 +256,155 @@ function llmTranscribeCandidates(mysqli $conn, $onlyEnabled = false) {
     ));
 }
 
+// --- Vendor model lists -------------------------------------------------------
+
+// Turns one provider's /models response into a uniform id/label/kind list for
+// the add-model picker. Each vendor's response shape and its junk (embeddings,
+// image models, legacy completions) are filtered here so the page never has
+// to know which provider answered. Deduped by id, sorted by id, capped at 200.
+function llmNormalizeVendorModels(string $providerCode, $body): array {
+    if (!is_array($body)) return [];
+
+    $catalogueLabels = [];
+    foreach (llmProviderCatalogue()[$providerCode]['models'] ?? [] as [$id, $label, $kind]) {
+        $catalogueLabels[$id] = $label;
+    }
+
+    $out = [];
+    $add = function ($id, $label, $kind) use (&$out) {
+        $id = trim((string)$id);
+        if ($id === '' || isset($out[$id])) return;
+        $out[$id] = [
+            'id'    => $id,
+            'label' => trim((string)$label) !== '' ? trim((string)$label) : $id,
+            'kind'  => $kind === 'transcribe' ? 'transcribe' : 'chat',
+        ];
+    };
+
+    switch ($providerCode) {
+        case 'fenllm':
+            foreach ($body['data'] ?? [] as $m) {
+                $id = $m['id'] ?? '';
+                $add($id, $catalogueLabels[$id] ?? 'FenLLM ' . ucfirst((string)$id), 'chat');
+            }
+            break;
+
+        case 'openai':
+            // The list endpoint returns everything the account can see —
+            // embeddings, image, moderation, realtime — most of which can
+            // never answer a chat. The keep-pattern names the families that
+            // can; the drop-words strip their specialised siblings.
+            $drop = '/embedding|tts|dall-e|image|moderation|realtime|audio|search|computer-use|instruct|davinci|babbage/i';
+            foreach ($body['data'] ?? [] as $m) {
+                $id = (string)($m['id'] ?? '');
+                if (!preg_match('/^(gpt-|chatgpt-|o[0-9]|whisper)/', $id)) continue;
+                if (preg_match($drop, $id)) continue;
+                $kind = (str_contains($id, 'whisper') || str_contains($id, 'transcribe')) ? 'transcribe' : 'chat';
+                $add($id, $catalogueLabels[$id] ?? llmPrettifyModelId($id), $kind);
+            }
+            break;
+
+        case 'anthropic':
+            foreach ($body['data'] ?? [] as $m) {
+                $add($m['id'] ?? '', $m['display_name'] ?? '', 'chat');
+            }
+            break;
+
+        case 'google':
+            // Gemini's list uses resource names ('models/gemini-2.5-pro') and
+            // mixes in models that cannot generate content.
+            foreach ($body['models'] ?? [] as $m) {
+                if (!in_array('generateContent', $m['supportedGenerationMethods'] ?? [], true)) continue;
+                $id = preg_replace('/^models\//', '', (string)($m['name'] ?? ''));
+                if (!str_starts_with($id, 'gemini')) continue;
+                $add($id, $m['displayName'] ?? '', 'chat');
+            }
+            break;
+
+        default:
+            return [];
+    }
+
+    $list = array_values($out);
+    usort($list, function ($a, $b) { return strcmp($a['id'], $b['id']); });
+    return array_slice($list, 0, 200);
+}
+
+// 'gpt-4.1-mini' → 'GPT-4.1 mini'. Deterministic, no vendor knowledge: the GPT
+// prefix is uppercased and keeps its hyphen before the version, the rest is
+// spaced. Non-gpt ids just get spaced and a capital letter.
+function llmPrettifyModelId(string $id): string {
+    if (str_starts_with($id, 'gpt-')) {
+        return 'GPT-' . str_replace('-', ' ', substr($id, 4));
+    }
+    return ucfirst(str_replace('-', ' ', $id));
+}
+
+// The catalogue's own models in the picker's shape — the fallback shown when
+// the vendor cannot be asked.
+function llmCatalogueModelsFor(string $providerCode): array {
+    $out = [];
+    foreach (llmProviderCatalogue()[$providerCode]['models'] ?? [] as [$id, $label, $kind]) {
+        $out[] = ['id' => $id, 'label' => $label, 'kind' => $kind];
+    }
+    return $out;
+}
+
+// The list the add-model picker shows: live from the vendor when a key exists
+// and the call succeeds (cached for ten minutes so reopening the form does not
+// re-poll), the built-in catalogue otherwise, with a note saying which.
+function llmVendorModelList(mysqli $conn, array $providerRow): array {
+    $code = (string)($providerRow['code'] ?? '');
+    $label = llmProviderLabel($code);
+    $catalogue = ['source' => 'catalogue', 'note' => null, 'models' => llmCatalogueModelsFor($code)];
+
+    if (!llmProviderHasKey($providerRow)) {
+        $catalogue['note'] = "Add and save an API key to load the full list from {$label}.";
+        return $catalogue;
+    }
+    $key = llmProviderKey($providerRow);
+    if ($key === null) {
+        $catalogue['note'] = "Add and save an API key to load the full list from {$label}.";
+        return $catalogue;
+    }
+
+    $cached = json_decode((string)(overrideSetting($conn, 'llm_vendor_models_' . $code) ?? ''), true);
+    if (is_array($cached) && ($cached['at'] ?? 0) > time() - 600 && is_array($cached['models'] ?? null)) {
+        return ['source' => 'live', 'note' => null, 'models' => $cached['models']];
+    }
+
+    $base = llmProviderBaseUrl($providerRow);
+    switch ($code) {
+        case 'fenllm':
+        case 'openai':
+            $url = $base . '/models';
+            $headers = ['Authorization: Bearer ' . $key];
+            break;
+        case 'anthropic':
+            $url = $base . '/models?limit=1000';
+            $headers = ['x-api-key: ' . $key, 'anthropic-version: 2023-06-01'];
+            break;
+        case 'google':
+            $url = $base . '/models?pageSize=1000&key=' . rawurlencode($key);
+            $headers = [];
+            break;
+        default:
+            return $catalogue;
+    }
+
+    [$status, $body, $err] = llmHttpJson($url, $headers, null, 8, 'GET', 3);
+    $models = $status === 200 ? llmNormalizeVendorModels($code, $body) : [];
+    if ($models) {
+        setAppSetting($conn, 'llm_vendor_models_' . $code, json_encode(['at' => time(), 'models' => $models]));
+        return ['source' => 'live', 'note' => null, 'models' => $models];
+    }
+
+    // The vendor error text is dropped, not shown: Google's key travels in the
+    // URL and a curl error can quote it back.
+    $catalogue['note'] = "Couldn't load the live list from {$label} — showing the models this app knows.";
+    return $catalogue;
+}
+
 // --- Per-plan access --------------------------------------------------------
 
 function llmPlanModelIds(mysqli $conn, $planId) {

@@ -218,7 +218,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Deleting only removes it from the menu: chatbot_configs.model_id is
         // ON DELETE SET NULL, so a tenant using it falls back to "not
         // configured" rather than to someone else's model.
-        llmDeleteModel($conn, (int)($_POST['model_id'] ?? 0));
+        $model = llmModelById($conn, (int)($_POST['model_id'] ?? 0));
+        if (!$model) {
+            formRespond(false, 'Model not found.', $self);
+        }
+        // FenLLM's rows are the provisioned catalogue — removing one would
+        // strand the transcription default, so it can only be disabled.
+        if (($model['provider_code'] ?? '') === 'fenllm') {
+            formRespond(false, 'FenLLM models are part of the platform — disable them instead of removing.', $self);
+        }
+        llmDeleteModel($conn, (int)$_POST['model_id']);
         logAudit($conn, 'llm.model_deleted', 'llm_model', (string)($_POST['model_id'] ?? ''));
         formRespond(true, 'Model removed. Customers using it will need to pick another.', $self);
     }
@@ -264,6 +273,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $state = llmFenLlmBalanceRefresh($conn, false);
         $signIn = llmFenLlmSignInUrl($conn) ?? ($state['balance']['sign_in_url'] ?? null);
         jsonOut(['ok' => true, 'html' => fenllmBalancePanelHtml($state, $signIn)]);
+    }
+
+    if ($action === 'list_vendor_models') {
+        // The add-model picker's data source. XHR only, like
+        // fenllm_balance_live: a plain submit has no select to fill.
+        if (!isXhrRequest()) {
+            formRespond(false, 'This action is only available to the page itself.', $self);
+        }
+        $stmt = $conn->prepare("SELECT * FROM llm_providers WHERE id = ?");
+        $pid = (int)($_POST['provider_id'] ?? 0);
+        $stmt->bind_param('i', $pid);
+        $stmt->execute();
+        $provider = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$provider) {
+            jsonOut(['ok' => false, 'message' => 'Unknown provider.']);
+        }
+        // Released before the vendor call, same reason as the balance check.
+        session_write_close();
+        $list = llmVendorModelList($conn, $provider);
+        $stmt = $conn->prepare("SELECT model_code FROM llm_models WHERE provider_id = ?");
+        $stmt->bind_param('i', $pid);
+        $stmt->execute();
+        $existing = [];
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) $existing[$row['model_code']] = true;
+        $stmt->close();
+        foreach ($list['models'] as &$m) $m['added'] = isset($existing[$m['id']]);
+        unset($m);
+        jsonOut(['ok' => true] + $list);
     }
 
     if ($action === 'fenllm_signup') {
@@ -546,8 +585,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     quality and in price per message. A <strong>model ID</strong> is the exact name the
                     vendor uses for one, like <code>gpt-4o-mini</code>. Saving a provider above adds its
                     well-known models here automatically; you only need this form for a model
-                    the vendor released later. Models are listed explicitly, never fetched from the vendor:
-                    a new and expensive model must never become selectable on its own.
+                    the vendor released later. Pick a provider below and its available models load for
+                    you to choose from — nothing becomes selectable for customers until you add it here.
                 </p>
 
                 <table class="table table-sm align-middle table-stack">
@@ -580,6 +619,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                         <?= $m['is_enabled'] ? 'Disable' : 'Enable' ?>
                                     </button>
                                 </form>
+                                <?php // FenLLM's seeded models can be disabled but not removed —
+                                      // the server refuses too; the button is simply not offered. ?>
+                                <?php if (($m['provider_code'] ?? '') !== 'fenllm'): ?>
                                 <form method="post" class="d-inline" data-ajax>
                                     <?= csrfField() ?>
                                     <input type="hidden" name="action" value="delete_model">
@@ -587,6 +629,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                     <button class="btn btn-outline-danger btn-sm" type="submit"
                                             data-confirm="Remove this model? Customers using it will have to pick another.">Remove</button>
                                 </form>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -615,8 +658,9 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     </div>
                     <div class="col-md-3">
                         <label class="form-label small">Model ID</label>
+                        <select id="model-pick" class="form-select form-select-sm mb-1 d-none"></select>
                         <input type="text" name="model_code" class="form-control form-control-sm"
-                               placeholder="gpt-4o-mini" required>
+                               placeholder="or type a model ID" required>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label small">Label</label>
@@ -632,6 +676,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <div class="col-md-2">
                         <button class="btn btn-primary btn-sm w-100" type="submit">Add</button>
                     </div>
+                    <div id="model-pick-note" class="col-12 form-text mt-1"></div>
                 </form>
             </div>
         </div>
@@ -764,6 +809,96 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 </div>
+
+<?php // The add-model picker: choosing a provider loads its model list and
+      // fills ID/label/kind. Everything still works without JS — the plain
+      // text input under the select is the same field it always was. ?>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var providerSel = document.querySelector('select[name="provider_id"]');
+    var pick = document.getElementById('model-pick');
+    var note = document.getElementById('model-pick-note');
+    if (!providerSel || !pick || !note) return;
+    var form = providerSel.closest('form');
+    var codeInput = form.querySelector('input[name="model_code"]');
+    var labelInput = form.querySelector('input[name="model_label"]');
+    var kindSel = form.querySelector('select[name="model_kind"]');
+
+    var requestId = 0;
+    var lastModels = [];
+
+    function option(value, text, disabled) {
+        var o = document.createElement('option');
+        o.value = value;
+        o.textContent = text;
+        if (disabled) o.disabled = true;
+        return o;
+    }
+
+    function load(providerId) {
+        var my = ++requestId;
+        pick.innerHTML = '';
+        pick.appendChild(option('', 'Loading models…', true));
+        pick.classList.remove('d-none');
+        note.textContent = '';
+
+        var body = new FormData();
+        body.append('action', 'list_vendor_models');
+        body.append('provider_id', providerId);
+        body.append('csrf_token', window.waCsrfToken || '');
+
+        var ctl = new AbortController();
+        var timer = setTimeout(function () { ctl.abort(); }, 12000);
+
+        fetch(window.location.href, {
+            method: 'POST',
+            body: body,
+            credentials: 'same-origin',
+            headers: {'X-Requested-With': 'XMLHttpRequest'},
+            signal: ctl.signal
+        }).then(function (res) {
+            return res.ok ? res.json() : null;
+        }).then(function (json) {
+            clearTimeout(timer);
+            if (my !== requestId) return;
+            if (!json || !json.ok || !json.models) throw new Error('bad response');
+            lastModels = json.models;
+            pick.innerHTML = '';
+            pick.appendChild(option('', 'Choose a model…'));
+            json.models.forEach(function (m) {
+                pick.appendChild(option(m.id,
+                    m.label + ' — ' + m.id + (m.added ? ' (added)' : ''),
+                    !!m.added));
+            });
+            pick.appendChild(option('__other', 'Other — type the ID below'));
+            note.textContent = json.note ? json.note
+                : 'Live list from ' + (providerSel.options[providerSel.selectedIndex] || {}).text + '.';
+        }).catch(function () {
+            clearTimeout(timer);
+            if (my !== requestId) return;
+            pick.classList.add('d-none');
+            note.textContent = "Couldn't load models — type the ID below.";
+        });
+    }
+
+    providerSel.addEventListener('change', function () { load(providerSel.value); });
+    if (providerSel.value) load(providerSel.value);
+
+    pick.addEventListener('change', function () {
+        if (pick.value === '__other') {
+            codeInput.value = '';
+            codeInput.focus();
+            return;
+        }
+        var chosen = null;
+        lastModels.forEach(function (m) { if (m.id === pick.value) chosen = m; });
+        if (!chosen) return;
+        codeInput.value = chosen.id;
+        labelInput.value = chosen.label;
+        kindSel.value = chosen.kind;
+    });
+});
+</script>
 
 <?php // The live balance check. The panel above rendered from app_settings
       // only; this swaps it for fresh HTML once the vendor has answered. It
