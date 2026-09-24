@@ -13,15 +13,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrf()) {
         $error = 'Invalid request. Please try again.';
     } else {
-        $email = trim($_POST['email'] ?? '');
+        // Normalised to the canonical form accounts are stored in, so the
+        // throttle counts "User@x" and "user@x" as the same identity.
+        $email = strtolower(trim($_POST['email'] ?? ''));
         $password = $_POST['password'] ?? '';
 
         if (empty($email) || empty($password)) {
             $error = 'Please fill in all fields.';
-        } elseif (isLoginBlocked($conn, $email)) {
-            $error = 'Too many failed attempts. Please try again in ' . loginLockoutMinutes($conn) . ' minutes.';
+        } elseif (($throttle = loginThrottle($conn, $email))['blocked']) {
+            // Two different ceilings with two different messages (#2, #27): a
+            // per-IP flood gets the window, a targeted account gets only the
+            // seconds of progressive delay it still owes.
+            $error = $throttle['reason'] === 'ip'
+                ? 'Too many failed attempts. Please try again in ' . loginLockoutMinutes($conn) . ' minutes.'
+                : 'Too many attempts. Please wait ' . $throttle['wait_seconds'] . ' seconds and try again.';
         } else {
-            $stmt = $conn->prepare("SELECT id, name, email, password, is_active, status FROM users WHERE email = ?");
+            $stmt = $conn->prepare("SELECT id, name, email, password, is_active, status, session_version FROM users WHERE email = ?");
             $stmt->bind_param("s", $email);
             $stmt->execute();
             $result = $stmt->get_result();
@@ -30,6 +37,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$user || !password_verify($password, $user['password'])) {
                 recordLoginAttempt($conn, $email, false);
+                // Fires only at the exact threshold, once per burst (#27):
+                // the owner is told their account is being hammered without
+                // the alert itself becoming a mail-bomb channel.
+                loginAlertThresholdReached($conn, $email);
                 // Deliberately identical for "no such user" and "wrong
                 // password" so the form cannot be used to enumerate accounts.
                 $error = 'Invalid email or password.';
@@ -42,6 +53,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 recordLoginAttempt($conn, $email, true);
                 clearLoginAttempts($conn, $email);
+                // Stamps this browser as a device that has signed in before,
+                // which exempts it from the progressive per-email delay (#27).
+                // Keyed on session_version, so a password change revokes it.
+                setKnownDeviceCookie($conn, (int)$user['id']);
                 loginUser($user);
                 logAudit($conn, 'login', 'user', $user['id']);
                 redirect(APP_URL . '/dashboard.php');

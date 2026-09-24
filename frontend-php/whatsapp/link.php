@@ -61,20 +61,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $label = trim($_POST['label'] ?? '');
 
-        $resp = callBackendApi('POST', '/api/v1/wa/sessions', ['label' => $label]);
+        // #18: quota re-check, backend session create and the insert all inside
+        // one named lock. Without it, two POSTs in flight at once each see the
+        // quota as available and both link — a per-tenant race a per-tenant
+        // lock closes exactly.
+        [$error, $sessionId] = withNamedLock($conn, 'wa_link_' . $userId,
+            function () use ($conn, $userId, $plan, $label) {
+                [$ok, , $lim] = checkWaAccountQuota($conn, $userId);
+                if (!$ok) {
+                    return ['Your ' . htmlspecialchars($plan['name'] ?? 'current') . ' plan allows '
+                        . formatLimit($lim) . ' WhatsApp account(s). Upgrade to link more.', ''];
+                }
 
-        if ($resp && ($resp['ok'] ?? false)) {
-            $sessionId = $resp['sessionId'];
+                $resp = callBackendApi('POST', '/api/v1/wa/sessions', ['label' => $label]);
+                if (!$resp || !($resp['ok'] ?? false)) {
+                    return [waBackendErrorMessage($resp, 'create session'), ''];
+                }
 
-            $stmt = $conn->prepare("INSERT INTO wa_accounts (user_id, session_id, label, status) VALUES (?, ?, ?, 'qr_required')");
-            $stmt->bind_param("iss", $userId, $sessionId, $label);
-            $stmt->execute();
-            $stmt->close();
+                $sid = $resp['sessionId'];
+                $stmt = $conn->prepare("INSERT INTO wa_accounts (user_id, session_id, label, status) VALUES (?, ?, ?, 'qr_required')");
+                $stmt->bind_param("iss", $userId, $sid, $label);
+                $stmt->execute();
+                $stmt->close();
 
-            logAudit($conn, 'wa_account.link', 'wa_account', $sessionId, ['label' => $label]);
-        } else {
-            $error = waBackendErrorMessage($resp, 'create session');
-        }
+                logAudit($conn, 'wa_account.link', 'wa_account', $sid, ['label' => $label]);
+                return ['', $sid];
+            });
     }
 }
 

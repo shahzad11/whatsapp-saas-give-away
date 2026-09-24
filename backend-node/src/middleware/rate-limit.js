@@ -63,11 +63,11 @@ function consume(key, capacity, refillPerMs) {
 export function rateLimit(name, limit, windowMs) {
   const refillPerMs = limit / windowMs
   return function rateLimiter(req, res, next) {
-    // requireTenant runs first and rejects anything without a valid id, so this
-    // is only a guard against a future route being mounted outside that chain.
-    if (!req.tenantId) return next()
-
-    const waitMs = consume(`${req.tenantId}|${name}`, limit, refillPerMs)
+    // Tenant-scoped routes key on the tenant. Routes mounted without
+    // requireTenant — the system stats endpoint — share a single global slot,
+    // so they are still bounded rather than free.
+    const who = req.tenantId || '_global'
+    const waitMs = consume(`${who}|${name}`, limit, refillPerMs)
     if (waitMs === 0) return next()
 
     const retryAfter = Math.max(1, Math.ceil(waitMs / 1000))

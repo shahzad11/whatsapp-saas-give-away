@@ -345,6 +345,45 @@ function waRefreshAccountIdentity(mysqli $conn, int $userId, int $maxRows = 10):
     }
 }
 
+// The response headers for serving a customer's media file (#7).
+//
+// Both ends of the MIME string are untrusted — Baileys passes the sender's
+// declared mimetype and Cloud passes Meta's — so disposition is decided from
+// an allow-list here, never forwarded from upstream: anything that a browser
+// might render as active content (html, svg, text/*, application/*) is forced
+// to a download as application/octet-stream. `sandbox; default-src 'none'` on
+// the CSP covers the case a browser renders it anyway, and nosniff stops a
+// relabelled type being second-guessed.
+//
+// Returns header lines for PHP's header(); the backend applies the same rule
+// itself (defence in depth).
+const MEDIA_INLINE_TYPES = [
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'video/mp4', 'video/3gpp', 'video/webm',
+    'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/webm', 'audio/amr',
+];
+
+function mediaResponseHeaders($mime, $filename) {
+    // Base type only: parameters ('image/png; x=y') never change the verdict.
+    $base = strtolower(trim(explode(';', (string)$mime)[0]));
+
+    // The filename is sender-controlled too — basename for the path, a strict
+    // character set for the quoting, and a cap so a 4 KB name cannot pad a
+    // header.
+    $safe = basename((string)$filename);
+    $safe = preg_replace('/[^\w.\-]+/', '_', $safe);
+    $safe = substr($safe, 0, 100);
+    if ($safe === '' || $safe === '.' || $safe === '..') $safe = 'media';
+
+    $inline = in_array($base, MEDIA_INLINE_TYPES, true);
+    return [
+        'Content-Type: ' . ($inline ? $base : 'application/octet-stream'),
+        'Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . '; filename="' . $safe . '"',
+        'X-Content-Type-Options: nosniff',
+        "Content-Security-Policy: sandbox; default-src 'none'",
+    ];
+}
+
 function timeAgo($datetime) {
     $now = new DateTime();
     $ago = new DateTime($datetime);

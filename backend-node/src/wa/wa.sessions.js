@@ -1,20 +1,25 @@
 import path from 'path'
 import fs from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, readdirSync } from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
 import pino from 'pino'
 import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage } from 'baileys'
 import { isValidTenantId } from '../middleware/auth.js'
 import { transcodeToOpus } from './audio.js'
+import { getMediaPath, isSafeMessageId } from './media-path.js'
+import { mediaRefFromContent, contentFromMediaRef } from './media-ref.js'
+import { mergeMessages } from './messages-merge.js'
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' })
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data')
-const TENANTS_DIR = path.join(DATA_DIR, 'tenants')
+// Exported so the system-stats router and the media sweeper resolve the same
+// paths rather than duplicating the env/default expression.
+export const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data')
+export const TENANTS_DIR = path.join(DATA_DIR, 'tenants')
 // Pre-tenancy layout. Anything still here on boot is quarantined, never served.
 const LEGACY_SESSIONS_DIR = path.join(DATA_DIR, 'sessions')
 const QUARANTINE_TENANT = '_unassigned'
@@ -43,6 +48,17 @@ function sessionKey(tenantId, sessionId) {
 
 const sessions = new Map()
 const MAX_MESSAGES_PER_CHAT = 5000
+// #16: the on-disk cap stays 5000, but memory is bounded much tighter — a
+// flush merges the memory tail into the shard rather than overwriting it, so
+// nothing is lost by keeping less resident.
+const MAX_MESSAGES_IN_MEMORY = Number(process.env.MAX_MESSAGES_IN_MEMORY || 200)
+const MESSAGE_IDLE_EVICT_MS = Number(process.env.MESSAGE_IDLE_EVICT_MS || 30 * 60 * 1000)
+const EVICT_INTERVAL_MS = 5 * 60 * 1000
+// #15: only media that arrived live, is small, and (by default) is not in a
+// group is cached eagerly. Everything else is fetched on first view via the
+// persisted mediaRef.
+const MEDIA_EAGER_MAX_BYTES = Number(process.env.MEDIA_EAGER_MAX_BYTES || 5 * 1024 * 1024)
+const MEDIA_EAGER_GROUPS = process.env.MEDIA_EAGER_GROUPS === 'true'
 const MAX_QR_RETRIES = 5
 const BASE_RETRY_DELAY_MS = 3000
 const LOGOUT_TIMEOUT_MS = 5000
@@ -69,13 +85,54 @@ async function getWaVersion() {
 
 const mediaCacheQueue = new Set()
 
-function getMediaPath(sessionPath, messageId, mime) {
-  const ext = (mime || '').split('/')[1]?.split(';')[0] || 'bin'
-  return path.join(sessionPath, MEDIA_DIR, `${messageId}.${ext}`)
+// --- Low-disk refusal (#15) ---------------------------------------------------
+//
+// When the data volume is nearly full, media caching is the first thing to
+// stop — it is a cache, every byte in it can be fetched again. The check is
+// cached for a minute so a media burst does not statfs per file, and the
+// warning is throttled so a full disk does not fill the log too.
+const DISK_CHECK_MS = 60_000
+const DISK_WARN_MS = 10 * 60_000
+let diskCheck = { at: 0, ok: true }
+let diskWarnedAt = 0
+
+async function canWriteMedia() {
+  const now = Date.now()
+  if (now - diskCheck.at < DISK_CHECK_MS) return diskCheck.ok
+  try {
+    const st = await fs.statfs(DATA_DIR)
+    const free = Number(st.bavail) * Number(st.bsize)
+    const total = Number(st.blocks) * Number(st.bsize)
+    diskCheck = { at: now, ok: total <= 0 || free >= total * 0.05 }
+  } catch {
+    // A failed stat is not a full disk; refusing writes on an unanswerable
+    // question would break caching for a transient error.
+    diskCheck = { at: now, ok: true }
+  }
+  if (!diskCheck.ok && now - diskWarnedAt > DISK_WARN_MS) {
+    diskWarnedAt = now
+    console.error('Low disk space on DATA_DIR — media caching paused until free space is back above 5%')
+  }
+  return diskCheck.ok
 }
 
-async function cacheMedia(sessionState, entry) {
+// getMediaPath lives in ./media-path.js now — the filename is built from
+// sender-controlled values, so the sanitising is shared by every write/read
+// site rather than copied (#6).
+
+async function cacheMedia(sessionState, entry, { live = false } = {}) {
   if (!entry.rawMessage || !entry.id) return
+  // A message id outside the real shape is a modified client speaking; nothing
+  // it sent gets a filename on our disk. getMedia() re-downloads lazily anyway.
+  if (!isSafeMessageId(entry.id)) return
+  // Eager caching is for the common case only: a live, small, 1:1 attachment.
+  // History syncs, large files and (by default) group media all download on
+  // first view instead — the persisted mediaRef makes that possible (#15).
+  if (!live) return
+  const len = entry.mediaRef?.fileLength
+  if (len == null || len > MEDIA_EAGER_MAX_BYTES) return
+  if (!MEDIA_EAGER_GROUPS && entry.chatId.endsWith('@g.us')) return
+  if (!(await canWriteMedia())) return
   const cacheKey = `${sessionKey(sessionState.tenantId, sessionState.sessionId)}:${entry.id}`
   if (mediaCacheQueue.has(cacheKey)) return
   mediaCacheQueue.add(cacheKey)
@@ -108,7 +165,13 @@ async function cacheMedia(sessionState, entry) {
 }
 
 async function getMediaFromCache(tenantId, sessionId, messageId, mime) {
-  const filePath = getMediaPath(sessionPathFor(tenantId, sessionId), messageId, mime)
+  // A hostile id throws rather than escapes (#6); treated as "not cached".
+  let filePath
+  try {
+    filePath = getMediaPath(sessionPathFor(tenantId, sessionId), messageId, mime)
+  } catch {
+    return null
+  }
   try {
     if (!existsSync(filePath)) return null
     const buffer = await fs.readFile(filePath)
@@ -279,21 +342,43 @@ function stripRaw(msgs) {
 // Persist only the chats that actually changed. Previously every save rewrote a
 // single messages.json containing the whole session (10MB+ in production) on a
 // 5s debounce, which does not scale and risked truncation on crash.
-async function writeDirtyMessages(sessionPath, messagesMap, dirtyChats) {
+// Every shard write merges with what is already on disk (#16): memory is
+// bounded to MAX_MESSAGES_IN_MEMORY, so writing the memory array alone would
+// truncate a long shard to a few hundred entries.
+// Exported like resolveIdentity et al: the merge-on-flush behaviour is exactly
+// what #16 needs pinned down, and driving it through a live socket in a test
+// is not feasible.
+export async function writeDirtyMessages(sessionPath, messagesMap, dirtyChats) {
   if (!dirtyChats || dirtyChats.size === 0) return
   const dir = path.join(sessionPath, MESSAGES_DIR)
   await fs.mkdir(dir, { recursive: true })
 
-  const chatIds = Array.from(dirtyChats)
-  dirtyChats.clear()
-
-  for (const chatId of chatIds) {
+  // Entries stay in dirtyChats until their write succeeds: the idle evictor
+  // skips dirty chats, so clearing the set upfront would let it drop a chat
+  // whose unflushed tail exists only in memory.
+  for (const chatId of Array.from(dirtyChats)) {
     const msgs = messagesMap.get(chatId)
-    if (!msgs) continue
+    if (!msgs) {
+      dirtyChats.delete(chatId)
+      continue
+    }
     try {
-      await writeJsonAtomic(path.join(dir, chatShardName(chatId)), { chatId, msgs: stripRaw(msgs) })
+      const shardPath = path.join(dir, chatShardName(chatId))
+      let diskMsgs = []
+      try {
+        const shard = JSON.parse(await fs.readFile(shardPath, 'utf-8'))
+        if (Array.isArray(shard?.msgs)) diskMsgs = shard.msgs
+      } catch (_) {
+        // No shard yet, or an unreadable one — the merge still applies.
+      }
+      await writeJsonAtomic(shardPath, { chatId, msgs: stripRaw(mergeMessages(diskMsgs, msgs, MAX_MESSAGES_PER_CHAT)) })
+      // The merge keeps disk complete; memory is then trimmed back to its bound.
+      if (msgs.length > MAX_MESSAGES_IN_MEMORY) {
+        msgs.splice(0, msgs.length - MAX_MESSAGES_IN_MEMORY)
+      }
+      dirtyChats.delete(chatId)
     } catch (_) {
-      dirtyChats.add(chatId) // retry on the next flush
+      // stays in dirtyChats — retried on the next flush
     }
   }
 }
@@ -318,7 +403,9 @@ async function readMessages(sessionPath) {
       // the sorted-array invariant has to hold before anything is inserted.
       // Filter too: earlier versions persisted content-less protocol messages.
       if (shard?.chatId && Array.isArray(shard.msgs)) {
-        map.set(shard.chatId, sortMessages(shard.msgs.filter(hasRenderableContent)))
+        // Only the tail is held in memory (#16); the rest of the shard is
+        // still on disk and is loaded or merged back in on demand.
+        map.set(shard.chatId, sortMessages(shard.msgs.filter(hasRenderableContent)).slice(-MAX_MESSAGES_IN_MEMORY))
       }
     } catch (_) {
       // skip unreadable/corrupt shard rather than failing the whole restore
@@ -335,7 +422,7 @@ async function readMessages(sessionPath) {
       for (const [chatId, msgs] of Object.entries(obj)) {
         if (map.has(chatId) || !Array.isArray(msgs)) continue
         sortMessages(msgs)
-        map.set(chatId, msgs)
+        map.set(chatId, msgs.slice(-MAX_MESSAGES_IN_MEMORY))
         await writeJsonAtomic(path.join(dir, chatShardName(chatId)), { chatId, msgs })
         migrated++
       }
@@ -381,6 +468,45 @@ function repairChatSummaries(chats, messages) {
   }
   return repaired
 }
+
+// Reads a chat's whole shard synchronously (#16). ensureChatLoaded and
+// getSessionMessages both need it: the former takes the tail into memory, the
+// latter merges the full shard for a read without keeping it resident.
+function readChatShard(sessionDir, chatId) {
+  try {
+    const shard = JSON.parse(readFileSync(path.join(sessionDir, MESSAGES_DIR, chatShardName(chatId)), 'utf-8'))
+    if (Array.isArray(shard?.msgs)) {
+      return sortMessages(shard.msgs.filter(hasRenderableContent))
+    }
+  } catch (_) {}
+  return []
+}
+
+// Loads a chat's shard tail into memory the first time it is touched, and
+// stamps chatTouchedAt either way — the evictor keys off that stamp.
+function ensureChatLoaded(s, chatId) {
+  const touched = s.chatTouchedAt ??= new Map()
+  touched.set(chatId, Date.now())
+  if (s.messages.has(chatId)) return
+  s.messages.set(chatId, readChatShard(sessionPath(s), chatId).slice(-MAX_MESSAGES_IN_MEMORY))
+}
+
+// Chats nobody has looked at for MESSAGE_IDLE_EVICT_MS drop out of memory;
+// dirty ones are kept because they hold entries the disk does not have yet.
+const evictor = setInterval(() => {
+  const now = Date.now()
+  for (const s of sessions.values()) {
+    for (const chatId of s.messages.keys()) {
+      if (s.dirtyChats.has(chatId)) continue
+      const touched = s.chatTouchedAt?.get(chatId) ?? s.bootedAt ?? now
+      if (now - touched > MESSAGE_IDLE_EVICT_MS) {
+        s.messages.delete(chatId)
+        s.chatTouchedAt?.delete(chatId)
+      }
+    }
+  }
+}, EVICT_INTERVAL_MS)
+if (typeof evictor.unref === 'function') evictor.unref()
 
 function scheduleMessageSave(sessionState, chatId) {
   if (chatId) sessionState.dirtyChats.add(chatId)
@@ -481,7 +607,10 @@ function extractLocationInfo(message) {
   }
 }
 
-function storeMessage(sessionState, msg) {
+// Exported like writeDirtyMessages: the regression that prompted it (a history
+// batch larger than the in-memory bound losing messages before the merge) can
+// only be pinned down by driving the real ingest path.
+export function storeMessage(sessionState, msg, { live = false } = {}) {
   if (!msg.message) return
   if (msg.key?.remoteJid === 'status@broadcast') return
 
@@ -539,12 +668,14 @@ function storeMessage(sessionState, msg) {
     locationInfo: locationInfo || undefined,
     // The unwrapped content, not msg.message: cacheMedia/getMediaBuffer look up
     // rawMessage['imageMessage'] etc., which is not present on the envelope.
-    rawMessage: (media.type !== 'text') ? content : undefined
+    rawMessage: (media.type !== 'text') ? content : undefined,
+    // The download coordinates survive stripRaw() into the shard, so this
+    // media can be re-fetched after a restart even when the bytes were never
+    // cached to disk.
+    mediaRef: mediaRefFromContent(content) || undefined
   }
 
-  if (!sessionState.messages.has(chatId)) {
-    sessionState.messages.set(chatId, [])
-  }
+  ensureChatLoaded(sessionState, chatId)
   const arr = sessionState.messages.get(chatId)
 
   // Dedup: if message already exists, upgrade it with rawMessage if available
@@ -555,17 +686,23 @@ function storeMessage(sessionState, msg) {
       arr[existingIdx].contactInfo = entry.contactInfo || arr[existingIdx].contactInfo
       arr[existingIdx].locationInfo = entry.locationInfo || arr[existingIdx].locationInfo
     }
+    if (entry.mediaRef && !arr[existingIdx].mediaRef) {
+      arr[existingIdx].mediaRef = entry.mediaRef
+    }
   } else {
     insertMessageSorted(arr, entry)
-    // Safe to drop from the front only because the array is sorted oldest-first.
+    // Trim only at the disk-cap safety bound here, never the memory bound: a
+    // history batch bigger than MAX_MESSAGES_IN_MEMORY would lose everything
+    // older than its newest 200 before the debounced flush could merge it into
+    // the shard. The memory trim happens in writeDirtyMessages, after the merge.
     if (arr.length > MAX_MESSAGES_PER_CHAT) {
       arr.splice(0, arr.length - MAX_MESSAGES_PER_CHAT)
     }
   }
 
-  // Async media caching to disk
+  // Async media caching to disk — selective now (#15): live, small, 1:1 only.
   if (entry.rawMessage && media.type !== 'text' && media.type !== 'contact' && media.type !== 'location') {
-    cacheMedia(sessionState, entry)
+    cacheMedia(sessionState, entry, { live })
   }
 
   const preview = previewFor(entry)
@@ -775,6 +912,78 @@ function markSyncComplete(sessionState) {
 // on the PHP side, where it exists once instead of twice.
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://frontend').replace(/\/+$/, '')
 const CHATBOT_HOOK_TIMEOUT_MS = 5000
+
+// Ids of messages this backend sent through the app for each session, kept for
+// 10 minutes (#20). A fromMe 'notify' that is NOT one of these was typed on the
+// tenant's own phone — reported to the frontend as informational usage, never
+// as something to answer. Ten minutes is generous: the upsert for a send
+// arrives within seconds.
+const APP_SENT_TTL_MS = 10 * 60 * 1000
+
+function noteAppSent(sessionState, messageId) {
+  if (!messageId) return
+  const map = sessionState.appSentIds ??= new Map()
+  const now = Date.now()
+  map.set(String(messageId), now)
+  // Prune on write: sends are the common event, so the map cannot grow past
+  // what one session sent in ten minutes.
+  for (const [id, at] of map) {
+    if (now - at > APP_SENT_TTL_MS) map.delete(id)
+  }
+}
+
+function isAppSent(sessionState, messageId) {
+  const at = sessionState.appSentIds?.get(String(messageId))
+  return at !== undefined && Date.now() - at <= APP_SENT_TTL_MS
+}
+
+// A message the tenant sent from their own phone (#20). The frontend counts it
+// as `messages_sent_device` — informational only — so the payload is the same
+// shape chatbot-inbound expects plus the flag that tells it not to answer.
+// Deliberately separate from notifyChatbot: that function drops fromMe early on
+// purpose, and weakening its guard to share code would risk the bot replying
+// to the tenant's own messages.
+function notifyDeviceSent(sessionState, msg) {
+  if (!process.env.BACKEND_API_KEY) return
+
+  const content = unwrapMessage(msg.message)
+  const media = content ? detectMediaType(content) : { type: 'text' }
+  const text = content ? extractText(content) : null
+
+  const chatId = msg.key.remoteJid
+  const chat = sessionState.chats.get(chatId)
+
+  const payload = JSON.stringify({
+    sessionId: sessionState.sessionId,
+    chatId,
+    messageId: msg.key.id,
+    text,
+    mediaType: media.type,
+    fromMe: true,
+    deviceSent: true,
+    isGroup: chatId.endsWith('@g.us'),
+    archived: !!chat?.archived,
+    isSelfChat: false
+  })
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), CHATBOT_HOOK_TIMEOUT_MS)
+
+  fetch(`${FRONTEND_URL}/internal/chatbot-inbound.php`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': process.env.BACKEND_API_KEY,
+      'X-Tenant-Id': sessionState.tenantId
+    },
+    body: payload,
+    signal: controller.signal
+  })
+    .catch(err => {
+      if (err?.name !== 'AbortError') console.error('Device-sent hook failed:', err.message)
+    })
+    .finally(() => clearTimeout(timer))
+}
 
 // Fire and forget. The reply itself takes seconds (a model call plus a send) and
 // nothing here waits for it: blocking the socket's event loop on an HTTP request
@@ -1059,11 +1268,23 @@ function attachSocketEvents(sessionState, sock, saveCreds) {
 
   sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
     for (const msg of msgs) {
-      storeMessage(sessionState, msg)
+      // 'notify' means this arrived now — the only kind eligible for eager
+      // media caching. 'append' is backfill, and messaging-history.set does
+      // not come through here at all.
+      storeMessage(sessionState, msg, { live: type === 'notify' })
       // 'notify' means this arrived now. 'append' is backfill, and
       // messaging-history.set does not come through here at all — which is the
       // whole point: a 9,000-message history sync must never wake the chatbot.
-      if (type === 'notify') notifyChatbot(sessionState, msg)
+      if (type === 'notify') {
+        notifyChatbot(sessionState, msg)
+        // #20: a fromMe upsert we did not send is the tenant typing on their
+        // own phone. status@broadcast is excluded like everywhere else.
+        if (msg?.key?.fromMe
+            && msg?.key?.remoteJid !== 'status@broadcast'
+            && !isAppSent(sessionState, msg.key.id)) {
+          notifyDeviceSent(sessionState, msg)
+        }
+      }
     }
   })
 
@@ -1240,6 +1461,8 @@ export async function createNewSession(tenantId, label) {
     chats: new Map(),
     messages: new Map(),
     dirtyChats: new Set(),
+    chatTouchedAt: new Map(),
+    bootedAt: Date.now(),
     phoneNumbers: new Map(),
     contactNames: new Map(),
     timers: new Set()
@@ -1364,6 +1587,8 @@ async function restoreTenantSessions(tenantId) {
       chats: restoredChats,
       messages: restoredMessages,
       dirtyChats: new Set(),
+      chatTouchedAt: new Map(),
+      bootedAt: Date.now(),
       phoneNumbers: new Map(),
       contactNames: new Map(),
       timers: new Set()
@@ -1574,6 +1799,8 @@ export async function relinkSession(tenantId, sessionId) {
     chats: await readChats(dir),
     messages: await readMessages(dir),
     dirtyChats: new Set(),
+    chatTouchedAt: new Map(),
+    bootedAt: Date.now(),
     phoneNumbers: new Map(),
     contactNames: new Map(),
     timers: new Set()
@@ -1632,6 +1859,17 @@ export async function flushAllPendingWrites() {
   }
 }
 
+// Totals for the /api/v1/system/stats endpoint (#15): how much message history
+// is currently resident, across every session. Counts only — no content leaves
+// this function.
+export function backendStatsSnapshot() {
+  let messagesInMemory = 0
+  for (const s of sessions.values()) {
+    for (const msgs of s.messages.values()) messagesInMemory += msgs.length
+  }
+  return { sessions: sessions.size, messagesInMemory }
+}
+
 export function getSessionChats(tenantId, sessionId) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
   if (!s) return null
@@ -1675,12 +1913,18 @@ export function getSessionMessages(tenantId, sessionId, chatId, since = null) {
   const s = sessions.get(sessionKey(tenantId, sessionId))
   if (!s) return null
 
+  ensureChatLoaded(s, chatId)
   let msgs = s.messages.get(chatId) || []
 
-  // Binary search, not filter: the array is kept sorted oldest → newest (see
-  // insertMessageSorted), so the cut point is findable in log n instead of
-  // walking thousands of entries on every poll.
-  if (since !== null && msgs.length > 0) {
+  // A request for the whole thread — or reaching further back than the
+  // in-memory tail holds — is answered by merging the shard with memory (#16).
+  // The merged array is returned, never stored: keeping it resident would
+  // defeat the memory bound.
+  if (since === null || msgs.length === 0 || since < msgTime(msgs[0])) {
+    const disk = readChatShard(sessionPath(s), chatId)
+    const merged = mergeMessages(disk, msgs, MAX_MESSAGES_PER_CHAT)
+    msgs = since === null ? merged : merged.filter(m => msgTime(m) > since)
+  } else if (msgs.length > 0) {
     let lo = 0
     let hi = msgs.length
     while (lo < hi) {
@@ -1730,10 +1974,37 @@ export async function getMedia(tenantId, sessionId, messageId) {
     if (found?.rawMessage) break
   }
 
+  // Memory is bounded (#16), so an old media message may only exist in a shard.
+  // Scan them oldest-looking first is pointless — stop at the first hit either
+  // way; the entry's mediaRef is all the download needs.
+  if (!found) {
+    const dir = path.join(sessionPath(s), MESSAGES_DIR)
+    let files = []
+    try {
+      files = readdirSync(dir)
+    } catch {
+      files = []
+    }
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      try {
+        const shard = JSON.parse(readFileSync(path.join(dir, file), 'utf-8'))
+        const hit = shard?.msgs?.find(m => m.id === messageId)
+        if (hit) { found = hit; break }
+      } catch (_) {}
+    }
+  }
+
   if (!found) return { ok: false, error: 'Message not found' }
 
   const mime = found.mediaMime || 'application/octet-stream'
-  const filePath = getMediaPath(sessionPathFor(tenantId, sessionId), messageId, mime)
+  let filePath
+  try {
+    filePath = getMediaPath(sessionPathFor(tenantId, sessionId), messageId, mime)
+  } catch {
+    // An id that cannot map inside media/ is a hostile client, not a cache miss.
+    return { ok: false, error: 'Media not available' }
+  }
 
   // 1. Disk cache (persists across restarts). Hand back the path, not the bytes.
   if (existsSync(filePath)) {
@@ -1745,24 +2016,32 @@ export async function getMedia(tenantId, sessionId, messageId) {
     }
   }
 
-  // 2. Try live download if rawMessage is available
-  if (!found.rawMessage) return { ok: false, error: 'Media not available (cached media expired)' }
+  // 2. Try live download. rawMessage is the live shape; the persisted mediaRef
+  // is its restart-safe equivalent — either one gives downloadMediaMessage
+  // what it needs.
+  let content = found.rawMessage
+  if (!content && found.mediaRef) content = contentFromMediaRef(found.mediaRef)
+  if (!content) return { ok: false, error: 'Media not available (cached media expired)' }
 
   const mediaType = found.mediaType
   const typeMap = { image: 'imageMessage', video: 'videoMessage', audio: 'audioMessage', voice: 'audioMessage', document: 'documentMessage', sticker: 'stickerMessage' }
-  const msgKey = typeMap[mediaType]
-  if (!msgKey || !found.rawMessage[msgKey]) return { ok: false, error: 'Unsupported media type for download' }
+  const msgKey = found.mediaRef?.key || typeMap[mediaType]
+  if (!msgKey || !content[msgKey]) return { ok: false, error: 'Unsupported media type for download' }
 
   try {
     const buffer = await downloadMediaMessage(
-      { key: { remoteJid: found.chatId, fromMe: found.fromMe, id: found.id }, message: found.rawMessage },
+      { key: { remoteJid: found.chatId, fromMe: found.fromMe, id: found.id }, message: content },
       'buffer',
       {},
       { logger, reuploadRequest: s.sock?.updateMediaMessage }
     )
 
     // Cache to disk, then serve from there — awaited rather than fire-and-forget
-    // so this request streams too. Only a failed write falls back to the buffer.
+    // so this request streams too. A failed write — or a disk too full to write
+    // to — falls back to the buffer.
+    if (!(await canWriteMedia())) {
+      return { ok: true, buffer, mime, filename: found.mediaFilename }
+    }
     try {
       await fs.mkdir(path.join(sessionPath(s), MEDIA_DIR), { recursive: true })
       await fs.writeFile(filePath, buffer)
@@ -1791,10 +2070,14 @@ function sendableSession(tenantId, sessionId) {
 // up half-recorded (in the thread but not in the chat list, say).
 function recordOutgoing(s, entry) {
   const { chatId } = entry
-  if (!s.messages.has(chatId)) {
-    s.messages.set(chatId, [])
+  ensureChatLoaded(s, chatId)
+  const arr = s.messages.get(chatId)
+  insertMessageSorted(arr, entry)
+  // Same rule as storeMessage: the memory bound is enforced after the merge in
+  // writeDirtyMessages, not at insert — an entry trimmed here never reaches disk.
+  if (arr.length > MAX_MESSAGES_PER_CHAT) {
+    arr.splice(0, arr.length - MAX_MESSAGES_PER_CHAT)
   }
-  insertMessageSorted(s.messages.get(chatId), entry)
 
   const existing = s.chats.get(chatId)
   s.chats.set(chatId, {
@@ -1820,6 +2103,7 @@ export async function sendSessionMessage(tenantId, sessionId, chatId, text) {
   try {
     const sent = await s.sock.sendMessage(chatId, { text })
 
+    noteAppSent(s, sent.key.id)
     const entry = {
       id: sent.key.id,
       chatId,
@@ -1860,6 +2144,7 @@ export async function markSessionChatRead(tenantId, sessionId, chatId) {
   // — which is not what a receipt for a direct message looks like.
   const isGroup = chatId.endsWith('@g.us')
 
+  ensureChatLoaded(s, chatId)
   const msgs = s.messages.get(chatId) || []
   const keys = []
   let newest = since
@@ -1970,6 +2255,7 @@ export async function sendSessionMedia(tenantId, sessionId, chatId, upload) {
   try {
     const sent = await s.sock.sendMessage(chatId, content)
 
+    noteAppSent(s, sent.key.id)
     const entry = {
       id: sent.key.id,
       chatId,
@@ -1981,7 +2267,8 @@ export async function sendSessionMedia(tenantId, sessionId, chatId, upload) {
       time: new Date().toISOString(),
       // The unwrapped content, matching storeMessage(), so a later cache miss
       // can still re-download this message's media.
-      rawMessage: sent.message ? unwrapMessage(sent.message) : undefined
+      rawMessage: sent.message ? unwrapMessage(sent.message) : undefined,
+      mediaRef: mediaRefFromContent(sent.message ? unwrapMessage(sent.message) : null) || undefined
     }
 
     // Seed the disk cache from what we already hold in memory. Without this the
@@ -1989,8 +2276,10 @@ export async function sendSessionMedia(tenantId, sessionId, chatId, upload) {
     // render it, which costs a round trip and fails while offline.
     const dir = sessionPath(s)
     try {
-      await fs.mkdir(path.join(dir, MEDIA_DIR), { recursive: true })
-      await fs.writeFile(getMediaPath(dir, entry.id, mime), buffer)
+      if (await canWriteMedia()) {
+        await fs.mkdir(path.join(dir, MEDIA_DIR), { recursive: true })
+        await fs.writeFile(getMediaPath(dir, entry.id, mime), buffer)
+      }
     } catch (_) {
       // Cache-only failure. The message is sent; getMediaBuffer falls back to a
       // live download.
@@ -2024,6 +2313,7 @@ export async function sendSessionEvent(tenantId, sessionId, chatId, event) {
       }
     })
 
+    noteAppSent(s, sent.key.id)
     // Recorded like any other outbound so the chat UI shows a bubble. There is
     // no text on the wire, so the stored text is a placeholder for the thread.
     recordOutgoing(s, {

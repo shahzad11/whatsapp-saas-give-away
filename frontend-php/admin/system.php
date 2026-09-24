@@ -75,6 +75,57 @@ $sessionCounts = $conn->query(
      GROUP BY u.id, u.name ORDER BY total DESC LIMIT 20"
 )->fetch_all(MYSQLI_ASSOC);
 
+// The tables the daily sweep trims (#29), sized approximately — TABLE_ROWS is
+// InnoDB's estimate, labelled as such, and chosen over COUNT(*) because the
+// card must stay cheap exactly when these tables are large.
+$logTables = ['login_attempts', 'chatbot_events', 'audit_log', 'chatbot_pending_replies', 'appointment_notifications'];
+$approxRows = [];
+$placeholders = implode(',', array_fill(0, count($logTables), '?'));
+$stmt = $conn->prepare(
+    "SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ($placeholders)"
+);
+$stmt->bind_param(str_repeat('s', count($logTables)), ...$logTables);
+$stmt->execute();
+foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+    $approxRows[$r['TABLE_NAME']] = (int)$r['TABLE_ROWS'];
+}
+$stmt->close();
+$maintenanceRunAt = (string)appSetting($conn, 'maintenance_run_at', '');
+
+// Backend resources (#15/#16). The route is API-key only — no tenant in scope —
+// so callBackendApi sends the admin's own tenant header, which it ignores. An
+// unreachable backend leaves 'ok' false and the card degrades to a note.
+$backendStats = callBackendApi('GET', '/api/v1/system/stats', null, null, 5);
+
+// The sweeper reports per-tenant bytes keyed by 't<userId>'; map them to a
+// name/email in one query rather than per row.
+$mediaTenantUsers = [];
+if (!empty($backendStats['media']['tenants']) && is_array($backendStats['media']['tenants'])) {
+    $ids = [];
+    foreach (array_keys($backendStats['media']['tenants']) as $tid) {
+        if (preg_match('/^t(\d+)$/', (string)$tid, $m)) $ids[] = (int)$m[1];
+    }
+    if ($ids) {
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $conn->prepare("SELECT id, name, email FROM users WHERE id IN ($in)");
+        $stmt->bind_param(str_repeat('i', count($ids)), ...$ids);
+        $stmt->execute();
+        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $u) {
+            $mediaTenantUsers['t' . $u['id']] = $u;
+        }
+        $stmt->close();
+    }
+}
+
+function fmtBytes($bytes) {
+    if ($bytes === null || !is_numeric($bytes)) return '—';
+    $b = (float)$bytes;
+    if ($b >= 1073741824) return round($b / 1073741824, 1) . ' GB';
+    if ($b >= 1048576) return round($b / 1048576, 1) . ' MB';
+    return round($b / 1024) . ' KB';
+}
+
 $self = APP_URL . '/admin/system.php';
 
 // --- Audit log, filterable ---
@@ -249,6 +300,105 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<?php // #29. The sweep runs off the reminder tick once a day; this card is how
+      // an admin sees it is alive and how fast the logs are growing. ?>
+<div class="card mb-4">
+    <div class="card-header">Log housekeeping</div>
+    <div class="card-body">
+        <div class="small text-muted mb-2">
+            <?php if ($maintenanceRunAt === ''): ?>
+                No cleanup run recorded yet — it runs once a day on the reminder tick.
+            <?php else: ?>
+                Last cleanup <?= sanitize(timeAgo($maintenanceRunAt)) ?>.
+            <?php endif; ?>
+        </div>
+        <div class="row g-2">
+            <?php foreach ($logTables as $t): ?>
+                <div class="col-md col-6">
+                    <div class="small fw-500"><?= sanitize($t) ?></div>
+                    <div class="x-small text-muted">approx. <?= number_format($approxRows[$t] ?? 0) ?> rows</div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</div>
+
+<?php // #15/#16: the backend holds chat history in memory and media on disk;
+      // this is where an admin sees either one growing before it becomes an
+      // outage. ?>
+<div class="card mb-4">
+    <div class="card-header">Backend resources</div>
+    <div class="card-body">
+        <?php if (empty($backendStats['ok'])): ?>
+            <div class="small text-muted mb-0">
+                Backend stats unavailable<?= $backendStats['error'] ?? '' ? ' — ' . sanitize($backendStats['error']) : '' ?>.
+            </div>
+        <?php else: ?>
+            <div class="row g-2 mb-3">
+                <div class="col-md col-6">
+                    <div class="small fw-500">Memory (RSS)</div>
+                    <div class="x-small text-muted"><?= fmtBytes($backendStats['memory']['rss'] ?? null) ?></div>
+                </div>
+                <div class="col-md col-6">
+                    <div class="small fw-500">Heap used</div>
+                    <div class="x-small text-muted">
+                        <?= fmtBytes($backendStats['memory']['heapUsed'] ?? null) ?>
+                        of <?= fmtBytes($backendStats['memory']['heapTotal'] ?? null) ?>
+                    </div>
+                </div>
+                <div class="col-md col-6">
+                    <div class="small fw-500">Disk free</div>
+                    <div class="x-small text-muted">
+                        <?= fmtBytes($backendStats['disk']['freeBytes'] ?? null) ?>
+                        of <?= fmtBytes($backendStats['disk']['totalBytes'] ?? null) ?>
+                    </div>
+                </div>
+                <div class="col-md col-6">
+                    <div class="small fw-500">Messages in memory</div>
+                    <div class="x-small text-muted">
+                        <?= number_format((int)($backendStats['messagesInMemory'] ?? 0)) ?>
+                        across <?= (int)($backendStats['sessions'] ?? 0) ?> session(s)
+                    </div>
+                </div>
+            </div>
+            <?php $mediaSweep = $backendStats['media'] ?? null; ?>
+            <div class="small fw-500 mb-1">Cached media by customer</div>
+            <?php if (!$mediaSweep): ?>
+                <div class="x-small text-muted">No media sweep has run yet — the first runs about a minute after backend start, then hourly.</div>
+            <?php else: ?>
+                <div class="x-small text-muted mb-2">Last sweep <?= sanitize(timeAgo($mediaSweep['at'])) ?>.</div>
+                <?php $tenants = $mediaSweep['tenants'] ?? []; ?>
+                <?php if (!$tenants): ?>
+                    <div class="x-small text-muted">No cached media on disk.</div>
+                <?php else: ?>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead><tr><th>Customer</th><th>Cached size</th><th>Files</th></tr></thead>
+                            <tbody>
+                            <?php foreach ($tenants as $tid => $row): ?>
+                                <?php $u = $mediaTenantUsers[$tid] ?? null; ?>
+                                <tr>
+                                    <td class="small">
+                                        <?php if ($u): ?>
+                                            <a href="<?= APP_URL ?>/admin/tenant.php?id=<?= (int)$u['id'] ?>" class="text-decoration-none"><?= sanitize($u['name']) ?></a>
+                                            <span class="text-muted x-small"><?= sanitize($u['email']) ?></span>
+                                        <?php else: ?>
+                                            <?= sanitize($tid) ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="small"><?= fmtBytes($row['bytes'] ?? 0) ?></td>
+                                    <td class="small"><?= number_format((int)($row['files'] ?? 0)) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        <?php endif; ?>
     </div>
 </div>
 

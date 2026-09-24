@@ -8,9 +8,9 @@ function mediaFail($error, $extra = []) {
     exit;
 }
 
-if (!isLoggedIn()) {
-    mediaFail('Unauthorized');
-}
+// The active-user guard (#3), not a bare session check: a suspended tenant's
+// open tab must not keep sending media.
+requireActiveUserJson();
 
 // A body larger than post_max_size is discarded by PHP before this script runs:
 // $_POST and $_FILES come back empty and the only clue is Content-Length. Without
@@ -57,14 +57,6 @@ if (!in_array($kind, $allowedKinds, true)) {
 // button is presentation, not enforcement: this endpoint is the actual gate.
 if (!planHasFeature(getUserPlan($conn, $userId), 'media_send')) {
     mediaFail('Sending attachments is not part of your plan.', ['featureLocked' => true]);
-}
-
-// Metered exactly like a text send: an attachment is a message. Checked before
-// the upload is processed so a send that cannot be counted never happens.
-[$quotaOk, $used, $limit] = checkMessageQuota($conn, $userId);
-if (!$quotaOk) {
-    mediaFail('Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
-        ['quotaExceeded' => true]);
 }
 
 if (!isset($_FILES['file'])) {
@@ -138,11 +130,21 @@ $filename = basename((string)($file['name'] ?? ''));
 // base64 encode above is.
 set_time_limit(180);
 
+// Metered exactly like a text send: an attachment is a message. Reserved here —
+// after every validation above, immediately before the send (#18) — because a
+// refused upload must not spend the allowance, and reserving earlier would leak
+// a unit on every mediaFail() exit in between.
+if (!quotaReserveMessage($conn, $userId)) {
+    $limit = planLimit(getUserPlan($conn, $userId), 'max_messages_per_month');
+    mediaFail('Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
+        ['quotaExceeded' => true]);
+}
+
 $resp = waSendMedia($conn, $sessionId, $chatId, $kind, $data, $mime, $filename, $caption, null, 150);
 
 // Only a send that actually left the building costs the tenant a message.
-if ($resp && !empty($resp['ok'])) {
-    incrementUsage($conn, $userId, 'messages_sent');
+if (!$resp || empty($resp['ok'])) {
+    quotaRelease($conn, $userId, 'messages_sent');
 }
 
 echo json_encode($resp ?: ['ok' => false, 'error' => 'Backend error']);

@@ -51,8 +51,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // field.
         if (!password_verify($current, $row['password'])) {
             $error = 'That is not the temporary password you were given.';
-        } elseif (strlen($new) < 8) {
-            $error = 'Your new password must be at least 8 characters.';
+        } elseif (($pwProblem = passwordProblem($new, ['email' => $user['email'], 'name' => $user['name']])) !== null) {
+            $error = $pwProblem;
         } elseif ($new !== $confirm) {
             $error = 'The two passwords do not match.';
         } elseif ($new === $current) {
@@ -72,8 +72,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // The credential just changed, so the session id must too: anyone
             // holding the old one was holding a session opened with the
-            // temporary password.
+            // temporary password. The version bump (#13) does the same to every
+            // *other* session — this one is re-stamped inside the call.
             session_regenerate_id(true);
+            bumpSessionVersion($conn, $userId);
 
             logAudit($conn, 'profile.password_change', 'user', $userId, ['reason' => 'first_login']);
             flash('success', 'Password set. Welcome aboard.');
@@ -107,7 +109,7 @@ require_once __DIR__ . '/includes/auth-header.php';
         <div class="mb-3">
             <label class="form-label">New password</label>
             <input type="password" name="new_password" class="form-control"
-                   placeholder="Min. 8 characters" required>
+                   placeholder="At least 10 characters" required>
         </div>
         <div class="mb-4">
             <label class="form-label">Confirm new password</label>

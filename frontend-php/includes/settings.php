@@ -50,6 +50,10 @@ function defaultPlanCode(?mysqli $conn = null) {
     return overrideSetting($conn, 'default_plan_code') ?? DEFAULT_PLAN_CODE;
 }
 
+// Per-email failures before the progressive delay starts (#27). This is no
+// longer a lockout threshold — past it each attempt owes a growing pause — so
+// it means "how much mistyping do we tolerate before slowing down", not "how
+// many tries until the account freezes".
 function loginMaxAttempts(?mysqli $conn = null) {
     $value = (int)overrideSetting($conn, 'login_max_attempts');
     // 0 would disable throttling altogether, which is never what a blank field
@@ -57,9 +61,36 @@ function loginMaxAttempts(?mysqli $conn = null) {
     return $value > 0 ? $value : LOGIN_MAX_ATTEMPTS;
 }
 
+// Per-IP hard block (#2). Much higher than the per-email threshold on purpose:
+// an IP is shared — an office, a carrier NAT, a whole student flat — so the
+// number that means "a botnet" for one address would mean "a bad morning" for
+// another. Never below 10 regardless of the override, because a low value here
+// re-creates the original bug: one shared IP locking out every tenant.
+function loginMaxAttemptsPerIp(?mysqli $conn = null) {
+    $value = (int)overrideSetting($conn, 'login_max_attempts_ip');
+    return max(10, $value > 0 ? $value : 30);
+}
+
 function loginLockoutMinutes(?mysqli $conn = null) {
     $value = (int)overrideSetting($conn, 'login_lockout_minutes');
     return $value > 0 ? $value : LOGIN_LOCKOUT_MINUTES;
+}
+
+// Days a lapsed paid subscription stays past_due before the tenant is moved to
+// a free plan (#8). 0 is legitimate — it means "expire immediately" — so the
+// fallback applies only to an absent row, not to a stored zero.
+function billingGraceDays(?mysqli $conn = null) {
+    $value = overrideSetting($conn, 'billing_grace_days');
+    if ($value === null) return 3;
+    return max(0, min(60, (int)$value));
+}
+
+// How long audit rows are kept before the daily sweep removes them (#29).
+// Never below 30: a shorter horizon would quietly destroy the record an
+// incident investigation needs.
+function auditRetentionDays(?mysqli $conn = null) {
+    $value = (int)overrideSetting($conn, 'audit_retention_days');
+    return max(30, $value > 0 ? $value : 365);
 }
 
 function paymentInstructions(?mysqli $conn = null) {

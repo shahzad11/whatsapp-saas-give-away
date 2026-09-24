@@ -55,6 +55,11 @@ $showTenantSetup = $tenantOutstanding > 0 && !tenantSetupDismissed($conn, $userI
 // onboarding. They disappear when they are fixed and not before.
 $healthWarnings = tenantHealthWarnings($conn, $userId);
 
+// #8: a lapsed paid subscription is a fault the tenant can fix — surfaced like
+// the health warnings, with the renew-by date in their timezone.
+$pastDue = tenantPastDueNotice($conn, $userId);
+$dashboardTz = $pastDue ? getUserTimezone($conn, $userId) : null;
+
 $pageTitle = 'Dashboard';
 require_once __DIR__ . '/includes/header.php';
 ?>
@@ -83,6 +88,18 @@ if (isAdmin() && !instanceSetupDismissed($conn)) {
             Still to do: <?= sanitize(implode(', ', $adminSetupLabels)) ?>.
         </div>
         <a href="<?= APP_URL ?>/admin/index.php" class="btn btn-sm btn-primary">Open admin console</a>
+    </div>
+<?php endif; ?>
+
+<?php if ($pastDue): ?>
+    <div class="alert alert-warning d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            Your <strong><?= sanitize($pastDue['plan_name']) ?></strong> plan expired on
+            <?= sanitize(formatUserDate($pastDue['ended'], $dashboardTz, 'M j, Y')) ?>.
+            Renew by <?= sanitize(formatUserDate($pastDue['renew_by'], $dashboardTz, 'M j, Y')) ?>
+            to keep your features.
+        </div>
+        <a href="<?= APP_URL ?>/billing.php" class="btn btn-sm btn-warning">View billing</a>
     </div>
 <?php endif; ?>
 

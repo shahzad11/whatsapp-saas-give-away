@@ -3,10 +3,10 @@ require_once dirname(__DIR__, 2) . '/config/init.php';
 
 header('Content-Type: application/json');
 
-if (!isLoggedIn()) {
-    echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
-    exit;
-}
+// A session cookie proves a login happened; suspension, deactivation and
+// password changes must bite on the next request, so the check is the active
+// user guard, not the bare session flag (#3).
+requireActiveUserJson();
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 
@@ -32,9 +32,11 @@ if (empty($sessionId) || empty($chatId) || empty($text)) {
 
 [$accountId, $tenantId, $userId] = requireOwnedAccount($conn, $sessionId);
 
-// Metered: enforce the plan's monthly send limit before touching the backend.
-[$quotaOk, $used, $limit] = checkMessageQuota($conn, $userId);
-if (!$quotaOk) {
+// Metered: the allowance is *reserved* before touching the backend (#18) —
+// checking then counting afterwards let two simultaneous sends both pass the
+// check at the limit.
+if (!quotaReserveMessage($conn, $userId)) {
+    $limit = planLimit(getUserPlan($conn, $userId), 'max_messages_per_month');
     echo json_encode([
         'ok' => false,
         'error' => 'Monthly message limit reached (' . number_format($limit) . '). Upgrade your plan to send more.',
@@ -45,9 +47,10 @@ if (!$quotaOk) {
 
 $resp = waSendText($conn, $sessionId, $chatId, $text, null, 30);
 
-// Only count sends that actually left the building.
-if ($resp && !empty($resp['ok'])) {
-    incrementUsage($conn, $userId, 'messages_sent');
+// Only sends that actually left the building cost a message: a failure hands
+// the reservation back.
+if (!$resp || empty($resp['ok'])) {
+    quotaRelease($conn, $userId, 'messages_sent');
 }
 
 echo json_encode($resp ?: ['ok' => false, 'error' => 'Backend error']);

@@ -966,5 +966,14 @@ check('and says plainly that nothing was sent', str_contains($msg, 'could not be
 equals('an internal-only change is reported as it always was', 'Appointment updated.', $msg);
 equals('success', 'success', $variant);
 
+// --- #10: one customer's upcoming bookings are capped -------------------------
+
+group('The per-customer upcoming limit');
+
+check('at the cap is refused', apptCustomerAtLimit(1, 1));
+check('one under the cap still books', !apptCustomerAtLimit(0, 1));
+check('over the cap is refused too', apptCustomerAtLimit(3, 2));
+check('zero means unlimited, not none', !apptCustomerAtLimit(99, 0));
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

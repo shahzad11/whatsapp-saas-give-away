@@ -60,51 +60,97 @@ if ($conn->errno) {
 fwrite(STDOUT, "[bootstrap] schema applied\n");
 
 // --- Bootstrap admin ------------------------------------------------------
+//
+// Runs once per install, not once per boot (#4). The old code promoted any
+// account whose email matched ADMIN_EMAIL on every container start — so a
+// tenant who could set their email to that address (email changes were
+// unverified then) became an admin on the next restart, and an admin who
+// changed their own address got a ghost replacement with the .env password.
+//
+// The rule is now: an instance with no admin at all gets exactly one, created
+// from the env credentials. An instance that already has an admin is left
+// alone — ADMIN_EMAIL is a seed, not a back door, and it must never promote
+// an account that happens to carry the address. `bootstrap_admin_done` in
+// app_settings records the outcome so even the "no admin" check stops running
+// once the instance has been stood up.
 $adminEmail = env('ADMIN_EMAIL');
 $adminPass  = env('ADMIN_PASSWORD');
 $adminName  = env('ADMIN_NAME', 'Administrator');
 
-if (!$adminEmail || !$adminPass) {
-    fwrite(STDOUT, "[bootstrap] ADMIN_EMAIL/ADMIN_PASSWORD not set — skipping admin creation\n");
+// Plain SQL rather than setAppSetting(): includes/settings.php is only loaded
+// further down, and this step must not depend on it.
+$doneRow = $conn->query("SELECT setting_value FROM app_settings WHERE setting_key = 'bootstrap_admin_done'")
+    ->fetch_assoc();
+$done = $doneRow['setting_value'] ?? null;
+
+if ($done !== null) {
+    fwrite(STDOUT, "[bootstrap] admin bootstrap already done (user {$done}) — skipping\n");
 } else {
-    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
-    $stmt->bind_param('s', $adminEmail);
-    $stmt->execute();
-    $existing = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $adminCount = (int)($conn->query("SELECT COUNT(*) FROM users WHERE is_admin = 1")->fetch_row()[0] ?? 0);
 
-    if ($existing) {
-        // Do NOT reset the password on every boot — that would let anyone who can
-        // read the compose env silently take over an account whose password the
-        // owner has since changed. Only ensure the account can still administer.
-        $stmt = $conn->prepare("UPDATE users SET is_admin = 1, is_active = 1, status = 'active' WHERE id = ?");
-        $stmt->bind_param('i', $existing['id']);
+    if ($adminCount >= 1) {
+        // Existing deployment from before this marker existed: record who the
+        // first admin is so the check never runs again.
+        $firstAdmin = (int)($conn->query("SELECT MIN(id) FROM users WHERE is_admin = 1")->fetch_row()[0] ?? 0);
+        $stmt = $conn->prepare(
+            "INSERT INTO app_settings (setting_key, setting_value) VALUES ('bootstrap_admin_done', ?)
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
+        );
+        $firstAdminStr = (string)$firstAdmin;
+        $stmt->bind_param('s', $firstAdminStr);
         $stmt->execute();
         $stmt->close();
-        fwrite(STDOUT, "[bootstrap] admin {$adminEmail} already exists — ensured active\n");
+        fwrite(STDOUT, "[bootstrap] {$adminCount} admin(s) already exist — marked done, no promotion\n");
+    } elseif (!$adminEmail || !$adminPass) {
+        fwrite(STDOUT, "[bootstrap] no admins and ADMIN_EMAIL/ADMIN_PASSWORD not set — skipping admin creation\n");
     } else {
-        $planRow = $conn->query("SELECT id FROM plans ORDER BY sort_order DESC LIMIT 1")->fetch_assoc();
-        $planId = $planRow['id'] ?? null;
-        $hash = password_hash($adminPass, PASSWORD_DEFAULT);
-
-        $stmt = $conn->prepare(
-            "INSERT INTO users (name, email, password, is_active, is_admin, status, plan_id)
-             VALUES (?, ?, ?, 1, 1, 'active', ?)"
-        );
-        $stmt->bind_param('sssi', $adminName, $adminEmail, $hash, $planId);
+        // A user holding ADMIN_EMAIL but no admin rights must NOT be promoted:
+        // the address is an input the tenant could have chosen, so treating it
+        // as proof of ownership is exactly the hole being closed. Logged loudly
+        // because it means the intended admin address is taken by someone else.
+        $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+        $stmt->bind_param('s', $adminEmail);
         $stmt->execute();
-        $newId = $conn->insert_id;
+        $existing = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
-        $stmt = $conn->prepare(
-            "INSERT INTO subscriptions (user_id, plan_id, status, current_period_start, current_period_end)
-             VALUES (?, ?, 'active', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 YEAR))"
-        );
-        $stmt->bind_param('ii', $newId, $planId);
-        $stmt->execute();
-        $stmt->close();
+        if ($existing) {
+            fwrite(STDERR, "[bootstrap] WARNING: no admin exists, but a user already has ADMIN_EMAIL "
+                . "({$adminEmail}) — NOT promoting it. Grant admin rights from an existing admin "
+                . "account or fix the row by hand.\n");
+        } else {
+            $planRow = $conn->query("SELECT id FROM plans ORDER BY sort_order DESC LIMIT 1")->fetch_assoc();
+            $planId = $planRow['id'] ?? null;
+            $hash = password_hash($adminPass, PASSWORD_DEFAULT);
 
-        fwrite(STDOUT, "[bootstrap] created admin {$adminEmail} (tenant t{$newId})\n");
+            $stmt = $conn->prepare(
+                "INSERT INTO users (name, email, password, is_active, is_admin, status, plan_id)
+                 VALUES (?, ?, ?, 1, 1, 'active', ?)"
+            );
+            $stmt->bind_param('sssi', $adminName, $adminEmail, $hash, $planId);
+            $stmt->execute();
+            $newId = $conn->insert_id;
+            $stmt->close();
+
+            $stmt = $conn->prepare(
+                "INSERT INTO subscriptions (user_id, plan_id, status, current_period_start, current_period_end)
+                 VALUES (?, ?, 'active', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 YEAR))"
+            );
+            $stmt->bind_param('ii', $newId, $planId);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $conn->prepare(
+                "INSERT INTO app_settings (setting_key, setting_value) VALUES ('bootstrap_admin_done', ?)
+                 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
+            );
+            $newIdStr = (string)$newId;
+            $stmt->bind_param('s', $newIdStr);
+            $stmt->execute();
+            $stmt->close();
+
+            fwrite(STDOUT, "[bootstrap] created admin {$adminEmail} (tenant t{$newId})\n");
+        }
     }
 }
 

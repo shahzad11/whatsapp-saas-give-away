@@ -1,5 +1,6 @@
 import express from 'express'
 import { waRouter } from './wa/wa.routes.js'
+import { systemRouter } from './wa/system.routes.js'
 import { MAX_UPLOAD_BYTES } from './wa/wa.sessions.js'
 import { requireApiKey, requireTenant } from './middleware/auth.js'
 
@@ -35,6 +36,11 @@ export function createApp() {
   // tenant header says which tenant it is acting for. Both are mandatory for
   // every /api route, so a new endpoint cannot be added without them.
   app.use('/api/v1/wa', requireApiKey, requireTenant, waRouter)
+
+  // Process-wide stats for the admin System page. requireTenant is
+  // deliberately absent: there is no tenant in scope for "how is the backend
+  // doing", and the response carries no tenant data beyond byte/file counts.
+  app.use('/api/v1/system', requireApiKey, systemRouter)
 
   app.use((err, req, res, next) => {
     const status = err?.statusCode || err?.status || 500

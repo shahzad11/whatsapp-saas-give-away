@@ -27,7 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($_POST['action'] === 'update_profile') {
         $name = trim($_POST['name'] ?? '');
-        $email = trim($_POST['email'] ?? '');
+        $email = strtolower(trim($_POST['email'] ?? ''));
 
         [$clean, $fieldErrors] = validateProfileInput($_POST);
 
@@ -51,14 +51,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $stmt->close();
         }
 
+        // An email change is a two-step verification, not an UPDATE (#5).
+        //
+        // The address is what password resets and invitations are sent to, so a
+        // stolen session that could simply *retype* it could take the account
+        // over entirely. Two proofs are therefore required before anything
+        // changes: the current password (the person at the keyboard is the
+        // owner), and control of the new inbox (the confirmation link). The
+        // users.email column itself is not touched here — the pending address
+        // waits on the row until confirm-email.php promotes it.
+        $emailChange = !$fieldErrors && $email !== strtolower((string)$user['email']);
+        if ($emailChange) {
+            $stmt = $conn->prepare("SELECT password FROM users WHERE id = ?");
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!password_verify($_POST['current_password'] ?? '', $row['password'] ?? '')) {
+                $fieldErrors['current_password'] = 'Enter your current password to change the email address.';
+            }
+            // The confirmation email is the only thing that proves the new
+            // inbox exists. Without SMTP it can never be sent, so the change
+            // is refused rather than parked forever.
+            if (empty($fieldErrors['email']) && !smtpConfigured($conn)) {
+                $fieldErrors['email'] = 'Email changes need outgoing email to be configured. Ask your administrator.';
+            }
+        }
+
         $submittedTz = trim($_POST['timezone'] ?? '');
         if ($submittedTz !== '' && !isValidTimezone($submittedTz)) {
             $fieldErrors['timezone'] = 'Select a timezone from the list.';
         }
 
         if (!$fieldErrors) {
-            $stmt = $conn->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
-            $stmt->bind_param('ssi', $name, $email, $userId);
+            // Name saves immediately; email does not. See above.
+            $stmt = $conn->prepare("UPDATE users SET name = ? WHERE id = ?");
+            $stmt->bind_param('si', $name, $userId);
             $stmt->execute();
             $stmt->close();
 
@@ -68,7 +97,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $_SESSION['user_name'] = $name;
-            $_SESSION['user_email'] = $email;
+
+            if ($emailChange) {
+                // A raw token goes to the new inbox; only its hash is stored.
+                // The expiry is computed by MySQL on the same clock
+                // confirm-email.php reads it against (NOW(), like
+                // reset_expires in sendTenantInvite()).
+                $token = generateToken();
+                $stmt = $conn->prepare(
+                    "UPDATE users SET pending_email = ?, email_change_token = ?,
+                                      email_change_expires = DATE_ADD(NOW(), INTERVAL 24 HOUR)
+                     WHERE id = ?"
+                );
+                $hash = hash('sha256', $token);
+                $stmt->bind_param('ssi', $email, $hash, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                $link = APP_URL . '/confirm-email.php?token=' . $token;
+                try {
+                    [$html, $text] = mailEmailChangeConfirm($name, $email, $link);
+                    if (!sendEmail($email, 'Confirm your new email address', $html, $text)) {
+                        error_log("Email-change confirmation could not be sent to {$email}");
+                    }
+                    // The old address hears about it too: a change the owner
+                    // did not request is exactly the event they must be able
+                    // to react to while the pending address is still pending.
+                    [$html, $text] = mailEmailChangeNotice($name, $email);
+                    sendEmail($user['email'], 'Your sign-in email is being changed', $html, $text);
+                } catch (Throwable $e) {
+                    error_log('email-change mail failed: ' . $e->getMessage());
+                }
+
+                logAudit($conn, 'profile.email_change_requested', 'user', $userId, [
+                    'old' => $user['email'], 'new' => $email,
+                ]);
+
+                formRespond(true, 'Profile updated. Check ' . $email
+                    . ' for a confirmation link — your sign-in email changes once you click it.', $self);
+            }
 
             logAudit($conn, 'profile.update', 'user', $userId);
 
@@ -118,9 +185,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if (!password_verify($currentPassword, $row['password'])) {
             $fieldErrors = ['current_password' => 'This is not your current password.'];
             formErrors('Current password is incorrect.', $fieldErrors);
-        } elseif (strlen($newPassword) < 8) {
-            $fieldErrors = ['new_password' => 'At least 8 characters.'];
-            formErrors('New password must be at least 8 characters.', $fieldErrors);
+        } elseif (($pwProblem = passwordProblem($newPassword, ['email' => $user['email'], 'name' => $user['name']])) !== null) {
+            // One shared policy (#24): the same rule as set-password.php and
+            // reset-password.php, so the three forms cannot drift apart.
+            $fieldErrors = ['new_password' => $pwProblem];
+            formErrors($pwProblem, $fieldErrors);
         } elseif ($newPassword !== $confirmPassword) {
             $fieldErrors = ['confirm_password' => 'This does not match the new password.'];
             formErrors('Passwords do not match.', $fieldErrors);
@@ -135,9 +204,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $stmt->bind_param('si', $hashed, $userId);
             $stmt->execute();
             $stmt->close();
+            // A password change is precisely the "someone else might be in"
+            // moment, so every other session dies now (#13). The caller's own
+            // session is re-stamped inside bumpSessionVersion().
+            bumpSessionVersion($conn, $userId);
             logAudit($conn, 'profile.password_change', 'user', $userId);
             formRespond(true, 'Password changed successfully.', $self);
         }
+    }
+
+    // "Log out all other devices" (#13): bumps the version counter, which ends
+    // every session except this one — re-stamped inside the call.
+    if ($_POST['action'] === 'logout_others') {
+        bumpSessionVersion($conn, $userId);
+        logAudit($conn, 'profile.logout_others', 'user', $userId);
+        formRespond(true, 'Every other session has been signed out.', $self);
+    }
+
+    // Cancelling a pending email change (#5): clears the parked address, the
+    // token and its expiry. Harmless when nothing is pending.
+    if ($_POST['action'] === 'cancel_email_change') {
+        $stmt = $conn->prepare(
+            "UPDATE users SET pending_email = NULL, email_change_token = NULL,
+                              email_change_expires = NULL
+             WHERE id = ?"
+        );
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $stmt->close();
+        logAudit($conn, 'profile.email_change_cancelled', 'user', $userId);
+        formRespond(true, 'The email change was cancelled.', $self);
     }
 }
 
@@ -200,6 +296,28 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 
     <div class="col-lg-8">
+        <?php // A pending email change sits between "requested" and "confirmed"
+              // (#5): the account still signs in with the old address, and the
+              // owner needs to see that state — and be able to kill it — or an
+              // unnoticed pending change is indistinguishable from a quiet
+              // account takeover. ?>
+        <?php if (!empty($user['pending_email'])): ?>
+            <div class="card border-warning mb-4">
+                <div class="card-body d-flex align-items-center justify-content-between gap-3 py-3">
+                    <div class="small">
+                        <i class="bi bi-envelope-exclamation text-warning me-1"></i>
+                        Email change pending: <strong><?= sanitize($user['pending_email']) ?></strong> —
+                        click the confirmation link sent to that inbox (it expires in 24 hours).
+                    </div>
+                    <form method="POST" data-ajax>
+                        <?= csrfField() ?>
+                        <input type="hidden" name="action" value="cancel_email_change">
+                        <button class="btn btn-sm btn-outline-secondary">Cancel</button>
+                    </form>
+                </div>
+            </div>
+        <?php endif; ?>
+
         <div class="card mb-4">
             <div class="card-header">Profile Information</div>
             <div class="card-body">
@@ -219,6 +337,14 @@ require_once __DIR__ . '/includes/header.php';
                             <input type="email" name="email" class="form-control<?= fieldClass('email') ?>"
                                    value="<?= sanitize($user['email']) ?>" maxlength="255" required>
                             <?= fieldError('email') ?>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Current Password</label>
+                            <input type="password" name="current_password" class="form-control<?= fieldClass('current_password') ?>"
+                                   autocomplete="current-password">
+                            <div class="form-text">Only needed when you change the email address — a
+                                confirmation link is then sent to the new inbox.</div>
+                            <?= fieldError('current_password') ?>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Company Name</label>
@@ -328,7 +454,7 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
                     <div class="mb-3">
                         <label class="form-label">New Password</label>
-                        <input type="password" name="new_password" class="form-control<?= fieldClass('new_password') ?>" placeholder="Min. 8 characters" required>
+                        <input type="password" name="new_password" class="form-control<?= fieldClass('new_password') ?>" placeholder="At least 10 characters" required>
                         <?= fieldError('new_password') ?>
                     </div>
                     <div class="mb-3">
@@ -341,6 +467,20 @@ require_once __DIR__ . '/includes/header.php';
                           // simply make again, and a password change already requires the
                           // current password, which is a stronger check than a dialog. ?>
                     <button type="submit" class="btn btn-primary">Change Password</button>
+                </form>
+
+                <hr class="my-4">
+                <?php // Ends every session but this one (#13). Uses the same
+                      // mechanism a password change uses, so it also revokes
+                      // remembered devices and kills sessions on browsers the
+                      // tenant no longer controls. ?>
+                <form method="POST" data-ajax>
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="logout_others">
+                    <button type="submit" class="btn btn-outline-danger"
+                            data-confirm="Sign out every other browser and device? This one stays signed in.">
+                        Log out all other devices
+                    </button>
                 </form>
             </div>
         </div>

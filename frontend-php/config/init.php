@@ -50,3 +50,6 @@ require_once $basePath . '/includes/appointments.php';
 require_once $basePath . '/includes/calendar.php';
 require_once $basePath . '/includes/handoff.php';
 require_once $basePath . '/includes/chatbot.php';
+// Housekeeping sweep (#29): runs off the reminder tick, needs settings.php's
+// retention accessor and functions.php's appSetting() above.
+require_once $basePath . '/includes/maintenance.php';

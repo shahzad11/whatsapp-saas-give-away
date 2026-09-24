@@ -129,11 +129,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // limit and submitted after hitting it. The edit path above
                 // is not checked, for the same reason re-link is not — an
                 // existing account is already counted.
-                [$quotaOk, , $quotaLimit] = checkWaAccountQuota($conn, $userId);
-                if (!$quotaOk) {
-                    $error = 'Your ' . htmlspecialchars($plan['name'] ?? 'current') . ' plan allows '
-                           . formatLimit($quotaLimit) . ' WhatsApp account(s). Upgrade to connect more.';
-                } else {
+                // #18: the quota re-check and the insert run inside one named
+                // lock per tenant — two simultaneous submits each saw room
+                // under the limit and both connected. redirect() inside the
+                // closure exits, and withNamedLock()'s finally still releases.
+                $error = withNamedLock($conn, 'wa_link_' . $userId,
+                    function () use ($conn, $userId, $plan, $label, $v, $pnid, $wabaDb, $tokenEnc, $secretEnc) {
+                    [$quotaOk, , $quotaLimit] = checkWaAccountQuota($conn, $userId);
+                    if (!$quotaOk) {
+                        return 'Your ' . htmlspecialchars($plan['name'] ?? 'current') . ' plan allows '
+                               . formatLimit($quotaLimit) . ' WhatsApp account(s). Upgrade to connect more.';
+                    }
                     $sessionId = cloudNewSessionId();
                     $webhookKey = cloudNewKey();
                     $verifyToken = cloudNewKey();
@@ -153,9 +159,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         redirect(APP_URL . '/whatsapp/connect-cloud.php?account=' . (int)$newId . '&saved=1');
                     } catch (mysqli_sql_exception $e) {
                         // uniq_wa_cloud_pnid: one phone number id, one account.
-                        $error = 'That phone number id is already connected.';
+                        return 'That phone number id is already connected.';
                     }
-                }
+                    return '';
+                    });
             }
         }
     }

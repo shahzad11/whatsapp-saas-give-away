@@ -19,10 +19,10 @@ require_once dirname(__DIR__) . '/config/init.php';
 
 header('Content-Type: application/json');
 
-if (!isLoggedIn()) {
-    echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
-    exit;
-}
+// A session cookie proves a login happened; suspension, deactivation and
+// password changes must bite on the next request, so the check is the active
+// user guard, not the bare session flag (#3).
+requireActiveUserJson();
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 
@@ -130,15 +130,10 @@ if (!$quotaOk) {
 
 // This one the console skipped entirely, so a tenant out of AI replies could
 // still burn tokens from the test tab — the one limit that protects a real
-// per-token bill was the one the console did not honour.
-[$replyQuotaOk, , $replyLimit] = checkChatbotReplyQuota($conn, $userId, $config);
-if (!$replyQuotaOk) {
-    echo json_encode([
-        'ok' => false,
-        'error' => 'Monthly AI reply limit reached (' . number_format($replyLimit) . ').',
-    ]);
-    exit;
-}
+// per-token bill was the one the console did not honour. Enforced now by the
+// reservation taken below, right before the model call — not here, because the
+// handoff short-circuit in between exits without calling the model and must
+// not spend a reply.
 
 // --- Would this have been handed to a person instead? ------------------------
 //
@@ -223,6 +218,17 @@ if ($context['appointments'] === null && planHasFeature($plan, 'appointments')) 
         . 'minimum notice and how far ahead you take bookings.');
 }
 
+// Reserved, not checked (#18): same reason as the live path, and released on a
+// failed call for the same reason — a model that errored cost nothing to bill.
+$replyLimit = chatbotReplyLimit($plan, $config);
+if (!quotaReserve($conn, $userId, 'chatbot_replies', $replyLimit)) {
+    echo json_encode([
+        'ok' => false,
+        'error' => 'Monthly AI reply limit reached (' . number_format($replyLimit) . ').',
+    ]);
+    exit;
+}
+
 $result = chatbotGenerateReply($conn, $userId, $config, $history, $message, $context);
 
 $modelLabel = '';
@@ -242,27 +248,16 @@ chatbotLogEvent($conn, $userId, $result['ok'] ? 'replied' : ($result['reason'] ?
 ]);
 
 if (!$result['ok']) {
+    quotaRelease($conn, $userId, 'chatbot_replies');
     // The tenant owns this configuration, so they see the real reason — unlike a
     // customer, who only ever sees the fallback message.
     echo json_encode(['ok' => false, 'error' => $result['error'] ?: 'The model did not reply.']);
     exit;
 }
 
-// The counter this endpoint always claimed to honour.
-//
-// It checked both allowances and incremented neither, so "testing must not be a
-// way to spend the platform's money for free" — the comment that has been at the
-// top of this file since it was written — was not actually true of the code
-// under it. A tenant who had sent nothing could run an unbounded number of paid
-// model calls from this tab, because the gate was reading a counter that testing
-// never moved.
-//
-// Only `chatbot_replies`, and deliberately not `messages_sent`: the AI-reply
-// counter exists to bound per-token vendor spend, which a test genuinely incurs,
-// while `messages_sent` counts messages that reached a customer, and this one
-// did not. Charged after the call succeeds, matching the live path — a model
-// that errored cost nothing to bill for.
-incrementUsage($conn, $userId, 'chatbot_replies');
+// The reservation above is the `chatbot_replies` charge — kept on success,
+// matching the live path. Deliberately not `messages_sent`: that counter is
+// for messages that reached a customer, and this one did not.
 
 // --- The action line, previewed and not carried out --------------------------
 //

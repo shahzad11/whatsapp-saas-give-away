@@ -14,6 +14,9 @@ $current = [
     'default_plan_code'     => defaultPlanCode($conn),
     'login_max_attempts'    => loginMaxAttempts($conn),
     'login_lockout_minutes' => loginLockoutMinutes($conn),
+    'chatbot_loop_max_replies' => chatbotLoopMaxReplies($conn),
+    'billing_grace_days'    => billingGraceDays($conn),
+    'audit_retention_days'  => auditRetentionDays($conn),
     'payment_instructions'  => paymentInstructions($conn),
     // #26. Blank is a legitimate value here — it simply means tenants who set no
     // number of their own get no WhatsApp alert — so this one is read raw rather
@@ -164,6 +167,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors['login_lockout_minutes'] = 'Must be between 1 and 1440 minutes.';
     }
 
+    $loopMax = (int)($_POST['chatbot_loop_max_replies'] ?? 0);
+    if ($loopMax < 1 || $loopMax > 100) {
+        // 0 would switch the guard off — and silence is the failure it exists
+        // to prevent — so it is refused rather than stored.
+        $errors['chatbot_loop_max_replies'] = 'Must be between 1 and 100.';
+    }
+
+    $graceDays = (int)($_POST['billing_grace_days'] ?? -1);
+    if ($graceDays < 0 || $graceDays > 60) {
+        $errors['billing_grace_days'] = 'Must be between 0 and 60 days.';
+    }
+
+    $retentionDays = (int)($_POST['audit_retention_days'] ?? 0);
+    if ($retentionDays < 30 || $retentionDays > 3650) {
+        $errors['audit_retention_days'] = 'Must be at least 30 days.';
+    }
+
     $instructions = trim($_POST['payment_instructions'] ?? '');
     if (mb_strlen($instructions) > 5000) {
         $errors['payment_instructions'] = 'Too long (max 5000 characters).';
@@ -230,6 +250,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setAppSetting($conn, 'default_plan_code', $planCode);
         setAppSetting($conn, 'login_max_attempts', (string)$maxAttempts);
         setAppSetting($conn, 'login_lockout_minutes', (string)$lockout);
+        setAppSetting($conn, 'chatbot_loop_max_replies', (string)$loopMax);
+        setAppSetting($conn, 'billing_grace_days', (string)$graceDays);
+        setAppSetting($conn, 'audit_retention_days', (string)$retentionDays);
         setAppSetting($conn, 'payment_instructions', $instructions);
         setAppSetting($conn, 'handoff_notify_number', $notifyNumber);
         setAppSetting($conn, 'billing_contact_methods', implode(',', $contactMethods));
@@ -299,6 +322,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'currency' => $currency, 'timezone' => $timezone,
         'default_plan_code' => $planCode,
         'login_max_attempts' => $maxAttempts, 'login_lockout_minutes' => $lockout,
+        'chatbot_loop_max_replies' => $loopMax, 'billing_grace_days' => $graceDays,
+        'audit_retention_days' => $retentionDays,
         'payment_instructions' => $instructions,
         'handoff_notify_number' => (string)$notifyNumber,
         'billing_contact_methods' => $contactMethods,
@@ -465,18 +490,22 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         <div class="card-body">
             <div class="row g-3">
                 <div class="col-md-4">
-                    <label class="form-label">Max failed attempts</label>
+                    <label class="form-label">Failed attempts per email before the delay starts</label>
                     <input type="number" name="login_max_attempts" min="1" max="100"
                            class="form-control<?= sCls('login_max_attempts') ?>"
                            value="<?= (int)$current['login_max_attempts'] ?>">
-                    <div class="form-text">Counted per email and per IP independently.</div>
+                    <div class="form-text">Past this, each attempt must wait a little longer (2s, 4s, 8s…
+                        up to 60s) — a slowdown, not a lockout, so nobody can freeze a customer
+                        out by mistyping their email. Browsers that have signed in before are exempt.</div>
                     <?= sErr('login_max_attempts') ?>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label">Lockout window (minutes)</label>
+                    <label class="form-label">Window + IP block (minutes)</label>
                     <input type="number" name="login_lockout_minutes" min="1" max="1440"
                            class="form-control<?= sCls('login_lockout_minutes') ?>"
                            value="<?= (int)$current['login_lockout_minutes'] ?>">
+                    <div class="form-text">How long failures are counted for, and how long one source
+                        IP is blocked once it floods (30 failures in the window, minimum 10).</div>
                     <?= sErr('login_lockout_minutes') ?>
                 </div>
             </div>
@@ -500,6 +529,43 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     Each alert is sent from the customer’s linked account and counts as one message.
                 </div>
                 <?= sErr('handoff_notify_number') ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4" id="set-automation">
+        <div class="card-header">Automation &amp; housekeeping</div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Chatbot replies per chat (10 min)</label>
+                    <input type="number" name="chatbot_loop_max_replies" min="1" max="100"
+                           class="form-control<?= sCls('chatbot_loop_max_replies') ?>"
+                           value="<?= (int)$current['chatbot_loop_max_replies'] ?>">
+                    <div class="form-text">The loop guard silences a conversation after this many
+                        bot replies inside 10 minutes — the shape of two bots talking to each
+                        other. It also trips on replies arriving faster than a person can type.</div>
+                    <?= sErr('chatbot_loop_max_replies') ?>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Billing grace period (days)</label>
+                    <input type="number" name="billing_grace_days" min="0" max="60"
+                           class="form-control<?= sCls('billing_grace_days') ?>"
+                           value="<?= (int)$current['billing_grace_days'] ?>">
+                    <div class="form-text">A paid plan that lapses is marked past due for this
+                        many days, then the customer is moved to a free plan automatically.
+                        0 expires immediately.</div>
+                    <?= sErr('billing_grace_days') ?>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Audit log retention (days)</label>
+                    <input type="number" name="audit_retention_days" min="30" max="3650"
+                           class="form-control<?= sCls('audit_retention_days') ?>"
+                           value="<?= (int)$current['audit_retention_days'] ?>">
+                    <div class="form-text">Audit rows older than this are removed by the daily
+                        cleanup. Minimum 30 — the log is what an incident investigation reads.</div>
+                    <?= sErr('audit_retention_days') ?>
+                </div>
             </div>
         </div>
     </div>

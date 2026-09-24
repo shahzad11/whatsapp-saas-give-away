@@ -16,13 +16,11 @@ require_once dirname(__DIR__) . '/config/init.php';
 header('Content-Type: application/json');
 
 // requireAdmin() would redirect, and a 302 to an HTML page is useless to
-// fetch(). The checks are the same ones it makes, answered as JSON.
-if (!isLoggedIn()) {
-    http_response_code(401);
-    echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
-    exit;
-}
-if (!isAdmin()) {
+// fetch(). The checks are the same ones it makes, answered as JSON — through
+// requireActiveUserJson(), so a *suspended* admin's open tab cannot keep
+// spending SerpApi credits either (#21).
+$user = requireActiveUserJson();
+if ((int)$user['is_admin'] !== 1) {
     // Identical for "not an admin" whether or not the feature exists — nothing
     // here confirms to a tenant what lives behind it.
     http_response_code(403);
@@ -42,8 +40,26 @@ if (!csrfTokenValid($input['csrf_token'] ?? '')) {
     exit;
 }
 
-$adminId = (int)$_SESSION['user_id'];
+$adminId = (int)$user['id'];
 $settings = leadsSettings($conn);
+
+// Every call below spends a real SerpApi credit, so a stuck script — or a
+// hijacked admin session — gets a ceiling rather than an open wallet (#21).
+// Counted from the ledger itself (created_at is CURRENT_TIMESTAMP, so the
+// comparison is on the same clock the rows are written with).
+$stmt = $conn->prepare(
+    "SELECT COUNT(*) FROM lead_searches
+     WHERE created_by = ? AND created_at > NOW() - INTERVAL 1 HOUR"
+);
+$stmt->bind_param('i', $adminId);
+$stmt->execute();
+$recent = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+$stmt->close();
+if ($recent >= 30) {
+    http_response_code(429);
+    echo json_encode(['ok' => false, 'error' => 'Search limit reached (30 per hour). Try again later.']);
+    exit;
+}
 
 $query    = trim((string)($input['query'] ?? ''));
 $location = trim((string)($input['location'] ?? ''));

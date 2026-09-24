@@ -53,6 +53,7 @@ function chatbotDefaultConfig($userId) {
         'handoff_share_number' => 0,
         'handoff_share_message' => '',
         'reply_delay_seconds' => 300,
+        'appointment_max_upcoming' => 1,
     ];
 }
 
@@ -152,6 +153,9 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     // an absent or nonsensical field becomes the default, never a zero step that
     // would make the slot walk spin.
     $slot      = apptSlotMinutes(['appointment_slot_minutes' => $in['appointment_slot_minutes'] ?? null]);
+    // #10: how many upcoming bookings one chat may hold at once. 0 is a real
+    // value here — it means unlimited — so it is clamped, not defaulted.
+    $maxUpcoming = max(0, min(20, (int)($in['appointment_max_upcoming'] ?? 1)));
     // #36: the form posts a checkbox per lead time, and an unchecked box posts
     // nothing at all — so "no reminders" arrives as an absent field, exactly
     // like a caller that never knew about reminders. The hidden marker tells the
@@ -199,10 +203,11 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             outside_hours_message, transcribe_audio,
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
             appointment_slot_minutes, reminder_minutes, booking_confirmation,
+            appointment_max_upcoming,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
             handoff_notify_number, handoff_notify_email,
             handoff_share_number, handoff_share_message, reply_delay_seconds)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -217,6 +222,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             appointment_slot_minutes = VALUES(appointment_slot_minutes),
             reminder_minutes = VALUES(reminder_minutes),
             booking_confirmation = VALUES(booking_confirmation),
+            appointment_max_upcoming = VALUES(appointment_max_upcoming),
             handoff_enabled = VALUES(handoff_enabled), handoff_phrases = VALUES(handoff_phrases),
             handoff_ack_message = VALUES(handoff_ack_message),
             handoff_resume_message = VALUES(handoff_resume_message),
@@ -234,7 +240,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $params = [
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb,
         $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
-        $apptOn, $lead, $horizon, $slot, $reminders, $confirm,
+        $apptOn, $lead, $horizon, $slot, $reminders, $confirm, $maxUpcoming,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
         $shareNum, $shareMsg, $delay,
     ];
@@ -1012,6 +1018,118 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
     return $result['ok'] ? [$result['text'], null] : [null, $result['error']];
 }
 
+// --- The loop guard (#9) -----------------------------------------------------
+//
+// A bot in a loop looks exactly like a bot working hard: replies keep going out
+// while a second auto-responder — or a phone stuck re-sending — feeds each one
+// back in. Two cheap counters in chatbot_chat_state catch it: too many replies
+// inside a rolling 10-minute window, and inbound messages that keep arriving
+// faster than a human can type. All times UTC, all stored per (tenant, chat).
+//
+// The verdict helpers are pure — the decision is testable without a database,
+// and the DB helpers below are the only code that touches the table.
+
+const CHATBOT_LOOP_WINDOW_SECONDS = 600;    // replies are counted inside 10 minutes
+const CHATBOT_LOOP_FAST_SECONDS = 3;        // an inbound this soon after a bot send is machine-speed
+const CHATBOT_LOOP_FAST_LIMIT = 3;          // that many in a row means it is not a person
+const CHATBOT_HOURS_MESSAGE_INTERVAL = 43200; // the out-of-hours message goes at most once per 12h per chat
+
+// How many replies a chat may get inside one window before the bot goes quiet.
+// Admin-tunable; never below 1, because 0 would silence the bot with no hint
+// anywhere that a setting did it.
+function chatbotLoopMaxReplies(?mysqli $conn = null) {
+    $value = (int)overrideSetting($conn, 'chatbot_loop_max_replies');
+    return max(1, $value > 0 ? $value : 5);
+}
+
+// Returns a short detail string when this chat must not be replied to, null
+// otherwise.
+function chatbotLoopVerdict(array $state, int $nowTs, int $maxReplies): ?string {
+    if ((int)($state['fast_streak'] ?? 0) >= CHATBOT_LOOP_FAST_LIMIT) {
+        return 'machine-speed replies';
+    }
+
+    $windowStart = isset($state['window_started_at'])
+        ? strtotime($state['window_started_at'] . ' UTC') : null;
+    if ($windowStart !== null
+        && $nowTs - $windowStart < CHATBOT_LOOP_WINDOW_SECONDS
+        && (int)($state['window_count'] ?? 0) >= $maxReplies) {
+        return 'replies ' . (int)$state['window_count'] . '/10min';
+    }
+    return null;
+}
+
+// The out-of-hours message is an answer too — sent in a loop it is just as
+// noisy — so it is capped at one per 12 hours per chat.
+function chatbotHoursMessageDue(?string $lastSentUtc, int $nowTs): bool {
+    if ($lastSentUtc === null || $lastSentUtc === '') return true;
+    return $nowTs - strtotime($lastSentUtc . ' UTC') >= CHATBOT_HOURS_MESSAGE_INTERVAL;
+}
+
+// The next fast-reply streak after an inbound at $nowTs: +1 when the customer
+// "answered" within seconds of the bot's last send, reset to 0 on any slower
+// reply — a human reading and typing always takes longer.
+function chatbotFastStreakNext(?string $lastBotSendUtc, int $currentStreak, int $nowTs): int {
+    if ($lastBotSendUtc === null || $lastBotSendUtc === '') return 0;
+    $delta = $nowTs - strtotime($lastBotSendUtc . ' UTC');
+    return ($delta >= 0 && $delta < CHATBOT_LOOP_FAST_SECONDS) ? $currentStreak + 1 : 0;
+}
+
+function chatbotChatState(mysqli $conn, $userId, $chatId): array {
+    $key = chatbotChatKey($chatId);
+    $stmt = $conn->prepare(
+        "SELECT * FROM chatbot_chat_state WHERE user_id = ? AND chat_key = ?"
+    );
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: [];
+}
+
+// Called once per real inbound — the deferred pass is the same message seen
+// again, not the customer typing faster.
+function chatbotNoteInbound(mysqli $conn, $userId, $chatId): void {
+    $state = chatbotChatState($conn, $userId, $chatId);
+    $next = chatbotFastStreakNext($state['last_bot_send_at'] ?? null,
+        (int)($state['fast_streak'] ?? 0), time());
+
+    $key = chatbotChatKey($chatId);
+    $stmt = $conn->prepare(
+        "INSERT INTO chatbot_chat_state (user_id, chat_key, fast_streak) VALUES (?,?,?)
+         ON DUPLICATE KEY UPDATE fast_streak = VALUES(fast_streak)"
+    );
+    $stmt->bind_param('isi', $userId, $key, $next);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Records a bot send in one statement: the window rolls over when it has been
+// quiet for ten minutes, otherwise the count inside it grows. 'hours' also
+// stamps the out-of-hours message so the next one waits 12 hours.
+function chatbotNoteBotSend(mysqli $conn, $userId, $chatId, $kind): void {
+    $key = chatbotChatKey($chatId);
+    $hoursCols = $kind === 'hours' ? ', hours_msg_sent_at' : '';
+    $hoursVals = $kind === 'hours' ? ', UTC_TIMESTAMP()' : '';
+    $hoursUpd  = $kind === 'hours' ? ', hours_msg_sent_at = UTC_TIMESTAMP()' : '';
+    $stmt = $conn->prepare(
+        "INSERT INTO chatbot_chat_state
+            (user_id, chat_key, window_started_at, window_count, last_bot_send_at$hoursCols)
+         VALUES (?,?,UTC_TIMESTAMP(),1,UTC_TIMESTAMP()$hoursVals)
+         ON DUPLICATE KEY UPDATE
+            window_count = IF(window_started_at IS NULL
+                              OR window_started_at < UTC_TIMESTAMP() - INTERVAL 10 MINUTE,
+                              1, window_count + 1),
+            window_started_at = IF(window_started_at IS NULL
+                              OR window_started_at < UTC_TIMESTAMP() - INTERVAL 10 MINUTE,
+                              UTC_TIMESTAMP(), window_started_at),
+            last_bot_send_at = UTC_TIMESTAMP()$hoursUpd"
+    );
+    $stmt->bind_param('is', $userId, $key);
+    $stmt->execute();
+    $stmt->close();
+}
+
 // The whole live path for one inbound WhatsApp message.
 //
 // Every exit records why, because the failure mode of a chatbot is silence and
@@ -1048,10 +1166,24 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
         return $outcome;
     };
 
+    // Suspension has to silence the bot too (#3): otherwise a suspended tenant
+    // keeps getting AI replies on the platform's bill. Logged, unlike
+    // 'skipped_disabled', because "the bot stopped" is the thing the operator
+    // needs to see — and the row is the proof the gate fired.
+    if (($account['owner_status'] ?? 'active') === 'suspended'
+        || !(int)($account['owner_active'] ?? 1)) {
+        return $log('skipped_suspended');
+    }
+
     if (empty($config['is_enabled'])) return 'skipped_disabled';   // not logged: would be every message
 
     $skip = chatbotSkipReason($config, $msg);
     if ($skip !== null) return $log($skip);
+
+    // #9: feed the loop guard's streak counter. Only the live pass counts — a
+    // deferred run re-sees the same message, which is not the customer typing
+    // faster.
+    if (!$deferred) chatbotNoteInbound($conn, $userId, $chatId);
 
     // #51: the reply delay. The message is parked in chatbot_pending_replies —
     // one row per chat, so a burst of messages coalesces into a single reply
@@ -1109,11 +1241,21 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
         return $log('skipped_handoff', ['detail' => $openHandoff['status']]);
     }
 
+    // #9: the loop guard sits between "a person is handling this" and every
+    // send below, because a loop can burn through either an AI reply or the
+    // out-of-hours line. An open handoff already silences everything, so the
+    // guard only needs to watch chats the bot is still answering.
+    $chatState = chatbotChatState($conn, $userId, $chatId);
+    if ($loopWhy = chatbotLoopVerdict($chatState, time(), chatbotLoopMaxReplies($conn))) {
+        return $log('skipped_loop_guard', ['detail' => $loopWhy]);
+    }
+
     if (!chatbotWithinHours($config, $timezone)) {
-        // A configured out-of-hours message is still an answer, and it is free.
+        // A configured out-of-hours message is still an answer — and in a loop
+        // it is just as noisy — so it goes out at most once per 12h per chat.
         $outside = trim((string)($config['outside_hours_message'] ?? ''));
-        if ($outside !== '') {
-            chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $outside);
+        if ($outside !== '' && chatbotHoursMessageDue($chatState['hours_msg_sent_at'] ?? null, time())) {
+            chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $outside, 'hours');
         }
         return $log('skipped_hours');
     }
@@ -1165,157 +1307,169 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
     // like every other refusal here: the tenant sees the reason in their
     // activity log, and the customer sees nothing rather than an apology for a
     // limit they cannot do anything about.
-    [$replyQuotaOk, , $replyLimit] = checkChatbotReplyQuota($conn, $userId, $config);
-    if (!$replyQuotaOk) return $log('quota_replies', ['detail' => 'AI reply limit ' . $replyLimit]);
-
-    $history = chatbotFetchHistory($sessionId, $chatId, $tenantId, (int)($config['history_messages'] ?? 10));
-    // #34: assembled by the one shared helper, so the tenant's test console is
-    // reasoning about the same business, the same services and the same clock.
-    $context = chatbotBuildContext($conn, $userId, $config, $timezone, $chatId);
-    $appointments = $context['appointments'];
-
-    $reply = chatbotGenerateReply($conn, $userId, $config, $history, $text, $context);
-
-    if (!$reply['ok']) {
-        $reason = $reply['reason'] ?? 'llm_error';
-
-        // The fallback is for a model that *failed* — the customer asked a
-        // question and deserves an acknowledgement rather than silence.
-        //
-        // It is emphatically NOT for a configuration or entitlement problem. A
-        // tenant whose plan does not include the chatbot, or who has no model
-        // selected, must send nothing at all: otherwise every inbound message
-        // fires a WhatsApp reply and burns their message quota on a feature they
-        // are not even using. The tenant sees the reason in their activity log;
-        // the customer sees nothing, which is the correct behaviour for a bot
-        // that was never really switched on.
-        $fallback = trim((string)($config['fallback_message'] ?? ''));
-        if ($reason === 'llm_error' && $fallback !== '') {
-            chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $fallback);
-        }
-        return $log($reason, [
-            'detail' => $reply['error'] ?? 'unknown',
-            'model_id' => $reply['model_id'] ?? null,
-            'latency_ms' => $reply['latency_ms'] ?? null,
-        ]);
+    //
+    // Reserved rather than checked-then-counted (#18): the old pair had the
+    // usual hole between them. The reservation is released on every exit below
+    // that did not put a reply in front of the customer — a model that failed
+    // cost nothing to bill for.
+    $replyLimit = chatbotReplyLimit($plan, $config);
+    if (!quotaReserve($conn, $userId, 'chatbot_replies', $replyLimit)) {
+        return $log('quota_replies', ['detail' => 'AI reply limit ' . $replyLimit]);
     }
+    $replySpent = false;
 
-    // The model may have proposed a booking. It is stripped from the reply
-    // before anything is sent — the customer must never see the protocol — and
-    // then carried out (or refused) against the real calendar.
-    [$modelProse, $action] = chatbotExtractAction($reply['text']);
+    try {
+        $history = chatbotFetchHistory($sessionId, $chatId, $tenantId, (int)($config['history_messages'] ?? 10));
+        // #34: assembled by the one shared helper, so the tenant's test console is
+        // reasoning about the same business, the same services and the same clock.
+        $context = chatbotBuildContext($conn, $userId, $config, $timezone, $chatId);
+        $appointments = $context['appointments'];
 
-    // #46: one bounded retry. A draft that asserts a booking exists without
-    // emitting the booking line booked nothing, so the model is told that and
-    // asked once more — most times it then sends the line properly and the
-    // booking happens for real instead of being corrected after the fact. Only
-    // when there was no action at all: a reply that already carried one is not
-    // second-guessed.
-    $retried = false;
-    if ($appointments !== null && $action === null && chatbotClaimsBooking($modelProse)) {
-        $retry = chatbotGenerateReply($conn, $userId, $config, $history, $text,
-            $context + ['nudge' => 'booking_line_missing']);
-        $retried = true;
-        if (!empty($retry['ok'])) {
-            [$retryProse, $retryAction] = chatbotExtractAction($retry['text']);
-            // Only a booking line redeems the draft: the nudge asked for exactly
-            // that, and adopting a different action (or none) would be a second
-            // guess at what the customer meant.
-            if (($retryAction['action'] ?? '') === 'book') {
-                $modelProse = $retryProse;
-                $action = $retryAction;
-                $reply = $retry;   // usage/latency logged should be the call used
+        $reply = chatbotGenerateReply($conn, $userId, $config, $history, $text, $context);
+
+        if (!$reply['ok']) {
+            $reason = $reply['reason'] ?? 'llm_error';
+
+            // The fallback is for a model that *failed* — the customer asked a
+            // question and deserves an acknowledgement rather than silence.
+            //
+            // It is emphatically NOT for a configuration or entitlement problem. A
+            // tenant whose plan does not include the chatbot, or who has no model
+            // selected, must send nothing at all: otherwise every inbound message
+            // fires a WhatsApp reply and burns their message quota on a feature they
+            // are not even using. The tenant sees the reason in their activity log;
+            // the customer sees nothing, which is the correct behaviour for a bot
+            // that was never really switched on.
+            $fallback = trim((string)($config['fallback_message'] ?? ''));
+            if ($reason === 'llm_error' && $fallback !== '') {
+                chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $fallback, 'reply');
+            }
+            return $log($reason, [
+                'detail' => $reply['error'] ?? 'unknown',
+                'model_id' => $reply['model_id'] ?? null,
+                'latency_ms' => $reply['latency_ms'] ?? null,
+            ]);
+        }
+
+        // The model may have proposed a booking. It is stripped from the reply
+        // before anything is sent — the customer must never see the protocol — and
+        // then carried out (or refused) against the real calendar.
+        [$modelProse, $action] = chatbotExtractAction($reply['text']);
+
+        // #46: one bounded retry. A draft that asserts a booking exists without
+        // emitting the booking line booked nothing, so the model is told that and
+        // asked once more — most times it then sends the line properly and the
+        // booking happens for real instead of being corrected after the fact. Only
+        // when there was no action at all: a reply that already carried one is not
+        // second-guessed.
+        $retried = false;
+        if ($appointments !== null && $action === null && chatbotClaimsBooking($modelProse)) {
+            $retry = chatbotGenerateReply($conn, $userId, $config, $history, $text,
+                $context + ['nudge' => 'booking_line_missing']);
+            $retried = true;
+            if (!empty($retry['ok'])) {
+                [$retryProse, $retryAction] = chatbotExtractAction($retry['text']);
+                // Only a booking line redeems the draft: the nudge asked for exactly
+                // that, and adopting a different action (or none) would be a second
+                // guess at what the customer meant.
+                if (($retryAction['action'] ?? '') === 'book') {
+                    $modelProse = $retryProse;
+                    $action = $retryAction;
+                    $reply = $retry;   // usage/latency logged should be the call used
+                }
             }
         }
-    }
 
-    $actionResult = '';
-    $actionOutcome = null;
-    // Set by chatbotApplyAction only when a booking row was actually written —
-    // a refusal line counts as a result but not as a booking (#46).
-    $applied = false;
-    // A handoff action needs no appointment context; a booking one does.
-    if ($action !== null && ($appointments !== null || ($action['action'] ?? '') === 'handoff')) {
-        $actionResult = chatbotApplyAction($conn, $userId, $config, $action, [
-            'timezone' => $appointments['timezone'] ?? $timezone,
-            'account_id' => (int)$account['id'],
-            'chat_id' => $chatId,
-            'session_id' => $sessionId,
-            'tenant_id' => $tenantId,
-            'topic' => $text,
-            'handoff_enabled' => !empty($config['handoff_enabled']),
-            'customer_phone' => chatbotPhoneFromJid($chatId),
-        ], $applied);
-        if ($actionResult !== '') {
-            $actionOutcome = $action['action'];
+        $actionResult = '';
+        $actionOutcome = null;
+        // Set by chatbotApplyAction only when a booking row was actually written —
+        // a refusal line counts as a result but not as a booking (#46).
+        $applied = false;
+        // A handoff action needs no appointment context; a booking one does.
+        if ($action !== null && ($appointments !== null || ($action['action'] ?? '') === 'handoff')) {
+            $actionResult = chatbotApplyAction($conn, $userId, $config, $action, [
+                'timezone' => $appointments['timezone'] ?? $timezone,
+                'account_id' => (int)$account['id'],
+                'chat_id' => $chatId,
+                'session_id' => $sessionId,
+                'tenant_id' => $tenantId,
+                'topic' => $text,
+                'handoff_enabled' => !empty($config['handoff_enabled']),
+                'customer_phone' => chatbotPhoneFromJid($chatId),
+            ], $applied);
+            if ($actionResult !== '') {
+                $actionOutcome = $action['action'];
+            }
         }
-    }
 
-    // #42: the customer questioned availability and the model answered from the
-    // conversation instead of asking the diary. Asked here rather than trusted to
-    // the prompt, because the prompt already says not to and a real model still
-    // does it. Skipped entirely when the model *did* ask — which is the normal
-    // case, and then this costs one string comparison.
-    //
-    // It runs on the model's prose, not the composed reply: the sentences it
-    // strips are the ones quoting times, and the action result appended below —
-    // a confirmation or a refusal — is exactly the fresh answer that must not be
-    // eaten.
-    if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
-        $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $text, $modelProse, $timezone);
-        if ($rechecked !== null) {
-            $modelProse = $rechecked;
-            $actionOutcome = 'availability re-check';
+        // #42: the customer questioned availability and the model answered from the
+        // conversation instead of asking the diary. Asked here rather than trusted to
+        // the prompt, because the prompt already says not to and a real model still
+        // does it. Skipped entirely when the model *did* ask — which is the normal
+        // case, and then this costs one string comparison.
+        //
+        // It runs on the model's prose, not the composed reply: the sentences it
+        // strips are the ones quoting times, and the action result appended below —
+        // a confirmation or a refusal — is exactly the fresh answer that must not be
+        // eaten.
+        if ($appointments !== null && ($action['action'] ?? '') !== 'availability') {
+            $rechecked = chatbotRecheckedAvailability($conn, $userId, $config, $history, $text, $modelProse, $timezone);
+            if ($rechecked !== null) {
+                $modelProse = $rechecked;
+                $actionOutcome = 'availability re-check';
+            }
         }
-    }
 
-    // #46: the truth check. When no booking write succeeded, two things must
-    // never reach the customer unexamined: the model claiming one did, and the
-    // customer asking whether one exists. Both are answered from the
-    // appointments table, which is the only source that knows.
-    $truthLine = '';
-    // $applied covers cancel as well as book and reschedule: a successful
-    // cancel's "Cancelled: …" line is already the truth, so "Nothing is booked
-    // yet" must not follow it.
-    $bookingSucceeded = $applied;
-    if ($appointments !== null && !$bookingSucceeded
-        && (chatbotClaimsBooking($modelProse) || chatbotAsksBookingStatus($text))) {
-        // The claim sentences go even when a refusal line is also being sent —
-        // "confirmed!" followed by "that time is taken" contradicts itself.
-        $modelProse = chatbotStripBookingClaims($modelProse);
-        // ...but the truth line is skipped when a refused book already says it:
-        // "sorry, that time was taken" followed by "nothing is booked yet"
-        // would say the same thing twice.
-        if ($actionResult === '' || ($action['action'] ?? '') !== 'book') {
-            $truthLine = chatbotBookingTruthLine(apptNextForChat($conn, $userId, $chatId), $timezone, $config);
+        // #46: the truth check. When no booking write succeeded, two things must
+        // never reach the customer unexamined: the model claiming one did, and the
+        // customer asking whether one exists. Both are answered from the
+        // appointments table, which is the only source that knows.
+        $truthLine = '';
+        // $applied covers cancel as well as book and reschedule: a successful
+        // cancel's "Cancelled: …" line is already the truth, so "Nothing is booked
+        // yet" must not follow it.
+        $bookingSucceeded = $applied;
+        if ($appointments !== null && !$bookingSucceeded
+            && (chatbotClaimsBooking($modelProse) || chatbotAsksBookingStatus($text))) {
+            // The claim sentences go even when a refusal line is also being sent —
+            // "confirmed!" followed by "that time is taken" contradicts itself.
+            $modelProse = chatbotStripBookingClaims($modelProse);
+            // ...but the truth line is skipped when a refused book already says it:
+            // "sorry, that time was taken" followed by "nothing is booked yet"
+            // would say the same thing twice.
+            if ($actionResult === '' || ($action['action'] ?? '') !== 'book') {
+                $truthLine = chatbotBookingTruthLine(apptNextForChat($conn, $userId, $chatId), $timezone, $config);
+            }
+            $actionOutcome = $actionOutcome ?: 'truth check';
         }
-        $actionOutcome = $actionOutcome ?: 'truth check';
+
+        // Prose first, then the system's own lines: the action result (a
+        // confirmation, a refusal, a diary answer) and the truth check.
+        $replyText = trim(implode("\n\n", array_filter(
+            [$modelProse, $actionResult, $truthLine],
+            function ($s) { return trim((string)$s) !== ''; }
+        )));
+
+        if (trim($replyText) === '') $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
+
+        $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $replyText, 'reply');
+        if (!$sent) {
+            return $log('send_error', ['model_id' => $reply['model_id'] ?? null, 'detail' => 'backend refused the send']);
+        }
+
+        $replySpent = true;
+        return $log('replied', [
+            'detail' => $actionOutcome
+                ? 'appointment ' . $actionOutcome . ($retried ? ' (after retry)' : '')
+                : null,
+            'model_id' => $reply['model_id'] ?? null,
+            'prompt_tokens' => $reply['usage']['prompt'] ?? null,
+            'completion_tokens' => $reply['usage']['completion'] ?? null,
+            'latency_ms' => $reply['latency_ms'] ?? null,
+        ]);
+    } finally {
+        if (!$replySpent) quotaRelease($conn, $userId, 'chatbot_replies');
     }
-
-    // Prose first, then the system's own lines: the action result (a
-    // confirmation, a refusal, a diary answer) and the truth check.
-    $replyText = trim(implode("\n\n", array_filter(
-        [$modelProse, $actionResult, $truthLine],
-        function ($s) { return trim((string)$s) !== ''; }
-    )));
-
-    if (trim($replyText) === '') $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
-
-    $sent = chatbotSendReply($conn, $userId, $tenantId, $sessionId, $chatId, $replyText);
-    if (!$sent) {
-        return $log('send_error', ['model_id' => $reply['model_id'] ?? null, 'detail' => 'backend refused the send']);
-    }
-
-    incrementUsage($conn, $userId, 'chatbot_replies');
-    return $log('replied', [
-        'detail' => $actionOutcome
-            ? 'appointment ' . $actionOutcome . ($retried ? ' (after retry)' : '')
-            : null,
-        'model_id' => $reply['model_id'] ?? null,
-        'prompt_tokens' => $reply['usage']['prompt'] ?? null,
-        'completion_tokens' => $reply['usage']['completion'] ?? null,
-        'latency_ms' => $reply['latency_ms'] ?? null,
-    ]);
 }
 
 // --- The reply-delay queue (#51) --------------------------------------------
@@ -1795,14 +1949,28 @@ function chatbotRecheckedAvailability(mysqli $conn, $userId, array $config, arra
 // still shows as unread sends the tenant to a conversation that needs nothing
 // from them, which is exactly the noise the bot exists to remove.
 //
-// Deliberately *not* gated on anything else: the only way to reach this
-// function is to have decided the bot may speak, and every one of those
-// decisions — including the handover check — is made before the send.
-function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $text) {
+// The message quota is reserved here rather than trusted to the caller (#18):
+// every path that decides the bot may speak reaches this function, so this is
+// the one place where "no send skips the quota" can be made true. A refusal is
+// reported through $why ('quota'); a backend failure releases the reservation
+// and reports 'send'.
+//
+// $kind feeds the loop guard (#9): pass 'reply', 'hours' or 'handoff' for sends
+// into a customer conversation, null for reminders and notifications, which are
+// one-off messages rather than turns the guard should count.
+function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $text, ?string $kind = null, &$why = null) {
+    if (!quotaReserveMessage($conn, $userId)) {
+        $why = 'quota';
+        return false;
+    }
     $resp = waSendText($conn, $sessionId, $chatId, $text, $tenantId, 30);
 
-    if (!$resp || empty($resp['ok'])) return false;
-    incrementUsage($conn, $userId, 'messages_sent');
+    if (!$resp || empty($resp['ok'])) {
+        quotaRelease($conn, $userId, 'messages_sent');
+        $why = 'send';
+        return false;
+    }
+    if ($kind !== null) chatbotNoteBotSend($conn, $userId, $chatId, $kind);
     chatbotMarkChatRead($tenantId, $sessionId, $chatId);
     return true;
 }
@@ -1811,11 +1979,19 @@ function chatbotSendReply(mysqli $conn, $userId, $tenantId, $sessionId, $chatId,
 // Same endpoint family and same metering as a text reply: a document the
 // tenant sent is a message the tenant sent, and a delivered one still marks
 // the conversation read for the same reason a text reply does.
-function chatbotSendDocument(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $bytes, $filename, $mime, $caption) {
+function chatbotSendDocument(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, $bytes, $filename, $mime, $caption, ?string $kind = null, &$why = null) {
+    if (!quotaReserveMessage($conn, $userId)) {
+        $why = 'quota';
+        return false;
+    }
     $resp = waSendMedia($conn, $sessionId, $chatId, 'document', $bytes, $mime, $filename, $caption, $tenantId, 30);
 
-    if (!$resp || empty($resp['ok'])) return false;
-    incrementUsage($conn, $userId, 'messages_sent');
+    if (!$resp || empty($resp['ok'])) {
+        quotaRelease($conn, $userId, 'messages_sent');
+        $why = 'send';
+        return false;
+    }
+    if ($kind !== null) chatbotNoteBotSend($conn, $userId, $chatId, $kind);
     chatbotMarkChatRead($tenantId, $sessionId, $chatId);
     return true;
 }
@@ -1844,7 +2020,7 @@ function chatbotStartHandoff(mysqli $conn, $userId, $tenantId, array $config, ar
         // a bot stuttering.
         $share = handoffShareLine($conn, $config);
         if ($share !== '') $ack = trim($ack . "\n\n" . $share);
-        chatbotSendReply($conn, $userId, $tenantId, $data['session_id'], $data['chat_id'], $ack);
+        chatbotSendReply($conn, $userId, $tenantId, $data['session_id'], $data['chat_id'], $ack, 'handoff');
 
         $handoff = handoffById($conn, $userId, $id);
         if ($handoff) {
@@ -1866,7 +2042,15 @@ function chatbotPhoneFromJid($jid) {
 }
 
 function chatbotAccountForSession(mysqli $conn, $sessionId) {
-    $stmt = $conn->prepare("SELECT id, user_id, session_id FROM wa_accounts WHERE session_id = ?");
+    // Joined to users so the caller can gate on the *owner's* standing, not
+    // just the account's: a suspended tenant's bot must not keep answering on
+    // the platform's LLM bill (#3).
+    $stmt = $conn->prepare(
+        "SELECT a.id, a.user_id, a.session_id,
+                u.status AS owner_status, u.is_active AS owner_active
+         FROM wa_accounts a JOIN users u ON u.id = a.user_id
+         WHERE a.session_id = ?"
+    );
     $stmt->bind_param('s', $sessionId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -1886,6 +2070,8 @@ function chatbotOutcomeLabel($outcome) {
         'skipped_broadcast'    => 'Skipped — status broadcast',
         'skipped_newsletter'   => 'Skipped — channel',
         'skipped_disabled'     => 'Skipped — chatbot off',
+        'skipped_suspended'    => 'Skipped — account suspended',
+        'skipped_loop_guard'   => 'Skipped — loop guard',
         'skipped_handoff'      => 'Silent — with a person',
         'handoff'              => 'Passed to a person',
         'skipped_hours'        => 'Outside active hours',
@@ -1921,6 +2107,8 @@ function chatbotOutcomeHint($outcome) {
         'skipped_handoff'   => 'A person is handling that conversation, so the bot stayed silent.',
         'handoff'           => 'Someone asked for a person. Open Live chats to reply.',
         'skipped_disabled'  => 'The chatbot was switched off when this arrived.',
+        'skipped_suspended' => 'The account is suspended, so the bot did not answer.',
+        'skipped_loop_guard' => 'This chat was replying too fast or too often to be a person, so the bot went quiet rather than feed a loop.',
         'skipped_notify_number' => 'That is the number your handover alerts go to, so the bot never answers it.',
         'deferred'          => 'Held back by the reply delay; the answer goes out when the delay ends.',
     ][$outcome] ?? '';

@@ -1,11 +1,9 @@
 <?php
 require_once dirname(__DIR__, 2) . '/config/init.php';
 
-if (!isLoggedIn()) {
-    http_response_code(401);
-    echo 'Unauthorized';
-    exit;
-}
+// The active-user guard (#3): a CSV of the tenant's contacts is exactly the
+// data a suspended account must stop being able to pull.
+requireActiveUser(false);
 
 $userId = (int)$_SESSION['user_id'];
 

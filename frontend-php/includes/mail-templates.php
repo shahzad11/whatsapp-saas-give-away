@@ -113,6 +113,65 @@ function mailTenantInvite($name, $link, $expiryHours = 168) {
     return [$html, $text];
 }
 
+// The confirmation half of an email change (#5): goes to the NEW address,
+// because clicking it is the proof that inbox belongs to the requester.
+function mailEmailChangeConfirm($name, $newEmail, $link) {
+    $html = mailLayout(
+        'Confirm your new email address',
+        '<p>Hello ' . sanitize($name) . ',</p>'
+        . '<p>You asked to change the email address on your ' . sanitize(brandName())
+        . ' account to <strong>' . sanitize($newEmail) . '</strong>. '
+        . 'Confirm it below — the change only takes effect once you do. The link expires in 24 hours.</p>'
+        . mailButton($link, 'Confirm this email address')
+        . '<p style="margin-top:20px;color:#64748b;font-size:13px;">'
+        . 'If you did not ask for this, ignore this message — your sign-in email has not changed yet.</p>'
+    );
+    $text = "Hello {$name},\n\nYou asked to change the email address on your "
+        . brandName() . " account to {$newEmail}. Confirm it here "
+        . "(expires in 24 hours):\n\n{$link}\n\n"
+        . "If you did not ask for this, ignore this message — nothing has changed yet.\n";
+    return [$html, $text];
+}
+
+// The warning half (#5): goes to the OLD address, because a change the owner
+// did not make is exactly the event they must hear about while the pending
+// address can still be cancelled from the profile page.
+function mailEmailChangeNotice($name, $newEmail) {
+    $html = mailLayout(
+        'Your sign-in email is being changed',
+        '<p>Hello ' . sanitize($name) . ',</p>'
+        . '<p>A change of the sign-in email on your ' . sanitize(brandName())
+        . ' account to <strong>' . sanitize($newEmail) . '</strong> was requested. '
+        . 'It takes effect when the new address confirms it.</p>'
+        . '<p style="margin-top:20px;color:#64748b;font-size:13px;">'
+        . 'If this was not you, change your password immediately and contact support — '
+        . 'someone else may have your session.</p>'
+    );
+    $text = "Hello {$name},\n\nA change of the sign-in email on your " . brandName()
+        . " account to {$newEmail} was requested. It takes effect when the new address confirms it.\n\n"
+        . "If this was not you, change your password immediately and contact support.\n";
+    return [$html, $text];
+}
+
+// Sent when an account's failed-login counter reaches the threshold (#27):
+// once per burst, not per failure, so the alert itself cannot mail-bomb.
+function mailFailedLoginAlert($name, $email) {
+    $html = mailLayout(
+        'Failed sign-in attempts',
+        '<p>Hello ' . sanitize($name) . ',</p>'
+        . '<p>There have been several failed sign-in attempts on your '
+        . sanitize(brandName()) . ' account (' . sanitize($email) . ').</p>'
+        . '<p style="margin-top:20px;color:#64748b;font-size:13px;">'
+        . 'If this was you, no action is needed — the attempts are slowed automatically. '
+        . 'If it was not you, sign in and change your password, or contact support.</p>'
+    );
+    $text = "Hello {$name},\n\nThere have been several failed sign-in attempts on your "
+        . brandName() . " account ({$email}).\n\n"
+        . "If this was you, no action is needed. If it was not you, sign in and change "
+        . "your password, or contact support.\n";
+    return [$html, $text];
+}
+
 function mailPlanExpiring($name, $planName, $endDate, $instructions, $billingUrl) {
     $days = (int)ceil((strtotime($endDate) - time()) / 86400);
     $when = $days > 0 ? 'in ' . $days . ($days === 1 ? ' day' : ' days') : 'today';
@@ -134,6 +193,30 @@ function mailPlanExpiring($name, $planName, $endDate, $instructions, $billingUrl
         . "Billing: {$billingUrl}\n";
 
     return [mailLayout('Your plan is expiring', $body), $text];
+}
+
+// Sent when the grace period ran out and the tenant was moved to the free
+// plan — the past-due warning already went out; this one says what changed.
+function mailPlanExpired($name, $planName, $endDate, $newPlanName, $instructions, $billingUrl) {
+    $body = '<p>Hello ' . sanitize($name) . ',</p>'
+        . '<p>Your <strong>' . sanitize($planName) . '</strong> plan ended on '
+        . sanitize(date('M j, Y', strtotime($endDate))) . ' and the grace period has now run out, '
+        . 'so the account has been moved to <strong>' . sanitize($newPlanName) . '</strong>.</p>'
+        . '<p>Nothing is lost — you can move back to a paid plan at any time.</p>';
+    if (trim((string)$instructions) !== '') {
+        $body .= '<p style="margin:20px 0 8px;font-weight:600;">How to renew</p>'
+            . '<p style="color:#334155;">' . nl2br(sanitize($instructions)) . '</p>';
+    }
+    $body .= mailButton($billingUrl, 'View billing');
+
+    $text = "Hello {$name},\n\nYour {$planName} plan ended on "
+        . date('M j, Y', strtotime($endDate)) . " and the grace period has run out, "
+        . "so the account has been moved to {$newPlanName}.\n\n"
+        . "Nothing is lost — you can move back to a paid plan at any time.\n\n"
+        . (trim((string)$instructions) !== '' ? "How to renew:\n{$instructions}\n\n" : '')
+        . "Billing: {$billingUrl}\n";
+
+    return [mailLayout('Your plan has expired', $body), $text];
 }
 
 function mailTest() {

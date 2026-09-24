@@ -101,6 +101,20 @@ try {
             $skipped++;
             continue;
         }
+
+        // A suspended tenant's reminders stop too (#3): the web guard already
+        // locks them out, but this tick authenticates with the shared secret,
+        // not their session, so it has to check the owner row itself.
+        $stmt = $conn->prepare("SELECT status, is_active FROM users WHERE id = ?");
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $owner = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$owner || $owner['status'] === 'suspended' || !(int)$owner['is_active']) {
+            apptMarkReminder($conn, $reminderId, 'skipped', 'customer account suspended');
+            $skipped++;
+            continue;
+        }
         if (strtotime($appt['scheduled_at'] . ' UTC') <= time()) {
             apptMarkReminder($conn, $reminderId, 'missed', 'the appointment passed before this reminder could be sent');
             $missed++;
@@ -161,12 +175,23 @@ try {
         // A send is one HTTP call to the backend and can throw as well as return
         // false. Either way the row must not be left holding a claim.
         try {
-            $ok = chatbotSendReply($conn, $userId, 't' . $userId, $row['session_id'], $row['chat_id'], $text);
+            $why = null;
+            $ok = chatbotSendReply($conn, $userId, 't' . $userId, $row['session_id'], $row['chat_id'], $text, null, $why);
             $error = 'send failed';
         } catch (Throwable $e) {
             $ok = false;
+            $why = null;
             $error = 'send error: ' . $e->getMessage();
             error_log("Appointment reminder {$reminderId} threw: " . $e->getMessage());
+        }
+
+        // The pre-check above can lose a race with another send; a quota refusal
+        // here is final for the same reason that check is — the allowance does
+        // not free up in the next minute, so there is nothing to retry.
+        if (!$ok && ($why ?? '') === 'quota') {
+            apptMarkReminder($conn, $reminderId, 'failed', 'monthly message limit reached');
+            $failed++;
+            continue;
         }
 
         if ($ok) {
@@ -202,6 +227,22 @@ try {
     exit;
 }
 
+// This tick is also the stack's only regular task runner, so the two
+// once-a-period sweeps ride it (#8, #29). Each is throttled internally and each
+// wrapped so a failure here can never cost a reminder or the heartbeat.
+$billingSweep = ['ran' => false];
+$maintenance = ['ran' => false];
+try {
+    $billingSweep = billingExpireSubscriptions($conn);
+} catch (Throwable $e) {
+    error_log('billing expiry pass failed: ' . $e->getMessage());
+}
+try {
+    $maintenance = maintenanceCleanup($conn);
+} catch (Throwable $e) {
+    error_log('maintenance pass failed: ' . $e->getMessage());
+}
+
 $health = apptReminderHealth($conn);
 $elapsedMs = (int)round((microtime(true) - $startedAt) * 1000);
 
@@ -233,6 +274,8 @@ echo json_encode([
     'swept'      => $missedSwept,
     'deferred'   => $deferred,
     'replies_processed' => $repliesDrained['processed'],
+    'billing'    => $billingSweep,
+    'maintenance' => $maintenance,
     'elapsed_ms' => $elapsedMs,
     'health'     => $health,
 ]);

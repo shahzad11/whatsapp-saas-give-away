@@ -1,6 +1,7 @@
 import QRCode from 'qrcode'
 import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, sendSessionEvent, markSessionChatRead, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
 import { transcodeForTranscription } from './audio.js'
+import { mediaDownloadHeaders } from './media-path.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -138,11 +139,10 @@ export async function downloadMedia(req, res, next) {
       return res.status(status).json({ ok: false, error: result.error })
     }
 
-    const headers = { 'Content-Type': result.mime }
-    if (result.filename) {
-      // Quotes and CR/LF would let a remote-supplied filename inject a header.
-      headers['Content-Disposition'] = `inline; filename="${sanitizeFilename(result.filename)}"`
-    }
+    // The declared mime is the sender's claim (#7): disposition is decided by
+    // the allow-list, so a "document" that is really HTML downloads rather
+    // than rendering with our origin's session.
+    const headers = mediaDownloadHeaders(result.mime, result.filename || 'media')
 
     // Streamed from disk in the normal case: res.sendFile handles Range (so a
     // long video can be seeked instead of downloaded whole), Content-Length and
@@ -159,11 +159,6 @@ export async function downloadMedia(req, res, next) {
   } catch (e) {
     next(e)
   }
-}
-
-// A document's filename comes from the sender, i.e. from outside.
-function sanitizeFilename(name) {
-  return String(name).replace(/[\r\n"\\]/g, '_').slice(0, 200)
 }
 
 export async function sendMessage(req, res, next) {

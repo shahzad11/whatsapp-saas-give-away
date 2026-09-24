@@ -951,6 +951,12 @@ function apptRefusalLine($why) {
     return str_ends_with($why, '?') ? $why : $why . ' Could you suggest another time?';
 }
 
+// #10: 0 means unlimited — "at the limit" only exists when the tenant set one.
+// Pure so the boundary is testable without a diary.
+function apptCustomerAtLimit(int $count, int $limit): bool {
+    return $limit > 0 && $count >= $limit;
+}
+
 function apptHumanMinutes($minutes) {
     $minutes = (int)$minutes;
     if ($minutes % 1440 === 0) return ($minutes / 1440) . ' day' . ($minutes === 1440 ? '' : 's');
@@ -1002,6 +1008,40 @@ function apptBookSlot(mysqli $conn, $userId, array $config, array $service, $loc
         // makes it true.
         [$utc, $why] = apptValidateSlot($conn, $userId, $config, $localDateTime, $timezone);
         if (!$utc) return [null, $why];
+
+        // #10: one customer's chatbot bookings are capped, counted inside the
+        // lock so two simultaneous "yes, book it" messages cannot both pass.
+        // Manual bookings are deliberately not limited — a tenant typing into
+        // their own diary knows what they are doing; this guards the customer
+        // who keeps saying yes. Chat id is the primary key; the phone is the
+        // fallback for the same customer reaching a different account.
+        $maxUpcoming = (int)($config['appointment_max_upcoming'] ?? 1);
+        if (($data['source'] ?? '') === 'chatbot' && $maxUpcoming > 0) {
+            $chatId = (string)($data['chat_id'] ?? '');
+            $phone = trim((string)($data['customer_phone'] ?? ''));
+            $stmt = $conn->prepare(
+                "SELECT COUNT(*) AS c, MIN(scheduled_at) AS next_at
+                 FROM appointments
+                 WHERE user_id = ? AND status = 'booked' AND scheduled_at >= UTC_TIMESTAMP()
+                   AND (chat_id = ?" . ($phone !== '' ? " OR customer_phone = ?" : "") . ")"
+            );
+            if ($phone !== '') {
+                $stmt->bind_param('iss', $userId, $chatId, $phone);
+            } else {
+                $stmt->bind_param('is', $userId, $chatId);
+            }
+            $stmt->execute();
+            $existing = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (apptCustomerAtLimit((int)($existing['c'] ?? 0), $maxUpcoming)) {
+                // Ends with '?' so apptRefusalLine() adds nothing: the question
+                // is already the next step the customer needs.
+                return [null, 'You already have a booking on '
+                    . formatUserDate($existing['next_at'], $timezone, 'D j M Y, H:i')
+                    . '. Would you like to move it instead?'];
+            }
+        }
 
         // The length is written down on the row, not looked up later: it is how
         // long *this* booking is, and a tenant who changes the slot length must

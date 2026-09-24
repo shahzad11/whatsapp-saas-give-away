@@ -3,7 +3,7 @@ FROM php:8.3-apache
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && docker-php-ext-install mysqli \
- && a2enmod rewrite headers \
+ && a2enmod rewrite headers remoteip \
  && rm -rf /var/lib/apt/lists/*
 
 # The app root IS the DocumentRoot, so config/ and includes/ sit next to public

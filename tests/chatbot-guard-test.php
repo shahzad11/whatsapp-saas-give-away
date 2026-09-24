@@ -167,5 +167,48 @@ equals('zero is not a way to disable it through a crafted POST', 300, chatbotNor
 equals('nor is a missing field', 300, chatbotNormaliseReplyDelay(null));
 equals('and something huge is not a way to park replies for days', 300, chatbotNormaliseReplyDelay(999999));
 
+// --- #9: the loop guard -------------------------------------------------------
+
+group('The reply window caps how much the bot can say');
+
+$now = time();
+$utc = fn($agoSeconds) => gmdate('Y-m-d H:i:s', $now - $agoSeconds);
+
+equals('the 6th reply inside 10 minutes is refused',
+    'replies 5/10min',
+    chatbotLoopVerdict(['window_started_at' => $utc(300), 'window_count' => 5], $now, 5));
+equals('one under the cap still answers',
+    null,
+    chatbotLoopVerdict(['window_started_at' => $utc(300), 'window_count' => 4], $now, 5));
+equals('the window resets after 10 minutes',
+    null,
+    chatbotLoopVerdict(['window_started_at' => $utc(601), 'window_count' => 12], $now, 5));
+equals('an admin who raises the cap gets more replies',
+    null,
+    chatbotLoopVerdict(['window_started_at' => $utc(300), 'window_count' => 5], $now, 8));
+equals('an empty state never refuses',
+    null,
+    chatbotLoopVerdict([], $now, 5));
+
+group('Replies arriving faster than a person can type are a loop');
+
+equals('three machine-speed inbounds trip the guard',
+    'machine-speed replies',
+    chatbotLoopVerdict(['fast_streak' => 3], $now, 5));
+equals('a 2-second answer extends the streak',
+    1, chatbotFastStreakNext($utc(2), 0, $now));
+equals('and a third consecutive one reaches the limit',
+    3, chatbotFastStreakNext($utc(1), 2, $now));
+equals('a human-paced answer resets the streak',
+    0, chatbotFastStreakNext($utc(30), 2, $now));
+equals('no bot send means nothing to be fast against',
+    0, chatbotFastStreakNext(null, 5, $now));
+
+group('The out-of-hours message goes once per 12 hours');
+
+check('due when never sent', chatbotHoursMessageDue(null, $now));
+check('not due an hour after the last one', !chatbotHoursMessageDue($utc(3600), $now));
+check('due again after 12 hours', chatbotHoursMessageDue($utc(43201), $now));
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

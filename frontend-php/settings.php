@@ -138,6 +138,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $hasChatbot) {
         // reason as the handover email above: a save made for an unrelated
         // reason must not re-cut a diary the tenant configured earlier.
         $input['appointment_slot_minutes'] = $config['appointment_slot_minutes'] ?? null;
+        // appointment_max_upcoming is a disabled input in the same state —
+        // carried forward for the same reason.
+        $input['appointment_max_upcoming'] = $config['appointment_max_upcoming'] ?? 1;
     }
     if (!$canHandoff) {
         $input['handoff_enabled'] = 0;
@@ -763,6 +766,13 @@ require_once __DIR__ . '/includes/header.php';
                                        value="<?= (int)($config['appointment_horizon_days'] ?? 30) ?>">
                                 <span class="input-group-text">days ahead</span>
                             </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Upcoming bookings per customer</label>
+                            <?= helpTip('How many appointments one customer may hold at once through the chat. At the limit the bot offers to move their existing booking instead. 0 means no limit.') ?>
+                            <input type="number" name="appointment_max_upcoming" class="form-control form-control-sm" min="0" max="20"
+                                   value="<?= (int)($config['appointment_max_upcoming'] ?? 1) ?>"
+                                   <?= $canAppointments ? '' : 'disabled' ?>>
                         </div>
                         <?php // #36: the field used to be free text and showed `1440,60`, which
                               // tells a business owner nothing — not even whether the number was

@@ -46,6 +46,18 @@ foreach (['sessionId', 'chatId', 'messageId'] as $required) {
 set_time_limit(180);
 ignore_user_abort(true);
 
+// #20: a message the tenant sent from their own phone is counted for
+// information and never answered. It is metered under its own name so it can
+// never masquerade as platform usage.
+if (!empty($input['deviceSent'])) {
+    $account = chatbotAccountForSession($conn, (string)$input['sessionId']);
+    if ($account) {
+        incrementUsage($conn, (int)$account['user_id'], 'messages_sent_device');
+    }
+    echo json_encode(['ok' => true, 'outcome' => 'device_sent']);
+    exit;
+}
+
 $outcome = chatbotHandleInbound($conn, [
     'sessionId'  => (string)$input['sessionId'],
     'chatId'     => (string)$input['chatId'],

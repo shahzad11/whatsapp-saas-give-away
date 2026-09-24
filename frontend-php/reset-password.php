@@ -10,7 +10,7 @@ if (empty($token)) {
     redirect(APP_URL . '/forgot-password.php');
 }
 
-$stmt = $conn->prepare("SELECT id FROM users WHERE reset_token = ? AND reset_expires > NOW()");
+$stmt = $conn->prepare("SELECT id, name, email FROM users WHERE reset_token = ? AND reset_expires > NOW()");
 $stmt->bind_param("s", $token);
 $stmt->execute();
 $result = $stmt->get_result();
@@ -29,8 +29,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password = $_POST['password'] ?? '';
         $confirmPassword = $_POST['confirm_password'] ?? '';
 
-        if (strlen($password) < 8) {
-            $error = 'Password must be at least 8 characters.';
+        if (($pwProblem = passwordProblem($password, ['email' => $user['email'], 'name' => $user['name']])) !== null) {
+            $error = $pwProblem;
         } elseif ($password !== $confirmPassword) {
             $error = 'Passwords do not match.';
         } else {
@@ -51,6 +51,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->bind_param("si", $hashed, $user['id']);
             $stmt->execute();
             $stmt->close();
+
+            // The reset link is proof of inbox ownership, not of which sessions
+            // are safe — any still-open session (the thief's included) dies here
+            // (#13). Nobody is kept: this page is for guests.
+            bumpSessionVersion($conn, (int)$user['id']);
 
             flash('success', 'Password reset successfully. Please sign in.');
             redirect(APP_URL . '/login.php');
@@ -77,7 +82,7 @@ require_once __DIR__ . '/includes/auth-header.php';
         <?= csrfField() ?>
         <div class="mb-3">
             <label class="form-label">New Password</label>
-            <input type="password" name="password" class="form-control" placeholder="Min. 8 characters" required>
+            <input type="password" name="password" class="form-control" placeholder="At least 10 characters" required>
         </div>
         <div class="mb-4">
             <label class="form-label">Confirm Password</label>

@@ -361,9 +361,10 @@ The stack is up, but it is not usable yet. In the app, as the admin:
                                FenLLM model is already granted to every plan, so
                                there is no model access to set up unless you add
                                another provider's models.
-  5. Admin > Settings        — currency, timezone, whether sign-ups are open.
-  6. Link Account            — pair a WhatsApp number by scanning a QR code.
-  7. Chatbot                 — knowledge base, model, then switch the bot on.
+  5. Admin > Settings        — currency and timezone.
+  6. Admin > Customers       — add your first customer (invite by email or give a temporary password).
+  7. Link Account            — pair a WhatsApp number by scanning a QR code.
+  8. Chatbot                 — knowledge base, model, then switch the bot on.
 
 Also worth knowing:
   - DNS for the host above must already point at this server, and a Traefik with

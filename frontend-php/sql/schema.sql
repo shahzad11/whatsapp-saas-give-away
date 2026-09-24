@@ -1236,3 +1236,176 @@ INSERT IGNORE INTO lead_areas (label, location, sort_order) VALUES
     ('Multan',      'Multan, Pakistan',       60),
     ('Peshawar',    'Peshawar, Pakistan',     70),
     ('Dubai',       'Dubai, United Arab Emirates', 80);
+
+-- ---------------------------------------------------------------------------
+-- Session invalidation (#13)
+-- ---------------------------------------------------------------------------
+--
+-- Changing a password, suspending an account or "log out other devices" must
+-- end every session the account has — including ones held by someone who is
+-- not the owner. Session stores are opaque, so the kill switch is a counter on
+-- the row: guards compare the stamp minted at login against the column and a
+-- mismatch logs out. Bump the counter and every older session dies at once.
+--
+-- DEFAULT 0 and guarded like the plan columns, so deploying this on a database
+-- full of live sessions breaks none of them: a session that predates the
+-- column has no stamp, which reads as the same 0 the row starts at.
+SET @add_session_version := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE users ADD COLUMN session_version INT NOT NULL DEFAULT 0',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'session_version'
+);
+PREPARE stmt_add_session_version FROM @add_session_version;
+EXECUTE stmt_add_session_version;
+DEALLOCATE PREPARE stmt_add_session_version;
+
+-- ---------------------------------------------------------------------------
+-- Verified email changes (#5)
+-- ---------------------------------------------------------------------------
+--
+-- An email change is no longer immediate. The new address is parked on the row
+-- and only promoted once a link sent *to that address* is clicked — a stolen
+-- session used to be able to repoint the account at an address the attacker
+-- owned and take it over through forgot-password. The token is stored hashed
+-- (sha256 hex) for the same reason reset_token should be: the column is a
+-- bearer credential, and a dump must not hand out live ones.
+SET @add_pending_email := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE users ADD COLUMN pending_email VARCHAR(255) NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'pending_email'
+);
+PREPARE stmt_add_pending_email FROM @add_pending_email;
+EXECUTE stmt_add_pending_email;
+DEALLOCATE PREPARE stmt_add_pending_email;
+
+SET @add_email_token := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE users ADD COLUMN email_change_token CHAR(64) NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'email_change_token'
+);
+PREPARE stmt_add_email_token FROM @add_email_token;
+EXECUTE stmt_add_email_token;
+DEALLOCATE PREPARE stmt_add_email_token;
+
+SET @add_email_expires := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE users ADD COLUMN email_change_expires DATETIME NULL',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'email_change_expires'
+);
+PREPARE stmt_add_email_expires FROM @add_email_expires;
+EXECUTE stmt_add_email_expires;
+DEALLOCATE PREPARE stmt_add_email_expires;
+
+-- ---------------------------------------------------------------------------
+-- Chatbot loop guard (#9)
+-- ---------------------------------------------------------------------------
+--
+-- Per (tenant, chat) counters that make a reply loop visible: how many sends
+-- went out inside the current 10-minute window, when the last one went, how
+-- many inbounds arrived faster than a person can type, and when the
+-- out-of-hours message last fired. Keyed by chat_key — sha256 of the jid —
+-- for the same reason chatbot_events is: the admin console reads outcomes and
+-- must never see who a tenant talks to.
+CREATE TABLE IF NOT EXISTS chatbot_chat_state (
+    user_id INT NOT NULL,
+    chat_key CHAR(64) NOT NULL,
+    window_started_at DATETIME NULL,       -- UTC; start of the current reply window
+    window_count INT NOT NULL DEFAULT 0,   -- bot sends inside that window
+    last_bot_send_at DATETIME NULL,        -- UTC; what the fast-reply streak is measured against
+    fast_streak INT NOT NULL DEFAULT 0,    -- consecutive inbounds <3s after the last bot send
+    hours_msg_sent_at DATETIME NULL,       -- UTC; last out-of-hours message, capped at one per 12h
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, chat_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- #10: how many upcoming bookings one customer may hold through the chatbot.
+-- 0 means unlimited; the column rides on chatbot_configs like the rest of the
+-- booking settings.
+SET @add_appt_max_upcoming := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs ADD COLUMN appointment_max_upcoming INT NOT NULL DEFAULT 1',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'appointment_max_upcoming'
+);
+PREPARE stmt_add_appt_max_upcoming FROM @add_appt_max_upcoming;
+EXECUTE stmt_add_appt_max_upcoming;
+DEALLOCATE PREPARE stmt_add_appt_max_upcoming;
+
+-- ---------------------------------------------------------------------------
+-- Subscription expiry (#8)
+-- ---------------------------------------------------------------------------
+--
+-- 'expired' marks a paid subscription whose grace period has run out — the row
+-- stays as history while the tenant is moved to a free plan. Widening the ENUM
+-- is additive; guarded on COLUMN_TYPE so re-applying is a no-op.
+SET @add_sub_expired := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE subscriptions MODIFY COLUMN status ENUM(''trialing'',''active'',''past_due'',''canceled'',''expired'') NOT NULL DEFAULT ''active''',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'status'
+      AND COLUMN_TYPE LIKE '%''expired''%'
+);
+PREPARE stmt_add_sub_expired FROM @add_sub_expired;
+EXECUTE stmt_add_sub_expired;
+DEALLOCATE PREPARE stmt_add_sub_expired;
+
+-- ---------------------------------------------------------------------------
+-- Cleanup indexes (#29)
+-- ---------------------------------------------------------------------------
+--
+-- The daily log sweep deletes by age; without a created_at index each DELETE
+-- scans the whole table it is trimming.
+SET @idx_login_attempts := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_created ON login_attempts (created_at)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_attempts' AND INDEX_NAME = 'idx_created'
+);
+PREPARE stmt_idx_login_attempts FROM @idx_login_attempts;
+EXECUTE stmt_idx_login_attempts;
+DEALLOCATE PREPARE stmt_idx_login_attempts;
+
+SET @idx_chatbot_events := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_created ON chatbot_events (created_at)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_events' AND INDEX_NAME = 'idx_created'
+);
+PREPARE stmt_idx_chatbot_events FROM @idx_chatbot_events;
+EXECUTE stmt_idx_chatbot_events;
+DEALLOCATE PREPARE stmt_idx_chatbot_events;
+
+SET @idx_audit_log := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_created ON audit_log (created_at)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_log' AND INDEX_NAME = 'idx_created'
+);
+PREPARE stmt_idx_audit_log FROM @idx_audit_log;
+EXECUTE stmt_idx_audit_log;
+DEALLOCATE PREPARE stmt_idx_audit_log;
+
+SET @idx_appt_notices := (
+    SELECT IF(COUNT(*) = 0,
+        'CREATE INDEX idx_created ON appointment_notifications (created_at)',
+        'DO 0')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'appointment_notifications' AND INDEX_NAME = 'idx_created'
+);
+PREPARE stmt_idx_appt_notices FROM @idx_appt_notices;
+EXECUTE stmt_idx_appt_notices;
+DEALLOCATE PREPARE stmt_idx_appt_notices;

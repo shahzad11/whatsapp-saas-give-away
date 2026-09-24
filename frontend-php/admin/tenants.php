@@ -81,6 +81,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->bind_param('si', $status, $targetId);
         $stmt->execute();
         $stmt->close();
+        // Suspension must end every open session at once, not wait for the
+        // tenant's next request to trip the status check — the bump also kills
+        // any "remembered device" cookies (#13, #3).
+        if ($action === 'suspend') {
+            bumpSessionVersion($conn, $targetId);
+        }
         logAudit($conn, 'admin.user.' . $action, 'user', $targetId);
         formRespond(true, $action === 'suspend' ? 'Customer suspended.' : 'Customer reactivated.', $self);
     }

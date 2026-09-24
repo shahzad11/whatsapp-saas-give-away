@@ -100,6 +100,94 @@ function incrementUsage(mysqli $conn, $userId, $metric, $by = 1) {
     $stmt->close();
 }
 
+// --- Atomic quota reservations (#18) ----------------------------------------
+//
+// "Check the count, then increment after the send" has a hole: two requests
+// interleaved between the read and the write both see room and both send, so a
+// tenant at their limit overshoots it. Reserving moves the increment *inside*
+// the decision — one UPDATE that returns the value it produced — so concurrent
+// requests get different numbers and only the ones that fit proceed.
+//
+// The trick is LAST_INSERT_ID(expr) inside an UPDATE: MySQL evaluates the
+// expression for the row and leaves the result readable on the same
+// connection, which hands back the new counter value atomically — no
+// transaction, no second round trip, no race.
+//
+// A NULL limit means unlimited and still counts: the reservation pattern keeps
+// metering uniform so a plan change mid-month cannot lose usage.
+function quotaReserve(mysqli $conn, int $userId, string $metric, ?int $limit): bool {
+    $period = currentPeriod();
+    $stmt = $conn->prepare(
+        "INSERT IGNORE INTO usage_counters (user_id, period_ym, metric, value) VALUES (?,?,?,0)"
+    );
+    $stmt->bind_param('iss', $userId, $period, $metric);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $conn->prepare(
+        "UPDATE usage_counters SET value = LAST_INSERT_ID(value + 1)
+         WHERE user_id = ? AND period_ym = ? AND metric = ?"
+    );
+    $stmt->bind_param('iss', $userId, $period, $metric);
+    $stmt->execute();
+    $stmt->close();
+
+    $new = (int)($conn->query("SELECT LAST_INSERT_ID()")->fetch_row()[0] ?? 0);
+
+    if ($limit !== null && $new > $limit) {
+        quotaRelease($conn, $userId, $metric);
+        return false;
+    }
+    return true;
+}
+
+// Hands a reservation back: a send that failed did not cost a message. Floored
+// at 0 so a release raced against the month rollover can never drive a fresh
+// period's counter negative.
+function quotaRelease(mysqli $conn, int $userId, string $metric): void {
+    $period = currentPeriod();
+    $stmt = $conn->prepare(
+        "UPDATE usage_counters SET value = GREATEST(value - 1, 0)
+         WHERE user_id = ? AND period_ym = ? AND metric = ?"
+    );
+    $stmt->bind_param('iss', $userId, $period, $metric);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// The common case: one unit of this tenant's monthly message allowance.
+function quotaReserveMessage(mysqli $conn, int $userId): bool {
+    $plan = getUserPlan($conn, $userId);
+    return quotaReserve($conn, $userId, 'messages_sent',
+        planLimit($plan, 'max_messages_per_month'));
+}
+
+// A named MySQL lock around a check-and-write that spans more than one
+// statement — or an HTTP call, as account linking does. Same shape as
+// apptWithTenantLock(), but keyed by an arbitrary name so these callers are not
+// tied to that function's 'appt:' prefix. And the same trade-off: a lock that
+// cannot be taken within a few seconds runs anyway rather than refusing,
+// because the check inside is still correct without it — the lock only makes
+// two simultaneous requests agree with each other.
+function withNamedLock(mysqli $conn, string $name, callable $fn) {
+    $stmt = $conn->prepare("SELECT GET_LOCK(?, 5)");
+    $stmt->bind_param('s', $name);
+    $stmt->execute();
+    $got = (int)($stmt->get_result()->fetch_row()[0] ?? 0) === 1;
+    $stmt->close();
+
+    try {
+        return $fn();
+    } finally {
+        if ($got) {
+            $stmt = $conn->prepare("SELECT RELEASE_LOCK(?)");
+            $stmt->bind_param('s', $name);
+            $stmt->execute();
+            $stmt->close();
+        }
+    }
+}
+
 // Returns [allowed(bool), used(int), limit(int|null)].
 function checkWaAccountQuota(mysqli $conn, $userId) {
     $plan = getUserPlan($conn, $userId);
@@ -146,18 +234,26 @@ function checkMessageQuota(mysqli $conn, $userId) {
 // this limit is skipped for them — capping usage the platform is not paying for
 // would be arbitrary. The BYO branch is authoritative in chatbotResolveModel(),
 // so the condition here matches the one that actually decides whose key is used.
-function checkChatbotReplyQuota(mysqli $conn, $userId, array $config = null) {
-    $plan = getUserPlan($conn, $userId);
-    $used = usageCount($conn, $userId, 'chatbot_replies');
-
+// The effective monthly AI-reply cap for this tenant — NULL for unlimited,
+// which includes the BYO exemption: a tenant on their own key is billed by the
+// vendor directly, so capping usage the platform is not paying for would be
+// arbitrary. The BYO branch is authoritative in chatbotResolveModel(), so the
+// condition here matches the one that actually decides whose key is used.
+function chatbotReplyLimit($plan, ?array $config) {
     if ($config !== null
         && !empty($config['byo_provider_code'])
         && !empty($config['byo_api_key_encrypted'])
         && planHasFeature($plan, 'llm_byok')) {
-        return [true, $used, null];
+        return null;
     }
+    return planLimit($plan, 'max_chatbot_replies');
+}
 
-    $limit = planLimit($plan, 'max_chatbot_replies');
+function checkChatbotReplyQuota(mysqli $conn, $userId, array $config = null) {
+    $plan = getUserPlan($conn, $userId);
+    $used = usageCount($conn, $userId, 'chatbot_replies');
+    $limit = chatbotReplyLimit($plan, $config);
+
     if ($limit === null) return [true, $used, null];
     return [$used < $limit, $used, $limit];
 }

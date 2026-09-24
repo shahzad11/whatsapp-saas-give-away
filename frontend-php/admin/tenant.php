@@ -195,6 +195,13 @@ if (!$fragment) {
                         <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
+                <?php // #20: sends made on the tenant's own phone, relayed by the
+                      // linked device — informational, never metered. ?>
+                <div class="x-small text-muted">
+                    Sent from their phone this month:
+                    <?= number_format(usageCount($conn, $targetId, 'messages_sent_device')) ?>
+                    (not counted toward the limit).
+                </div>
             </div>
         </div>
 

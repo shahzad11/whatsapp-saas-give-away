@@ -300,10 +300,15 @@ function apptEventPayload(array $appt, array $opts): array {
 // callBackendApi() hop, same metering, same mark-read.
 function apptSendNativeEvent(mysqli $conn, $userId, $tenantId, $sessionId, $chatId, array $appt, $method, array $opts): bool {
     $payload = apptEventPayload($appt, $opts + ['method' => $method]);
+
+    // Metered like every send path: reserve first, hand it back on failure (#18).
+    if (!quotaReserveMessage($conn, $userId)) return false;
     $resp = waSendEvent($conn, $sessionId, $chatId, $payload, $tenantId, 30);
 
-    if (!$resp || empty($resp['ok'])) return false;
-    incrementUsage($conn, $userId, 'messages_sent');
+    if (!$resp || empty($resp['ok'])) {
+        quotaRelease($conn, $userId, 'messages_sent');
+        return false;
+    }
     chatbotMarkChatRead($tenantId, $sessionId, $chatId);
     return true;
 }

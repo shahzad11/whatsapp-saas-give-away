@@ -4,7 +4,8 @@ dotenv.config()
 
 import { createApp } from './server.js'
 import { initAuth } from './middleware/auth.js'
-import { restoreAllSessions, flushAllPendingWrites } from './wa/wa.sessions.js'
+import { restoreAllSessions, flushAllPendingWrites, TENANTS_DIR } from './wa/wa.sessions.js'
+import { startMediaSweeper } from './wa/media-sweeper.js'
 
 const port = Number(process.env.PORT || 3001)
 // Under Docker this is 0.0.0.0 — but the container port is never published, so
@@ -123,6 +124,7 @@ async function start() {
     console.log(`Backend listening on http://${host}:${port}`)
   })
   startReminderScheduler()
+  startMediaSweeper(TENANTS_DIR)
 }
 
 let shuttingDown = false

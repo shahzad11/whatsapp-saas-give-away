@@ -12,6 +12,9 @@ $profile = getUserProfile($conn, $userId);
 $accountsUsed = countWaAccounts($conn, $userId);
 $contactsUsed = countContacts($conn, $userId);
 $messagesUsed = usageCount($conn, $userId, 'messages_sent');
+// Sent straight from the tenant's own phone (#20): informational only — these
+// never touched the platform's send path and never count against the limit.
+$deviceSent = usageCount($conn, $userId, 'messages_sent_device');
 
 $accountsLimit = planLimit($plan, 'max_wa_accounts');
 $contactsLimit = planLimit($plan, 'max_contacts');
@@ -34,6 +37,10 @@ $stmt->bind_param('i', $userId);
 $stmt->execute();
 $subscription = $stmt->get_result()->fetch_assoc();
 $stmt->close();
+
+// #8: while the live subscription is past_due the tenant sees why their paid
+// features are about to drop, and how long they have to renew.
+$pastDue = tenantPastDueNotice($conn, $userId);
 
 $payments = getPayments($conn, $userId, 24);
 $instructions = paymentInstructions($conn);
@@ -72,6 +79,15 @@ function usageBarClass($percent) {
 $pageTitle = 'Billing & Usage';
 require_once __DIR__ . '/includes/header.php';
 ?>
+
+<?php if ($pastDue): ?>
+    <div class="alert alert-warning">
+        Your <strong><?= sanitize($pastDue['plan_name']) ?></strong> plan expired on
+        <?= sanitize(formatUserDate($pastDue['ended'], $tz, 'M j, Y')) ?>.
+        Renew by <?= sanitize(formatUserDate($pastDue['renew_by'], $tz, 'M j, Y')) ?>
+        to keep your features.
+    </div>
+<?php endif; ?>
 
 <div class="row g-4">
     <div class="col-lg-5">
@@ -166,6 +182,16 @@ require_once __DIR__ . '/includes/header.php';
                     <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
+                <?php // #19: counters are calendar-month, not rolling — the same
+                      // boundary the tenant's renewal date suggests, stated so
+                      // "why is it still high on the 2nd" has an answer. ?>
+                <div class="x-small text-muted">Usage resets on the 1st of each month (UTC).</div>
+                <?php if ($deviceSent > 0): ?>
+                    <div class="x-small text-muted mt-1">
+                        Sent from your phone this month: <?= number_format($deviceSent) ?>
+                        (not counted toward your limit).
+                    </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>

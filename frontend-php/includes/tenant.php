@@ -42,19 +42,14 @@ function findOwnedAccount(mysqli $conn, $sessionId, $userId) {
 
 // Rejects the request unless the session belongs to the logged-in tenant.
 // Returns [accountId, tenantId, userId].
+//
+// The login check is requireActiveUser(), not isLoggedIn() (#3): a bare session
+// check would let a suspended tenant — or one still on a temporary password —
+// keep driving their WhatsApp accounts from an open tab.
 function requireOwnedAccount(mysqli $conn, $sessionId, $jsonResponse = true) {
-    if (!isLoggedIn()) {
-        if ($jsonResponse) {
-            header('Content-Type: application/json');
-            echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
-        } else {
-            http_response_code(401);
-            echo 'Unauthorized';
-        }
-        exit;
-    }
+    $user = requireActiveUser($jsonResponse);
 
-    $userId = (int)$_SESSION['user_id'];
+    $userId = (int)$user['id'];
     $account = findOwnedAccount($conn, $sessionId, $userId);
 
     if (!$account) {
@@ -412,6 +407,10 @@ function auditActionLabel($action) {
         'register.activation_resent'    => 'Activation email resent',
         'profile.update'                => 'Profile updated',
         'profile.password_change'       => 'Password changed',
+        'profile.logout_others'         => 'All other sessions signed out',
+        'profile.email_change_requested' => 'Email change requested',
+        'profile.email_change'          => 'Sign-in email changed',
+        'profile.email_change_cancelled' => 'Email change cancelled',
         'wa_account.link'               => 'WhatsApp account linked',
         'wa_account.relink'             => 'WhatsApp account re-linked',
         'wa_account.unlink'             => 'WhatsApp account removed',
@@ -439,6 +438,7 @@ function auditActionLabel($action) {
         'admin.user.suspend'            => 'Customer suspended',
         'admin.user.activate'           => 'Customer reactivated',
         'admin.user.change_plan'        => "Customer’s plan changed",
+        'billing.auto_downgrade'        => 'Subscription expired — moved to the free plan',
         'admin.user.toggle_admin'       => 'Admin rights granted / revoked',
         'admin.serpapi.update'          => 'Lead search settings updated',
         'admin.serpapi.test'            => 'SerpApi key tested (1 credit)',

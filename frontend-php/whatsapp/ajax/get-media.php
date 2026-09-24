@@ -1,11 +1,9 @@
 <?php
 require_once dirname(__DIR__, 2) . '/config/init.php';
 
-if (!isLoggedIn()) {
-    http_response_code(401);
-    echo 'Unauthorized';
-    exit;
-}
+// The active-user guard (#3), plain-text flavour: this endpoint streams
+// customer media, which a suspended tenant must not keep reading.
+requireActiveUser(false);
 
 $sessionId = $_GET['session_id'] ?? '';
 $messageId = $_GET['message_id'] ?? '';
@@ -28,10 +26,13 @@ if (waIsCloud($conn, $sessionId)) {
         echo 'Media not available';
         exit;
     }
-    header('Content-Type: ' . ($r['mime'] ?: 'application/octet-stream'));
+    // Disposition decided here, from an allow-list (#7): Meta's mime_type is
+    // the sender's claim, and a "document" that is really HTML must download,
+    // not render with our session.
+    foreach (mediaResponseHeaders($r['mime'] ?? null, $r['filename'] ?? null) as $h) {
+        header($h);
+    }
     header('Content-Length: ' . strlen($r['bytes']));
-    header('Content-Disposition: inline; filename="'
-        . preg_replace('/[^\w.\-]+/', '_', basename((string)($r['filename'] ?: 'media'))) . '"');
     header('Cache-Control: private, max-age=3600');
     echo $r['bytes'];
     exit;
@@ -49,9 +50,15 @@ $url = BACKEND_URL . '/api/v1/wa/sessions/' . urlencode($sessionId) . '/messages
 // forwarded as they arrive and each body chunk is echoed straight out.
 $headersSent = false;
 $upstreamStatus = 0;
+// Content-Type and Content-Disposition are deliberately NOT forwarded (#7):
+// upstream hands back the sender's declared type, and trusting it was the
+// stored-XSS hole. They are captured instead, and our own
+// mediaResponseHeaders() answer is emitted when the header block ends.
+$upstreamMime = null;
+$upstreamFilename = null;
 // Which upstream headers are safe and useful to pass through. Content-Range and
 // Accept-Ranges are what let a browser seek inside a long video.
-$forward = ['content-type', 'content-disposition', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag'];
+$forward = ['content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag'];
 
 $ch = curl_init($url);
 
@@ -67,7 +74,7 @@ curl_setopt_array($ch, [
     CURLOPT_TIMEOUT => 300,
     CURLOPT_FOLLOWLOCATION => false,
     CURLOPT_HTTPHEADER => $requestHeaders,
-    CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$headersSent, &$upstreamStatus, $forward) {
+    CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$headersSent, &$upstreamStatus, &$upstreamMime, &$upstreamFilename, $forward) {
         $len = strlen($header);
         $trimmed = trim($header);
 
@@ -77,9 +84,16 @@ curl_setopt_array($ch, [
             return $len;
         }
         if ($trimmed === '') {
-            // End of the header block: the status is known, so commit it.
+            // End of the header block: the status is known, so commit it — and
+            // now that upstream's declared type has been seen, answer with our
+            // own allow-listed disposition headers instead of its (#7).
             if ($upstreamStatus > 0) {
                 http_response_code($upstreamStatus);
+                if ($upstreamStatus < 400) {
+                    foreach (mediaResponseHeaders($upstreamMime, $upstreamFilename) as $h) {
+                        header($h);
+                    }
+                }
             }
             $headersSent = true;
             return $len;
@@ -95,6 +109,21 @@ curl_setopt_array($ch, [
             return $len;
         }
         $name = strtolower(substr($trimmed, 0, $colon));
+        $value = trim(substr($trimmed, $colon + 1));
+        if ($name === 'content-type') {
+            $upstreamMime = $value;
+            return $len;
+        }
+        if ($name === 'content-disposition') {
+            // The filename the backend sanitised survives as a hint only; our
+            // own helper re-sanitises it before it reaches a header.
+            if (preg_match('/filename="([^"]*)"/i', $value, $m)) {
+                $upstreamFilename = $m[1];
+            } elseif (preg_match('/filename=([^;\s]+)/i', $value, $m)) {
+                $upstreamFilename = $m[1];
+            }
+            return $len;
+        }
         if (in_array($name, $forward, true)) {
             header($trimmed);
         }

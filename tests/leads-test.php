@@ -294,12 +294,15 @@ check('admin-init.php does', str_contains($adminInit, "/leads.php'"));
 // ajax/leads-search.php is not — it lives outside /admin, so it is the one lead
 // route that rule cannot see, and it is checked here instead.
 $ajax = file_get_contents($app . '/ajax/leads-search.php');
-check('the AJAX search endpoint checks isLoggedIn()', str_contains($ajax, 'isLoggedIn()'));
-check('the AJAX search endpoint checks isAdmin()', str_contains($ajax, '!isAdmin()'));
+// #3/#21: the gate is the active-user guard now — a *suspended* admin must be
+// refused too, which isLoggedIn() could never do.
+check('the AJAX search endpoint uses the active-user guard', str_contains($ajax, 'requireActiveUserJson('));
+check('the AJAX search endpoint checks the admin flag on the verified user row',
+    str_contains($ajax, "(int)\$user['is_admin'] !== 1"));
 check('and answers 403 rather than redirecting', str_contains($ajax, 'http_response_code(403)'));
 check('it verifies the CSRF token', str_contains($ajax, 'csrfTokenValid'));
 check('the guards run before the search does',
-    strpos($ajax, '!isAdmin()') < strpos($ajax, 'leadsSearch('));
+    strpos($ajax, "is_admin'] !== 1") < strpos($ajax, 'leadsSearch('));
 
 // The schema must not grow a tenant column by accident: the moment `leads` has
 // a user_id, somebody will scope a tenant page to it.

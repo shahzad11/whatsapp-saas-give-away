@@ -158,6 +158,131 @@ function applyPaymentToSubscription(mysqli $conn, $userId, $planId, $periodStart
     $stmt->close();
 }
 
+// --- Expiry (#8) -------------------------------------------------------------
+//
+// A paid subscription whose period has ended does not stop at midnight: the
+// tenant is marked past_due for the admin-configured grace period — time for a
+// manual payment to be keyed in — and only then moved to a free plan. Each
+// step is its own UPDATE so a crash mid-pass can be re-run harmlessly: a
+// past_due row is simply picked up again, and an 'expired' one is skipped.
+//
+// Runs off the reminder tick, throttled to once an hour — expiry resolution is
+// measured in days, so a tighter cadence buys nothing.
+function billingExpireSubscriptions(mysqli $conn): array {
+    $last = (string)appSetting($conn, 'billing_expiry_run_at', '');
+    if ($last !== '' && time() - strtotime($last . ' UTC') < 3600) {
+        return ['ran' => false, 'past_due' => 0, 'expired' => 0];
+    }
+    // Stamped before the work so two overlapping ticks cannot both run the
+    // downgrade pass; a crashed run just waits for the next hour.
+    setAppSetting($conn, 'billing_expiry_run_at', gmdate('Y-m-d H:i:s'));
+
+    // Free plans never lapse — there is nothing to expire — and admins are
+    // skipped so the operator's own account cannot be demoted by a cron.
+    $conn->query(
+        "UPDATE subscriptions s
+         JOIN plans p ON s.plan_id = p.id
+         JOIN users u ON s.user_id = u.id
+         SET s.status = 'past_due'
+         WHERE p.price_cents > 0 AND u.is_admin = 0
+           AND s.status IN ('active','trialing')
+           AND s.current_period_end IS NOT NULL
+           AND s.current_period_end < UTC_TIMESTAMP()"
+    );
+    $pastDue = $conn->affected_rows;
+
+    $grace = billingGraceDays($conn);
+    $stmt = $conn->prepare(
+        "SELECT s.id AS sub_id, s.user_id, s.plan_id, s.current_period_end,
+                u.email, u.name, pl.name AS plan_name
+         FROM subscriptions s
+         JOIN plans pl ON s.plan_id = pl.id
+         JOIN users u ON s.user_id = u.id
+         WHERE s.status = 'past_due'
+           AND s.current_period_end IS NOT NULL
+           AND s.current_period_end < UTC_TIMESTAMP() - INTERVAL ? DAY"
+    );
+    $stmt->bind_param('i', $grace);
+    $stmt->execute();
+    $due = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    // Where an expired tenant lands: the configured default plan when it is
+    // free, else the cheapest-positioned free plan. A paid default must not be
+    // silently granted — that would hand out a plan nobody paid for.
+    $fallback = getPlanByCode($conn, defaultPlanCode($conn));
+    if (!$fallback || (int)$fallback['price_cents'] !== 0) {
+        $row = $conn->query(
+            "SELECT * FROM plans WHERE is_active = 1 AND price_cents = 0
+             ORDER BY sort_order ASC LIMIT 1"
+        )->fetch_assoc();
+        $fallback = $row ?: null;
+    }
+
+    $expired = 0;
+    foreach ($due as $row) {
+        if (!$fallback) {
+            error_log('billing expiry: no free plan to move user ' . (int)$row['user_id']
+                . ' to — subscription ' . (int)$row['sub_id'] . ' left past_due');
+            continue;
+        }
+
+        // Expire the old row FIRST: assignPlan() cancels any live-status row,
+        // and a row already 'expired' survives as history instead of being
+        // rewritten as canceled.
+        $stmt = $conn->prepare("UPDATE subscriptions SET status = 'expired' WHERE id = ? AND status = 'past_due'");
+        $subId = (int)$row['sub_id'];
+        $stmt->bind_param('i', $subId);
+        $stmt->execute();
+        // The conditional UPDATE is the claim: two overlapping passes cannot
+        // both downgrade the same row.
+        $didExpire = $stmt->affected_rows > 0;
+        $stmt->close();
+        if (!$didExpire) continue;
+
+        assignPlan($conn, (int)$row['user_id'], (int)$fallback['id']);
+        $expired++;
+
+        logAudit($conn, 'billing.auto_downgrade', 'user', (string)$row['user_id'],
+            ['old_plan_id' => (int)$row['plan_id'], 'new_plan_id' => (int)$fallback['id'],
+             'period_ended' => $row['current_period_end']],
+            (int)$row['user_id']);
+
+        if (smtpConfigured($conn)) {
+            [$html, $text] = mailPlanExpired($row['name'], $row['plan_name'],
+                $row['current_period_end'], $fallback['name'],
+                paymentInstructions($conn), APP_URL . '/billing.php');
+            sendEmail($row['email'], 'Your ' . $row['plan_name'] . ' plan has expired', $html, $text);
+        }
+    }
+
+    return ['ran' => true, 'past_due' => $pastDue, 'expired' => $expired];
+}
+
+// The banner data for a tenant whose live subscription is past_due, or null.
+// Returns plan name, the period end and the renew-by date (end + grace), all
+// UTC strings the caller formats in the tenant's timezone.
+function tenantPastDueNotice(mysqli $conn, $userId): ?array {
+    $stmt = $conn->prepare(
+        "SELECT s.current_period_end, pl.name AS plan_name
+         FROM subscriptions s JOIN plans pl ON s.plan_id = pl.id
+         WHERE s.user_id = ? AND s.status = 'past_due'
+         ORDER BY s.id DESC LIMIT 1"
+    );
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) return null;
+
+    $end = strtotime($row['current_period_end'] . ' UTC');
+    return [
+        'plan_name' => $row['plan_name'],
+        'ended'     => $row['current_period_end'],
+        'renew_by'  => gmdate('Y-m-d H:i:s', $end + billingGraceDays($conn) * 86400),
+    ];
+}
+
 // --- How a tenant contacts sales (#43) ---------------------------------------
 //
 // The plan cards on billing.php need a way to say "I want this plan", and there
