@@ -34,11 +34,20 @@ function fenllmBalancePanelHtml(array $state, ?string $signIn): string {
             <?php
             $fenllmTrial = $balance['trial'] ?? null;
             $canCall = !empty($balance['can_make_calls']);
-            if (is_array($fenllmTrial)) {
-                if (!empty($fenllmTrial['exhausted']))     $trialText = 'trial credit used up';
-                elseif (!empty($fenllmTrial['expired']))   $trialText = 'trial expired';
-                elseif (!empty($fenllmTrial['active']))    $trialText = 'trial active';
-                else                                       $trialText = 'trial ended';
+            $trialActive = is_array($fenllmTrial) && !empty($fenllmTrial['active'])
+                && empty($fenllmTrial['exhausted']) && empty($fenllmTrial['expired']);
+            // A finished trial is only worth naming when it explains why calls
+            // stopped; with paid credit behind it, "used up — $0.00" beside a
+            // green balance reads as a contradiction.
+            if ($trialActive) {
+                $trialText = 'trial active' . (isset($fenllmTrial['remaining']) ? ' — ' . $fenllmTrial['remaining'] . ' left' : '');
+                $trialClass = 'light text-dark';
+            } elseif ($canCall) {
+                $trialText = 'paid credit';
+                $trialClass = 'light text-dark';
+            } elseif (is_array($fenllmTrial)) {
+                $trialText = !empty($fenllmTrial['expired']) ? 'trial expired' : 'trial credit used up';
+                $trialClass = 'danger';
             } else {
                 $trialText = null;
             }
@@ -48,10 +57,7 @@ function fenllmBalancePanelHtml(array $state, ?string $signIn): string {
                     Balance <?= sanitize($balance['balance'] ?? 'unknown') ?>
                 </span>
                 <?php if ($trialText !== null): ?>
-                    <span class="badge bg-<?= $canCall ? 'light text-dark' : 'danger' ?>">
-                        <?= sanitize($trialText) ?>
-                        <?= is_array($fenllmTrial) && isset($fenllmTrial['remaining']) ? ' — ' . sanitize($fenllmTrial['remaining']) . ' left' : '' ?>
-                    </span>
+                    <span class="badge bg-<?= $trialClass ?>"><?= sanitize($trialText) ?></span>
                 <?php endif; ?>
                 <?php if ($signIn): ?>
                     <a href="<?= sanitize($signIn) ?>" target="_blank" rel="noopener" class="small">
@@ -71,7 +77,7 @@ function fenllmBalancePanelHtml(array $state, ?string $signIn): string {
             <?php if (!$canCall): ?>
                 <div class="alert alert-warning small mt-2 mb-0">
                     <i class="bi bi-exclamation-triangle me-1"></i>
-                    This account cannot make calls — the trial credit is spent or expired.
+                    This account cannot make calls — it has no usable credit left.
                     <?php if ($signIn): ?>
                         <a href="<?= sanitize($signIn) ?>" target="_blank" rel="noopener">Sign in to add credit</a>,
                     <?php endif; ?>
@@ -538,8 +544,8 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     <div class="border rounded p-3 mb-3 bg-light">
                         <?php if ($p['has_key']): ?>
                             <p class="small text-muted mb-2">
-                                Your FenLLM trial account was created during installation. Refresh the
-                                balance below to check its available credit.
+                                Your FenLLM account was created automatically during installation. Its
+                                balance below refreshes each time this page opens.
                             </p>
                             <?= fenllmBalancePanelHtml($fenllmState ?? llmFenLlmBalanceState(null), $fenllmSignIn) ?>
                             <form method="post" class="mt-2" data-ajax>
