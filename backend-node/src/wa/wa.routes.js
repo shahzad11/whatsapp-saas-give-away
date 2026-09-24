@@ -1,5 +1,5 @@
 import express from 'express'
-import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia, sendEvent, markChatRead } from './wa.controller.js'
+import { createSession, listSessions, getQr, getStatus, logoutSession, relinkSession, getChats, getMessages, downloadMedia, sendMessage, sendMedia, sendEvent, markChatRead, transcodeAudio } from './wa.controller.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
 export const waRouter = express.Router()
@@ -24,6 +24,10 @@ const send = rateLimit('send', 60, 60_000)
 // Uploads are the expensive path: up to MAX_UPLOAD_BYTES each, base64-inflated,
 // parsed into memory. A far lower ceiling is appropriate.
 const upload = rateLimit('upload', 10, 60_000)
+
+// Transcoding spends ffmpeg CPU on whatever bytes it is handed, once per
+// inbound voice note. Burstier than uploads but still bounded.
+const transcode = rateLimit('transcode', 30, 60_000)
 
 // Creating a session spawns a Baileys socket and writes auth state to disk.
 // Repeated calls are how you exhaust file descriptors, so this is the tightest
@@ -52,6 +56,7 @@ waRouter.get('/sessions/:sessionId/chats/:chatId/messages', poll, getMessages)
 waRouter.get('/sessions/:sessionId/messages/:messageId/media', general, downloadMedia)
 waRouter.post('/sessions/:sessionId/chats/:chatId/messages', send, sendMessage)
 waRouter.post('/sessions/:sessionId/chats/:chatId/media', upload, sendMedia)
+waRouter.post('/audio/transcode', transcode, transcodeAudio)
 // The appointment event card goes out in the same burst pattern as the .ics it
 // replaces, so it shares the upload bucket rather than competing with chat.
 waRouter.post('/sessions/:sessionId/chats/:chatId/event', upload, sendEvent)

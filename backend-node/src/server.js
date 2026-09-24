@@ -17,7 +17,11 @@ export function createApp() {
   const jsonDefault = express.json({ limit: '1mb' })
   const jsonUpload = express.json({ limit: UPLOAD_BODY_LIMIT })
   app.use((req, res, next) => {
-    const parser = req.method === 'POST' && req.path.endsWith('/media') ? jsonUpload : jsonDefault
+    // req.path here is the full path — this middleware is mounted on the app,
+    // before any router, so the /api/v1/wa prefix is still on it.
+    const isUpload = req.method === 'POST'
+      && (req.path.endsWith('/media') || req.path === '/api/v1/wa/audio/transcode')
+    const parser = isUpload ? jsonUpload : jsonDefault
     return parser(req, res, next)
   })
 

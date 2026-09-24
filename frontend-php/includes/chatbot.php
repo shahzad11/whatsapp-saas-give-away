@@ -989,12 +989,25 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
     $audio = chatbotFetchMedia($sessionId, $messageId, $tenantId);
     if ($audio === null) return [null, 'could not fetch the audio'];
 
+    // FenLLM accepts only mp3/wav and WhatsApp sends ogg/opus, so the bytes
+    // are converted on the backend (ffmpeg lives there, not in this image)
+    // before they go anywhere near the vendor.
+    $filename = 'voice.ogg';
+    if ($model['provider_code'] === 'fenllm') {
+        $conv = waTranscodeAudioForTranscription($audio, $tenantId);
+        if (empty($conv['ok']) || $conv['bytes'] === null) {
+            return [null, 'could not convert the voice note: ' . ($conv['error'] ?? 'unknown error')];
+        }
+        $audio = $conv['bytes'];
+        $filename = 'voice.mp3';
+    }
+
     $result = llmTranscribe([
         'provider' => $model['provider_code'],
         'key' => $key,
         'base_url' => llmProviderBaseUrl(['code' => $model['provider_code'], 'base_url' => $model['base_url']]),
         'model' => $model['model_code'],
-    ], $audio, 'voice.ogg');
+    ], $audio, $filename);
 
     return $result['ok'] ? [$result['text'], null] : [null, $result['error']];
 }

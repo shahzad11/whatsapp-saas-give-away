@@ -27,6 +27,10 @@ const LLM_DEFAULT_PROVIDER = 'fenllm';
 const LLM_FENLLM_SIGNUP_URL  = 'https://app.fenllm.com/api/partner/signups';
 const LLM_FENLLM_BALANCE_URL = 'https://app.fenllm.com/api/v1/account/balance';
 
+// How often the background balance check on the admin page may hit the vendor.
+// Failures count too — a down FenLLM must not be hammered once per page open.
+const LLM_FENLLM_BALANCE_THROTTLE = 30;
+
 // The vendors this instance knows how to speak to. Adding one means adding a
 // case to llmChatRequest() — the catalogue is not a lookup table of URLs
 // because the request and response shapes genuinely differ.
@@ -410,7 +414,7 @@ function llmScrubSecret($text, $key = null) {
     return preg_replace('/\b(sk-[A-Za-z0-9_\-]{8,}|apl_live_[A-Za-z0-9_\-]{8,}|AIza[A-Za-z0-9_\-]{20,})\b/', '[redacted]', $text);
 }
 
-function llmHttpJson($url, array $headers, $payload, $timeout = 60, $method = 'POST') {
+function llmHttpJson($url, array $headers, $payload, $timeout = 60, $method = 'POST', $connectTimeout = null) {
     $ch = curl_init($url);
     $options = [
         CURLOPT_RETURNTRANSFER => true,
@@ -424,6 +428,9 @@ function llmHttpJson($url, array $headers, $payload, $timeout = 60, $method = 'P
     } else {
         $options[CURLOPT_POST] = true;
         $options[CURLOPT_POSTFIELDS] = json_encode($payload);
+    }
+    if ($connectTimeout !== null) {
+        $options[CURLOPT_CONNECTTIMEOUT] = $connectTimeout;
     }
     curl_setopt_array($ch, $options);
     $body = curl_exec($ch);
@@ -642,34 +649,92 @@ function llmFenLlmSignup($email, $name, $secret) {
 // GETs the trial balance for a stored key. Returns [status, decoded body|null,
 // curl error]. The response's `error` here is an OBJECT — unlike the chat
 // gateway's string — which is exactly why llmFenLlmErrorMessage() reads both.
-function llmFenLlmBalance($apiKey) {
+function llmFenLlmBalance($apiKey, $timeout = 6, $connectTimeout = 3) {
     return llmHttpJson(LLM_FENLLM_BALANCE_URL,
         ['Authorization: Bearer ' . $apiKey],
-        null, 20, 'GET');
+        null, $timeout, 'GET', $connectTimeout);
 }
 
-// The balance, cached in app_settings for up to an hour. This runs on an admin
-// page load, and polling the vendor on every click would be both slow and
-// rate-limit bait. Returns the decoded response body or null; never stores the
-// key, only what the endpoint returned.
-function llmFenLlmBalanceCached(mysqli $conn, $force = false) {
-    $at = (int)(overrideSetting($conn, 'fenllm_balance_at') ?? 0);
-    if (!$force && $at > time() - 3600) {
-        $cached = json_decode((string)overrideSetting($conn, 'fenllm_balance_json'), true);
-        if (is_array($cached)) return $cached;
+// --- FenLLM balance state ---------------------------------------------------
+//
+// The balance lives in app_settings as a small state object spread across four
+// rows: the last good body, when it was fetched, the last failure's message,
+// and when that failure happened. A failure never overwrites the last good
+// balance — the panel keeps showing it with a "couldn't refresh" note instead
+// of going blank every time the vendor hiccups.
+
+// Is the stored state stale enough to justify another call? Both timestamps
+// count, so a run of failures is throttled exactly like a run of successes.
+function llmFenLlmBalanceNeedsRefresh(?int $fetchedAt, ?int $errorAt, int $now, int $throttle = LLM_FENLLM_BALANCE_THROTTLE): bool {
+    $latest = max($fetchedAt ?? 0, $errorAt ?? 0);
+    if ($latest <= 0) return true;
+    return ($now - $latest) >= $throttle;
+}
+
+// One sentence for whatever went wrong, with the common cases said plainly:
+// an unreachable host is not a bad key, and a rejected key has a fix the admin
+// can act on.
+function llmFenLlmBalanceErrorText(int $status, ?array $body, ?string $curlErr): string {
+    if ($curlErr !== null && $curlErr !== '') {
+        return llmScrubSecret('Could not reach FenLLM: ' . $curlErr);
+    }
+    if ($status === 401 || $status === 403) {
+        return llmScrubSecret("FenLLM rejected the stored API key ({$status}) — paste a new key or sign in to your account.");
+    }
+    return llmScrubSecret(llmFenLlmErrorMessage($status, $body));
+}
+
+// Folds one attempt's outcome into the stored state. Success replaces the
+// balance and clears the error; any failure updates only the error half.
+function llmFenLlmBalanceMerge(array $state, int $status, ?array $body, ?string $curlErr, int $now): array {
+    if ($curlErr === null && $status === 200 && is_array($body)) {
+        return [
+            'balance'    => $body,
+            'fetched_at' => $now,
+            'error'      => null,
+            'error_at'   => null,
+        ];
+    }
+    $state['error'] = llmFenLlmBalanceErrorText($status, $body, $curlErr);
+    $state['error_at'] = $now;
+    return $state;
+}
+
+// Reads the stored state — no network. Empty strings read back as null, which
+// is also how the error keys are cleared below.
+function llmFenLlmBalanceState(?mysqli $conn): array {
+    $balance = json_decode((string)(overrideSetting($conn, 'fenllm_balance_json') ?? ''), true);
+    return [
+        'balance'    => is_array($balance) ? $balance : null,
+        'fetched_at' => ($at = overrideSetting($conn, 'fenllm_balance_at')) !== null ? (int)$at : null,
+        'error'      => overrideSetting($conn, 'fenllm_balance_error'),
+        'error_at'   => ($eat = overrideSetting($conn, 'fenllm_balance_error_at')) !== null ? (int)$eat : null,
+    ];
+}
+
+// Refreshes the balance subject to the throttle (skipped entirely by $force,
+// which is what the Refresh button is for). Returns the current state either
+// way; when there is no key to call with, the stored state is all there is.
+function llmFenLlmBalanceRefresh(mysqli $conn, bool $force = false): array {
+    $state = llmFenLlmBalanceState($conn);
+    $now = time();
+    if (!$force && !llmFenLlmBalanceNeedsRefresh($state['fetched_at'], $state['error_at'], $now)) {
+        return $state;
     }
 
     $provider = llmProviderByCode($conn, 'fenllm');
-    if (!$provider || !llmProviderHasKey($provider)) return null;
+    if (!$provider || !llmProviderHasKey($provider)) return $state;
     $key = llmProviderKey($provider);
-    if ($key === null) return null;
+    if ($key === null) return $state;
 
     [$status, $body, $err] = llmFenLlmBalance($key);
-    if ($err || $status !== 200 || !is_array($body)) return null;
+    $state = llmFenLlmBalanceMerge($state, $status, is_array($body) ? $body : null, $err, $now);
 
-    setAppSetting($conn, 'fenllm_balance_json', json_encode($body));
-    setAppSetting($conn, 'fenllm_balance_at', (string)time());
-    return $body;
+    setAppSetting($conn, 'fenllm_balance_json', $state['balance'] !== null ? json_encode($state['balance']) : '');
+    setAppSetting($conn, 'fenllm_balance_at', $state['fetched_at'] !== null ? (string)$state['fetched_at'] : '');
+    setAppSetting($conn, 'fenllm_balance_error', $state['error'] ?? '');
+    setAppSetting($conn, 'fenllm_balance_error_at', $state['error_at'] !== null ? (string)$state['error_at'] : '');
+    return $state;
 }
 
 // The magic link into the FenLLM dashboard (customers have no password — this
@@ -846,9 +911,12 @@ function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
 // the model_code (transcription needs a model with the 'audio' capability —
 // today that is max).
 function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
+    // FenLLM accepts mp3 and wav only — no ogg. Callers must convert first
+    // (waTranscodeAudioForTranscription); anything else gets null and the
+    // caller refuses rather than burning a request that the gateway rejects.
     $ext = strtolower(pathinfo((string)$filename, PATHINFO_EXTENSION));
-    $format = in_array($ext, ['ogg', 'oga', 'opus'], true) ? 'ogg'
-        : (in_array($ext, ['mp3', 'wav', 'm4a'], true) ? $ext : 'ogg');
+    $format = in_array($ext, ['mp3', 'wav'], true) ? $ext : null;
+    if ($format === null) return null;
 
     return [
         'model' => $model,
@@ -864,10 +932,15 @@ function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
 }
 
 function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
+    $payload = llmFenLlmTranscribePayload($auth['model'], $audioBytes, $filename);
+    if ($payload === null) {
+        return ['ok' => false, 'text' => '',
+                'error' => 'FenLLM transcription needs mp3 or wav audio — the voice note was not converted.'];
+    }
     $base = $auth['base_url'] ?: llmProviderCatalogue()['fenllm']['base_url'];
     [$status, $body, $err] = llmHttpJson(rtrim($base, '/') . '/chat/completions',
         ['Authorization: Bearer ' . $auth['key']],
-        llmFenLlmTranscribePayload($auth['model'], $audioBytes, $filename),
+        $payload,
         120);
 
     if ($err) return ['ok' => false, 'error' => llmScrubSecret($err, $auth['key']), 'text' => ''];

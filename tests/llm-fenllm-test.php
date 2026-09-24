@@ -111,14 +111,79 @@ check('openai whisper (kind transcribe)', llmModelTranscribes(
 
 group('The FenLLM transcription payload is a chat completion with input_audio');
 
-$payload = llmFenLlmTranscribePayload('max', 'abc', 'voice.ogg');
+// FenLLM accepts mp3/wav only; anything else must have been converted first,
+// so the payload builder refuses rather than sends audio the gateway rejects.
+$payload = llmFenLlmTranscribePayload('max', 'abc', 'voice.mp3');
 equals('model', 'max', $payload['model']);
 equals('audio part type', 'input_audio', $payload['messages'][0]['content'][1]['type']);
-equals('ogg format', 'ogg', $payload['messages'][0]['content'][1]['input_audio']['format']);
+equals('mp3 format', 'mp3', $payload['messages'][0]['content'][1]['input_audio']['format']);
 equals('audio is base64', base64_encode('abc'), $payload['messages'][0]['content'][1]['input_audio']['data']);
-equals('mp3 format', 'mp3', llmFenLlmTranscribePayload('max', 'a', 'x.mp3')['messages'][0]['content'][1]['input_audio']['format']);
-equals('unknown extension defaults to ogg', 'ogg',
-    llmFenLlmTranscribePayload('max', 'a', 'x.bin')['messages'][0]['content'][1]['input_audio']['format']);
+equals('wav format', 'wav', llmFenLlmTranscribePayload('max', 'a', 'x.wav')['messages'][0]['content'][1]['input_audio']['format']);
+equals('ogg is refused', null, llmFenLlmTranscribePayload('max', 'a', 'x.ogg'));
+equals('unknown extension is refused', null, llmFenLlmTranscribePayload('max', 'a', 'x.bin'));
+
+// --- Balance refresh throttling ----------------------------------------------
+
+group('The balance is re-fetched only after the throttle window');
+
+equals('never fetched', true,
+    llmFenLlmBalanceNeedsRefresh(null, null, 1000));
+equals('fetched 10s ago', false,
+    llmFenLlmBalanceNeedsRefresh(990, null, 1000));
+equals('fetched 31s ago', true,
+    llmFenLlmBalanceNeedsRefresh(969, null, 1000));
+equals('a fresh error throttles too', false,
+    llmFenLlmBalanceNeedsRefresh(900, 995, 1000));
+equals('exactly 30s is stale', true,
+    llmFenLlmBalanceNeedsRefresh(970, null, 1000));
+
+// --- Balance error text -------------------------------------------------------
+
+group('Balance failures are one readable sentence, scrubbed');
+
+equals('curl error', 'Could not reach FenLLM: timed out',
+    llmFenLlmBalanceErrorText(0, null, 'timed out'));
+equals('401 names the fix',
+    'FenLLM rejected the stored API key (401) — paste a new key or sign in to your account.',
+    llmFenLlmBalanceErrorText(401, ['error' => ['code' => 'invalid_key', 'message' => 'x']], null));
+equals('403 same wording',
+    'FenLLM rejected the stored API key (403) — paste a new key or sign in to your account.',
+    llmFenLlmBalanceErrorText(403, null, null));
+equals('402 uses the vendor formatter', 'FenLLM 402 (trial_exhausted): Top up.',
+    llmFenLlmBalanceErrorText(402, ['error' => 'trial_exhausted', 'message' => 'Top up.'], null));
+equals('a key inside a curl error is scrubbed',
+    'Could not reach FenLLM: auth [redacted] failed',
+    llmFenLlmBalanceErrorText(0, null, "auth {$key} failed"));
+
+// --- Balance merge ------------------------------------------------------------
+
+group('A failed refresh never loses the last good balance');
+
+$prev = ['balance' => ['balance' => 'USD 5.00'], 'fetched_at' => 500,
+         'error' => 'old', 'error_at' => 400];
+
+$merged = llmFenLlmBalanceMerge($prev, 200, ['balance' => 'USD 6.00'], null, 1000);
+equals('success replaces balance', ['balance' => 'USD 6.00'], $merged['balance']);
+equals('success stamps fetched_at', 1000, $merged['fetched_at']);
+equals('success clears error', null, $merged['error']);
+equals('success clears error_at', null, $merged['error_at']);
+
+foreach ([['curl err', 0, null, 'timed out'],
+          ['http 500', 500, null, null],
+          ['200 null body', 200, null, null]] as [$label, $status, $body, $curlErr]) {
+    $merged = llmFenLlmBalanceMerge($prev, $status, $body, $curlErr, 1000);
+    equals("{$label}: balance kept", ['balance' => 'USD 5.00'], $merged['balance']);
+    equals("{$label}: fetched_at kept", 500, $merged['fetched_at']);
+    check("{$label}: error set", is_string($merged['error']) && $merged['error'] !== '');
+    equals("{$label}: error_at stamped", 1000, $merged['error_at']);
+}
+
+$merged = llmFenLlmBalanceMerge(
+    ['balance' => null, 'fetched_at' => null, 'error' => null, 'error_at' => null],
+    0, null, 'timed out', 1000);
+equals('failure with no prior balance stays null', null, $merged['balance']);
+equals('failure with no prior fetched_at stays null', null, $merged['fetched_at']);
+equals('error recorded', 'Could not reach FenLLM: timed out', $merged['error']);
 
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

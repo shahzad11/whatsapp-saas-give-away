@@ -13,6 +13,82 @@ $testResult = null;
 
 $self = APP_URL . '/admin/llm.php';
 
+// The FenLLM trial balance block, rendered from the stored state alone — the
+// page never calls the vendor while drawing. It is a function rather than
+// inline markup because the live-refresh endpoint answers with the same HTML:
+// the JS swaps the whole #fenllm-balance element for whatever this returns.
+// The hidden status span is the JS's scratch space for "checking…" / failure.
+function fenllmBalancePanelHtml(array $state, ?string $signIn): string {
+    $balance = $state['balance'] ?? null;
+    $fetchedAt = $state['fetched_at'] ?? null;
+    $error = $state['error'] ?? null;
+    $errorAt = $state['error_at'] ?? null;
+    // An error older than the last good fetch is history, not a problem.
+    $errorCurrent = $error !== null && ($fetchedAt === null || $errorAt >= $fetchedAt);
+    $rel = function ($ts) { return $ts ? timeAgo('@' . (int)$ts) : ''; };
+
+    ob_start();
+    ?>
+    <div id="fenllm-balance">
+        <?php if ($balance !== null): ?>
+            <?php
+            $fenllmTrial = $balance['trial'] ?? null;
+            $canCall = !empty($balance['can_make_calls']);
+            if (is_array($fenllmTrial)) {
+                if (!empty($fenllmTrial['exhausted']))     $trialText = 'trial credit used up';
+                elseif (!empty($fenllmTrial['expired']))   $trialText = 'trial expired';
+                elseif (!empty($fenllmTrial['active']))    $trialText = 'trial active';
+                else                                       $trialText = 'trial ended';
+            } else {
+                $trialText = null;
+            }
+            ?>
+            <div class="d-flex align-items-center gap-2 flex-wrap small">
+                <span class="badge bg-<?= $canCall ? 'success' : 'danger' ?>">
+                    Balance <?= sanitize($balance['balance'] ?? 'unknown') ?>
+                </span>
+                <?php if ($trialText !== null): ?>
+                    <span class="badge bg-<?= $canCall ? 'light text-dark' : 'danger' ?>">
+                        <?= sanitize($trialText) ?>
+                        <?= is_array($fenllmTrial) && isset($fenllmTrial['remaining']) ? ' — ' . sanitize($fenllmTrial['remaining']) . ' left' : '' ?>
+                    </span>
+                <?php endif; ?>
+                <?php if ($signIn): ?>
+                    <a href="<?= sanitize($signIn) ?>" target="_blank" rel="noopener" class="small">
+                        Manage account / add card
+                    </a>
+                <?php endif; ?>
+            </div>
+            <?php if ($fetchedAt !== null): ?>
+                <div class="small text-muted mt-1">Updated <?= sanitize($rel($fetchedAt)) ?></div>
+            <?php endif; ?>
+            <?php if ($errorCurrent): ?>
+                <div class="small text-warning mt-1">
+                    Couldn't refresh — showing the value from <?= sanitize($rel($fetchedAt)) ?>.
+                    <?= sanitize($error) ?>
+                </div>
+            <?php endif; ?>
+            <?php if (!$canCall): ?>
+                <div class="alert alert-warning small mt-2 mb-0">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    This account cannot make calls — the trial credit is spent or expired.
+                    <?php if ($signIn): ?>
+                        <a href="<?= sanitize($signIn) ?>" target="_blank" rel="noopener">Sign in to add credit</a>,
+                    <?php endif; ?>
+                    or add a key from another provider below.
+                </div>
+            <?php endif; ?>
+        <?php elseif ($errorCurrent): ?>
+            <div class="small text-warning"><?= sanitize($error) ?></div>
+        <?php else: ?>
+            <div class="small text-muted">Checking balance…</div>
+        <?php endif; ?>
+        <span class="fenllm-live-status small text-muted d-none"><span class="spinner-border spinner-border-sm me-1"></span>Checking live balance…</span>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     formRequireCsrf($self);
 
@@ -157,12 +233,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'fenllm_refresh_balance') {
-        // Forces past the hourly cache — the admin just did something on the
+        // Forces past the throttle — the admin just did something on the
         // FenLLM dashboard (or wants to see that the trial is really live) and
-        // is asking for now, not for an hour ago.
-        $balance = llmFenLlmBalanceCached($conn, true);
-        if ($balance === null) {
-            formRespond(false, 'Could not read the FenLLM balance right now.', $self);
+        // is asking for now, not for the last cached value.
+        $state = llmFenLlmBalanceRefresh($conn, true);
+        $balance = $state['balance'];
+        if ($state['error'] !== null
+            && ($state['fetched_at'] === null || $state['error_at'] >= $state['fetched_at'])) {
+            formRespond(false, $state['error'], $self);
         }
         $summary = 'Balance ' . ($balance['balance'] ?? 'unknown');
         if (is_array($balance['trial'] ?? null)) {
@@ -170,6 +248,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 . ', ' . ($balance['trial']['remaining'] ?? '0') . ' remaining';
         }
         formRespond(true, 'FenLLM: ' . $summary . '.', $self);
+    }
+
+    if ($action === 'fenllm_balance_live') {
+        // The background call the page's inline script makes on every open.
+        // XHR only — a plain POST has no #fenllm-balance to swap, so it gets
+        // the ordinary form answer instead of a fragment it cannot use.
+        // Not audit-logged: it runs on every page load and would drown the log.
+        if (!isXhrRequest()) {
+            formRespond(false, 'This action is only available to the page itself.', $self);
+        }
+        // Released before the vendor call, so a slow FenLLM cannot hold the
+        // admin's other requests behind this session's file lock.
+        session_write_close();
+        $state = llmFenLlmBalanceRefresh($conn, false);
+        $signIn = llmFenLlmSignInUrl($conn) ?? ($state['balance']['sign_in_url'] ?? null);
+        jsonOut(['ok' => true, 'html' => fenllmBalancePanelHtml($state, $signIn)]);
     }
 
     if ($action === 'fenllm_signup') {
@@ -292,9 +386,10 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                       // to get a key, what a base URL is for — is the reason an admin can
                       // fill it in at all, and a dialog would hide it. ?>
                 <?php // FenLLM's extras are resolved once, before the loop: the
-                      // balance call hits the vendor, so it is cached hourly in
-                      // app_settings and read once per page load. ?>
-                <?php $fenllmBalance = null; $fenllmBalanceFetched = false; ?>
+                      // balance state is read from app_settings only — the live
+                      // call to the vendor happens in the background, after
+                      // the page has already rendered. ?>
+                <?php $fenllmState = null; ?>
                 <?php // One accordion item per provider. No data-bs-parent:
                       // comparing two providers' settings is a real task, and a
                       // parented accordion would close one every time the other
@@ -394,12 +489,11 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                     // trial balance, the magic sign-in link (the account has no
                     // password — that link IS how the admin reaches it), and a
                     // way to create the account by hand when bootstrap did not.
-                    if ($p['has_key'] && !$fenllmBalanceFetched) {
-                        $fenllmBalance = llmFenLlmBalanceCached($conn);
-                        $fenllmBalanceFetched = true;
+                    if ($p['has_key'] && $fenllmState === null) {
+                        $fenllmState = llmFenLlmBalanceState($conn);
                     }
                     $fenllmSignIn = llmFenLlmSignInUrl($conn)
-                        ?? ($fenllmBalance['sign_in_url'] ?? null);
+                        ?? ($fenllmState['balance']['sign_in_url'] ?? null);
                     $fenllmStatus = overrideSetting($conn, 'fenllm_provision_status');
                     ?>
                     <div class="border rounded p-3 mb-3 bg-light">
@@ -408,48 +502,7 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
                                 Your FenLLM trial account was created during installation. Refresh the
                                 balance below to check its available credit.
                             </p>
-                            <?php if ($fenllmBalance !== null): ?>
-                                <?php
-                                $fenllmTrial = $fenllmBalance['trial'] ?? null;
-                                $canCall = !empty($fenllmBalance['can_make_calls']);
-                                if (is_array($fenllmTrial)) {
-                                    if (!empty($fenllmTrial['exhausted']))     $trialText = 'trial credit used up';
-                                    elseif (!empty($fenllmTrial['expired']))   $trialText = 'trial expired';
-                                    elseif (!empty($fenllmTrial['active']))    $trialText = 'trial active';
-                                    else                                       $trialText = 'trial ended';
-                                } else {
-                                    $trialText = null;
-                                }
-                                ?>
-                                <div class="d-flex align-items-center gap-2 flex-wrap small">
-                                    <span class="badge bg-<?= $canCall ? 'success' : 'danger' ?>">
-                                        Balance <?= sanitize($fenllmBalance['balance'] ?? 'unknown') ?>
-                                    </span>
-                                    <?php if ($trialText !== null): ?>
-                                        <span class="badge bg-<?= $canCall ? 'light text-dark' : 'danger' ?>">
-                                            <?= sanitize($trialText) ?>
-                                            <?= is_array($fenllmTrial) && isset($fenllmTrial['remaining']) ? ' — ' . sanitize($fenllmTrial['remaining']) . ' left' : '' ?>
-                                        </span>
-                                    <?php endif; ?>
-                                    <?php if ($fenllmSignIn): ?>
-                                        <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener" class="small">
-                                            Manage account / add card
-                                        </a>
-                                    <?php endif; ?>
-                                </div>
-                                <?php if (!$canCall): ?>
-                                    <div class="alert alert-warning small mt-2 mb-0">
-                                        <i class="bi bi-exclamation-triangle me-1"></i>
-                                        This account cannot make calls — the trial credit is spent or expired.
-                                        <?php if ($fenllmSignIn): ?>
-                                            <a href="<?= sanitize($fenllmSignIn) ?>" target="_blank" rel="noopener">Sign in to add credit</a>,
-                                        <?php endif; ?>
-                                        or add a key from another provider below.
-                                    </div>
-                                <?php endif; ?>
-                            <?php else: ?>
-                                <div class="small text-muted">Balance unavailable right now — it is checked at most once an hour.</div>
-                            <?php endif; ?>
+                            <?= fenllmBalancePanelHtml($fenllmState ?? llmFenLlmBalanceState(null), $fenllmSignIn) ?>
                             <form method="post" class="mt-2" data-ajax>
                                 <?= csrfField() ?>
                                 <input type="hidden" name="action" value="fenllm_refresh_balance">
@@ -711,5 +764,48 @@ require_once dirname(__DIR__) . '/includes/admin-header.php';
         </div>
     </div>
 </div>
+
+<?php // The live balance check. The panel above rendered from app_settings
+      // only; this swaps it for fresh HTML once the vendor has answered. It
+      // exists only when there is a key to check with, and its failure leaves
+      // the last good balance untouched. ?>
+<?php if (!empty($providers['fenllm']['has_key'])): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var panel = document.getElementById('fenllm-balance');
+    if (!panel) return;
+    var status = panel.querySelector('.fenllm-live-status');
+    if (status) status.classList.remove('d-none');
+
+    var body = new FormData();
+    body.append('action', 'fenllm_balance_live');
+    body.append('csrf_token', window.waCsrfToken || '');
+
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 10000);
+
+    fetch(window.location.href, {
+        method: 'POST',
+        body: body,
+        credentials: 'same-origin',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        signal: ctl.signal
+    }).then(function (res) {
+        return res.ok ? res.json() : null;
+    }).then(function (json) {
+        clearTimeout(timer);
+        if (json && json.ok && json.html) {
+            panel.outerHTML = json.html;
+            return;
+        }
+        throw new Error('bad response');
+    }).catch(function () {
+        clearTimeout(timer);
+        var s = document.querySelector('#fenllm-balance .fenllm-live-status');
+        if (s) s.textContent = "Couldn't check the live balance.";
+    });
+});
+</script>
+<?php endif; ?>
 
 <?php require_once dirname(__DIR__) . '/includes/admin-footer.php'; ?>

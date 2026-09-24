@@ -1,5 +1,6 @@
 import QRCode from 'qrcode'
 import { createNewSession, getTenantSessionSnapshots, getSessionSnapshot, getSessionChats, getSessionMessages, getMedia, sendSessionMessage, sendSessionMedia, sendSessionEvent, markSessionChatRead, logoutAndDeleteSession, relinkSession as relinkSessionState, UPLOAD_KINDS, MAX_UPLOAD_BYTES } from './wa.sessions.js'
+import { transcodeForTranscription } from './audio.js'
 
 export async function createSession(req, res, next) {
   try {
@@ -245,6 +246,42 @@ export async function sendMedia(req, res, next) {
     }
 
     return res.json(result)
+  } catch (e) {
+    next(e)
+  }
+}
+
+// Inbound voice notes for FenLLM transcription arrive as ogg/opus, which
+// FenLLM refuses — it takes mp3 or wav only. The PHP image has no ffmpeg, so
+// the bytes take the same base64-in-JSON hop as uploads and come back as mp3.
+// Not tied to a session: conversion is the same work regardless of provider.
+export async function transcodeAudio(req, res, next) {
+  try {
+    const { data } = req.body || {}
+
+    if (typeof data !== 'string' || data.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Audio data is required' })
+    }
+
+    const buffer = Buffer.from(data, 'base64')
+    if (buffer.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Audio could not be decoded' })
+    }
+    if (buffer.length > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        ok: false,
+        error: `Audio exceeds the ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB limit`
+      })
+    }
+
+    let mp3
+    try {
+      mp3 = await transcodeForTranscription(buffer)
+    } catch (err) {
+      return res.status(422).json({ ok: false, error: err.message })
+    }
+
+    return res.json({ ok: true, mime: 'audio/mpeg', data: mp3.toString('base64') })
   } catch (e) {
     next(e)
   }

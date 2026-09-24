@@ -260,6 +260,34 @@ function waFetchMediaBytes(?mysqli $conn, $sessionId, $messageId, $tenantId = nu
             'filename' => $row['media_filename'] ?? null];
 }
 
+// Converts voice-note bytes to mp3 for FenLLM transcription, which accepts no
+// ogg. The PHP image has no ffmpeg, so the backend does the conversion — it is
+// provider-independent work, identical for Baileys and Cloud audio.
+function waTranscodeAudioForTranscription($audioBytes, $tenantId = null) {
+    $ch = curl_init(BACKEND_URL . '/api/v1/wa/audio/transcode');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 45,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => array_merge(backendHeaders($tenantId), ['Content-Type: application/json']),
+        CURLOPT_POSTFIELDS => json_encode(['data' => base64_encode($audioBytes)]),
+    ]);
+    $body = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    $decoded = is_string($body) ? json_decode($body, true) : null;
+    if ($status === 200 && !empty($decoded['ok']) && !empty($decoded['data'])) {
+        return ['ok' => true, 'bytes' => base64_decode($decoded['data'], true) ?: null, 'error' => null];
+    }
+    $error = is_array($decoded) && !empty($decoded['error'])
+        ? (string)$decoded['error']
+        : 'Audio conversion failed (HTTP ' . $status . ')';
+    return ['ok' => false, 'bytes' => null, 'error' => $error];
+}
+
 // What get-status.php answers. Cloud has no live session to ask, so the row's
 // own state is the truth — which is exactly what a working webhook keeps
 // updating.

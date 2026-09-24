@@ -2,12 +2,11 @@ import path from 'path'
 import fs from 'fs/promises'
 import { existsSync } from 'fs'
 import { createHash, randomUUID } from 'crypto'
-import { spawn } from 'child_process'
-import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import pino from 'pino'
 import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage } from 'baileys'
 import { isValidTenantId } from '../middleware/auth.js'
+import { transcodeToOpus } from './audio.js'
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' })
 
@@ -1911,41 +1910,9 @@ export const UPLOAD_KINDS = ['image', 'video', 'audio', 'voice', 'document']
 // browser check is UX, the rest are the actual limit.
 export const MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 
-// A voice note has to be ogg/opus. MediaRecorder produces webm/opus in Chrome,
-// ogg/opus in Firefox and mp4/aac in Safari, so anything that is not already
-// ogg is transcoded rather than passed through — WhatsApp clients render a
-// mislabelled voice note as a broken attachment.
-//
-// Temp files rather than pipes because Safari's mp4 needs a seekable input, and
-// ffmpeg cannot seek a pipe.
-async function transcodeToOpus(buffer) {
-  const base = path.join(tmpdir(), `wa-voice-${randomUUID()}`)
-  const inPath = base + '.in'
-  const outPath = base + '.ogg'
-
-  try {
-    await fs.writeFile(inPath, buffer)
-    await new Promise((resolve, reject) => {
-      const ff = spawn('ffmpeg', [
-        '-hide_banner', '-loglevel', 'error', '-y',
-        '-i', inPath,
-        '-vn', '-c:a', 'libopus', '-b:a', '32k', '-ar', '48000', '-ac', '1',
-        '-f', 'ogg', outPath
-      ])
-      let stderr = ''
-      ff.stderr.on('data', d => { stderr += d.toString().slice(0, 500) })
-      ff.on('error', err => reject(new Error(
-        err.code === 'ENOENT' ? 'Voice notes need ffmpeg, which is not installed' : err.message
-      )))
-      ff.on('close', code => code === 0
-        ? resolve()
-        : reject(new Error('Audio conversion failed' + (stderr ? ': ' + stderr.trim() : ''))))
-    })
-    return await fs.readFile(outPath)
-  } finally {
-    await Promise.all([fs.rm(inPath, { force: true }), fs.rm(outPath, { force: true })])
-  }
-}
+// Voice-note transcoding lives in ./audio.js — it is imported there rather
+// than defined here so the tests can exercise ffmpeg without pulling baileys
+// into the process.
 
 // The WhatsApp content object for an attachment. Kept separate from the send so
 // the mapping is testable without a live socket — it is the part that decides
