@@ -678,6 +678,24 @@ require_once __DIR__ . '/includes/header.php';
                                 </div>
                             <?php endif; ?>
                         </div>
+
+                        <div class="col-12">
+                            <label class="form-label" for="voice_language">Customer language</label>
+                            <select name="voice_language" id="voice_language" class="form-select">
+                                <?php foreach (chatbotVoiceLanguageChoices() as $code => $label): ?>
+                                    <option value="<?= sanitize($code) ?>"
+                                        <?= ($config['voice_language'] ?? 'auto') === $code ? 'selected' : '' ?>>
+                                        <?= sanitize($label) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text">
+                                Urdu and Hindi sound the same when spoken, so the AI can write Urdu in
+                                Hindi script and reply in Hindi. Pick your customers' language to prevent
+                                this. Automatic uses the customer's country code (+92 Urdu, +91 Hindi),
+                                then your timezone.
+                            </div>
+                        </div>
                     </div>
                 </div>
 

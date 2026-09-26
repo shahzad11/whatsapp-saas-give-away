@@ -38,6 +38,7 @@ function chatbotDefaultConfig($userId) {
         'active_hours_end' => null,
         'outside_hours_message' => '',
         'transcribe_audio' => 0,
+        'voice_language' => 'auto',
         'appointments_enabled' => 0,
         'appointment_lead_minutes' => 60,
         'appointment_horizon_days' => 30,
@@ -117,6 +118,45 @@ function chatbotReplyDelayChoices(): array {
     ];
 }
 
+// The languages the script problem actually happens in. Urdu and Hindi are
+// the same spoken language (Hindustani) written in different scripts, so a
+// voice note alone cannot tell the model which script to write — without a
+// hint Urdu speech comes back in Devanagari and the bot then answers in
+// Hindi. The setting, the resolution and the prompts all key off this list.
+function chatbotVoiceLanguageChoices(): array {
+    return [
+        'auto' => 'Automatic',
+        'ur'   => 'Urdu',
+        'hi'   => 'Hindi',
+        'en'   => 'English',
+        'ar'   => 'Arabic',
+    ];
+}
+
+function chatbotNormaliseVoiceLanguage($value): string {
+    $v = (string)$value;
+    return array_key_exists($v, chatbotVoiceLanguageChoices()) && $v !== 'auto' ? $v : 'auto';
+}
+
+// Which language a voice note is most likely in, when the tenant left the
+// setting on Automatic: an explicit choice always wins; otherwise the
+// customer's own country code (+92 Pakistan → Urdu, +91 India → Hindi);
+// otherwise the tenant's timezone, because @lid chats carry no phone number
+// at all. null means "no hint" — the prompt keeps its generic Urdu/Hindi rule.
+function chatbotResolveVoiceLanguage(array $config, ?string $customerPhone, ?string $timezone): ?string {
+    $explicit = (string)($config['voice_language'] ?? 'auto');
+    if ($explicit !== 'auto' && array_key_exists($explicit, chatbotVoiceLanguageChoices())) {
+        return $explicit;
+    }
+    if ($customerPhone !== null) {
+        if (str_starts_with($customerPhone, '92')) return 'ur';
+        if (str_starts_with($customerPhone, '91')) return 'hi';
+    }
+    if ($timezone === 'Asia/Karachi') return 'ur';
+    if ($timezone === 'Asia/Kolkata' || $timezone === 'Asia/Calcutta') return 'hi';
+    return null;
+}
+
 // Anything the dropdown does not offer — a crafted POST, a column written by an
 // older version — resolves to the safe default rather than to zero, which would
 // silently switch the delay off.
@@ -142,6 +182,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     $end       = chatbotValidTime($in['active_hours_end'] ?? null);
     $outside   = (string)($in['outside_hours_message'] ?? '');
     $transcribe = !empty($in['transcribe_audio']) ? 1 : 0;
+    $voiceLang  = chatbotNormaliseVoiceLanguage($in['voice_language'] ?? 'auto');
 
     // Appointments (#14). Clamped for the same reason as max_tokens: these
     // numbers drive real behaviour and arrive from a form.
@@ -200,14 +241,14 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
         "INSERT INTO chatbot_configs
            (user_id, is_enabled, model_id, byo_provider_code, byo_model_code, knowledge_base,
             fallback_message, tone, max_tokens, history_messages, active_hours_start, active_hours_end,
-            outside_hours_message, transcribe_audio,
+            outside_hours_message, transcribe_audio, voice_language,
             appointments_enabled, appointment_lead_minutes, appointment_horizon_days,
             appointment_slot_minutes, reminder_minutes, booking_confirmation,
             appointment_max_upcoming,
             handoff_enabled, handoff_phrases, handoff_ack_message, handoff_resume_message,
             handoff_notify_number, handoff_notify_email,
             handoff_share_number, handoff_share_message, reply_delay_seconds)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             is_enabled = VALUES(is_enabled), model_id = VALUES(model_id),
             byo_provider_code = VALUES(byo_provider_code), byo_model_code = VALUES(byo_model_code),
@@ -216,6 +257,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
             max_tokens = VALUES(max_tokens), history_messages = VALUES(history_messages),
             active_hours_start = VALUES(active_hours_start), active_hours_end = VALUES(active_hours_end),
             outside_hours_message = VALUES(outside_hours_message), transcribe_audio = VALUES(transcribe_audio),
+            voice_language = VALUES(voice_language),
             appointments_enabled = VALUES(appointments_enabled),
             appointment_lead_minutes = VALUES(appointment_lead_minutes),
             appointment_horizon_days = VALUES(appointment_horizon_days),
@@ -239,7 +281,7 @@ function chatbotSaveConfig(mysqli $conn, $userId, array $in) {
     // is what let #26 add two more here without touching it.
     $params = [
         $userId, $enabled, $modelId, $byoCode, $byoModel, $kb,
-        $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe,
+        $fallback, $tone, $maxTokens, $history, $start, $end, $outside, $transcribe, $voiceLang,
         $apptOn, $lead, $horizon, $slot, $reminders, $confirm, $maxUpcoming,
         $handoffOn, $phrases, $ackMsg, $resumeMsg, $notifyNum, $notifyMail,
         $shareNum, $shareMsg, $delay,
@@ -445,6 +487,26 @@ function chatbotSystemPrompt(array $config, array $context = []) {
     $parts[] = "Write for WhatsApp: short paragraphs, no markdown headings or tables, "
         . "plain sentences. Keep replies under 90 words unless the customer asks for detail.";
     $parts[] = "Reply in the language the customer used.";
+
+    // Hindustani ambiguity: spoken Urdu and Hindi are the same sounds in two
+    // scripts, so a script rule must be explicit or the model guesses — and
+    // guesses Devanagari for Urdu speakers. Roman-script writers get Roman back.
+    $lang = $context['language'] ?? null;
+    if ($lang === 'ur') {
+        $parts[] = "Customers here speak Urdu. Spoken or written Hindustani is Urdu: "
+            . "reply in Urdu script (Perso-Arabic), never Devanagari/Hindi script — "
+            . "unless the customer writes in Roman Urdu (Latin letters), then reply in Roman Urdu.";
+    } elseif ($lang === 'hi') {
+        $parts[] = "Customers here speak Hindi. Spoken or written Hindustani is Hindi: "
+            . "reply in Devanagari script — "
+            . "unless the customer writes in Roman Hindi (Latin letters), then reply in Roman Hindi.";
+    }
+    if (!empty($context['from_voice']) && $lang !== null) {
+        $langName = chatbotVoiceLanguageChoices()[$lang] ?? $lang;
+        $script = $lang === 'ur' ? ' in Urdu script' : ($lang === 'hi' ? ' in Devanagari script' : '');
+        $parts[] = "The customer's latest message was a voice note, transcribed from {$langName}. "
+            . "Reply in {$langName}{$script}.";
+    }
 
     // The single most important instruction. A booking bot that invents a price
     // or a policy costs the tenant real money.
@@ -972,7 +1034,7 @@ function chatbotFetchMedia($sessionId, $messageId, $tenantId) {
 // Turns a voice note into text, if the admin enabled it, the tenant enabled it,
 // and a transcription model is configured. Any "no" is silent and simply means
 // the message has no text to answer.
-function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $sessionId, $messageId, $tenantId) {
+function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $sessionId, $messageId, $tenantId, ?string $language = null) {
     // Three independent switches, all of which must be on: the plan's lever, the
     // instance-wide admin toggle, and the tenant's own preference. The plan is
     // checked first because it is the one that costs the platform money — a
@@ -1013,7 +1075,7 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
         'key' => $key,
         'base_url' => llmProviderBaseUrl(['code' => $model['provider_code'], 'base_url' => $model['base_url']]),
         'model' => $model['model_code'],
-    ], $audio, $filename);
+    ], $audio, $filename, $language);
 
     return $result['ok'] ? [$result['text'], null] : [null, $result['error']];
 }
@@ -1263,10 +1325,16 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
     $text = trim((string)($msg['text'] ?? ''));
     $mediaType = (string)($msg['mediaType'] ?? 'text');
 
+    // Resolved once for both the transcription prompt and the reply prompt:
+    // the language the model should *hear* is the language it should *write*.
+    $voiceLang = chatbotResolveVoiceLanguage($config, chatbotPhoneFromJid($chatId), $timezone);
+    $fromVoice = false;
+
     if ($text === '' && ($mediaType === 'voice' || $mediaType === 'audio')) {
-        [$transcript, $why] = chatbotTranscribeInbound($conn, $userId, $config, $sessionId, $messageId, $tenantId);
+        [$transcript, $why] = chatbotTranscribeInbound($conn, $userId, $config, $sessionId, $messageId, $tenantId, $voiceLang);
         if ($transcript !== null && trim($transcript) !== '') {
             $text = trim($transcript);
+            $fromVoice = true;
         } else {
             return $log('skipped_empty', ['detail' => 'audio: ' . ($why ?? 'no transcript')]);
         }
@@ -1323,6 +1391,8 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
         // #34: assembled by the one shared helper, so the tenant's test console is
         // reasoning about the same business, the same services and the same clock.
         $context = chatbotBuildContext($conn, $userId, $config, $timezone, $chatId);
+        $context['language'] = $voiceLang;
+        $context['from_voice'] = $fromVoice;
         $appointments = $context['appointments'];
 
         $reply = chatbotGenerateReply($conn, $userId, $config, $history, $text, $context);

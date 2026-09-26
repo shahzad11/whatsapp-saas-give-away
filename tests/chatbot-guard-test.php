@@ -210,5 +210,34 @@ check('due when never sent', chatbotHoursMessageDue(null, $now));
 check('not due an hour after the last one', !chatbotHoursMessageDue($utc(3600), $now));
 check('due again after 12 hours', chatbotHoursMessageDue($utc(43201), $now));
 
+// --- Customer language: resolution and normalisation ---------------------------
+
+group('Voice language resolves explicit, phone, then timezone');
+
+equals('explicit setting wins over the phone', 'hi',
+    chatbotResolveVoiceLanguage(['voice_language' => 'hi'], '923214293060', 'Asia/Karachi'));
+equals('auto + +92 customer', 'ur',
+    chatbotResolveVoiceLanguage(['voice_language' => 'auto'], '923214293060', null));
+equals('auto + +91 customer', 'hi',
+    chatbotResolveVoiceLanguage(['voice_language' => 'auto'], '919812345678', null));
+equals('auto + no phone + Karachi', 'ur',
+    chatbotResolveVoiceLanguage(['voice_language' => 'auto'], null, 'Asia/Karachi'));
+equals('auto + no phone + Kolkata', 'hi',
+    chatbotResolveVoiceLanguage(['voice_language' => 'auto'], null, 'Asia/Kolkata'));
+equals('auto + foreign number + London', null,
+    chatbotResolveVoiceLanguage(['voice_language' => 'auto'], '447700900000', 'Europe/London'));
+equals('unknown stored value normalises to auto', 'auto',
+    chatbotNormaliseVoiceLanguage('xx'));
+
+group('The reply prompt carries the script rule');
+
+$promptUr = chatbotSystemPrompt([], ['language' => 'ur', 'from_voice' => false]);
+check('ur language -> Urdu script rule', str_contains($promptUr, 'Urdu script'));
+$promptVoice = chatbotSystemPrompt([], ['language' => 'ur', 'from_voice' => true]);
+check('ur + voice note mentions it', str_contains($promptVoice, 'voice note'));
+$promptNone = chatbotSystemPrompt([], ['language' => null, 'from_voice' => false]);
+check('no language -> no script rule', !str_contains($promptNone, 'Urdu script')
+    && !str_contains($promptNone, 'voice note'));
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

@@ -178,6 +178,12 @@ if ($phrase !== null) {
 // booking" line — correct, because that is what a new customer's first message
 // sees.
 $context = chatbotBuildContext($conn, $userId, $config, $timezone, null);
+// The reply prompt's language rules apply here too — a console that skipped
+// them would show a reply no customer ever sees (the #34 class of bug). No
+// chat means no phone, so the resolver falls through to the timezone exactly
+// as it does live. Test messages are typed, never voice notes.
+$context['language'] = chatbotResolveVoiceLanguage($config, null, $timezone);
+$context['from_voice'] = false;
 
 // Why the bot will say it cannot book.
 //

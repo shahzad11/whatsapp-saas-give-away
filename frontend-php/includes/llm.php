@@ -1049,10 +1049,10 @@ function llmEnsureFenLlmCatalogue(mysqli $conn) {
 // Two providers can transcribe: OpenAI via its dedicated multipart endpoint,
 // and FenLLM via chat completions with an input_audio part (its gateway serves
 // no /audio/transcriptions). The admin picks the model.
-function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
+function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg', ?string $language = null) {
     switch ($auth['provider'] ?? '') {
-        case 'openai': return llmTranscribeOpenAi($auth, $audioBytes, $filename);
-        case 'fenllm': return llmTranscribeFenLlm($auth, $audioBytes, $filename);
+        case 'openai': return llmTranscribeOpenAi($auth, $audioBytes, $filename, $language);
+        case 'fenllm': return llmTranscribeFenLlm($auth, $audioBytes, $filename, $language);
         default:
             return ['ok' => false, 'error' => 'Transcription needs an OpenAI-compatible provider', 'text' => ''];
     }
@@ -1064,7 +1064,33 @@ function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
 // pro and max; basic refuses audio). 'stream' => true per FenLLM support: a
 // non-streamed audio request can sit silent past any sane timeout, while the
 // streamed reply starts emitting chunks right away.
-function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
+// The transcription instruction, per resolved customer language. Spoken Urdu
+// and Hindi are acoustically the same language, so the model must be told
+// which script to write — without the hint it picks Devanagari for Urdu
+// speakers and the reply follows the transcript into the wrong language.
+function llmTranscribePrompt(?string $language): string {
+    switch ($language) {
+        case 'ur':
+            return 'Transcribe this voice message verbatim. The speaker speaks Urdu (or English mixed with Urdu). '
+                . 'Spoken Urdu and Hindi sound alike: write Urdu in Urdu script (Perso-Arabic / Nastaliq), never in Devanagari. '
+                . 'Keep English words in English. Reply with the transcript only — no preamble, no quotes, no notes.';
+        case 'hi':
+            return 'Transcribe this voice message verbatim. The speaker speaks Hindi (or English mixed with Hindi). '
+                . 'Write Hindi in Devanagari script. Keep English words in English. '
+                . 'Reply with the transcript only — no preamble, no quotes, no notes.';
+        case 'en':
+        case 'ar':
+            $name = $language === 'en' ? 'English' : 'Arabic';
+            return "Transcribe this voice message verbatim. The speaker speaks {$name}; write it in its standard script. "
+                . 'Reply with the transcript only — no preamble, no quotes, no notes.';
+        default:
+            return 'Transcribe this voice message verbatim, in its original language. '
+                . 'If the speech is Urdu, write it in Urdu script; if it is Hindi, write it in Devanagari. '
+                . 'Reply with the transcript only — no preamble, no quotes, no notes.';
+    }
+}
+
+function llmFenLlmTranscribePayload($model, $audioBytes, $filename, ?string $language = null) {
     // FenLLM accepts mp3 and wav only — no ogg. Callers must convert first
     // (waTranscodeAudioForTranscription); anything else gets null and the
     // caller refuses rather than burning a request that the gateway rejects.
@@ -1077,7 +1103,7 @@ function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
         'messages' => [[
             'role' => 'user',
             'content' => [
-                ['type' => 'text', 'text' => 'Transcribe this voice message verbatim, in its original language. Reply with the transcript only — no preamble, no quotes, no notes.'],
+                ['type' => 'text', 'text' => llmTranscribePrompt($language)],
                 ['type' => 'input_audio', 'input_audio' => ['data' => base64_encode($audioBytes), 'format' => $format]],
             ],
         ]],
@@ -1131,8 +1157,8 @@ function llmFenLlmParseStream(string $raw): array {
     return ['text' => trim($text), 'error' => $error];
 }
 
-function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
-    $payload = llmFenLlmTranscribePayload($auth['model'], $audioBytes, $filename);
+function llmTranscribeFenLlm(array $auth, $audioBytes, $filename, ?string $language = null) {
+    $payload = llmFenLlmTranscribePayload($auth['model'], $audioBytes, $filename, $language);
     if ($payload === null) {
         return ['ok' => false, 'text' => '',
                 'error' => 'FenLLM transcription needs mp3 or wav audio — the voice note was not converted.'];
@@ -1173,10 +1199,18 @@ function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
             'error' => $parsed['text'] === '' ? 'Empty transcription' : null];
 }
 
-function llmTranscribeOpenAi(array $auth, $audioBytes, $filename) {
+function llmTranscribeOpenAi(array $auth, $audioBytes, $filename, ?string $language = null) {
     $base = $auth['base_url'] ?: llmProviderCatalogue()['openai']['base_url'];
     $tmp = tempnam(sys_get_temp_dir(), 'wa-audio-');
     file_put_contents($tmp, $audioBytes);
+
+    $fields = [
+        'file' => new CURLFile($tmp, 'audio/ogg', $filename),
+        'model' => $auth['model'],
+    ];
+    // Whisper's own language parameter — the script hint lives in the prompt
+    // for FenLLM, but whisper takes it as a form field.
+    if ($language !== null) $fields['language'] = $language;
 
     try {
         $ch = curl_init(rtrim($base, '/') . '/audio/transcriptions');
@@ -1186,10 +1220,7 @@ function llmTranscribeOpenAi(array $auth, $audioBytes, $filename) {
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $auth['key']],
-            CURLOPT_POSTFIELDS => [
-                'file' => new CURLFile($tmp, 'audio/ogg', $filename),
-                'model' => $auth['model'],
-            ],
+            CURLOPT_POSTFIELDS => $fields,
         ]);
         $body = curl_exec($ch);
         $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);

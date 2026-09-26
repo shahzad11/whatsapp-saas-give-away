@@ -220,5 +220,25 @@ equals('garbage is empty, not a crash', ['text' => '', 'error' => null],
     llmFenLlmParseStream('not json at all'));
 equals('empty input', ['text' => '', 'error' => null], llmFenLlmParseStream(''));
 
+// --- Transcription prompt per customer language --------------------------------
+
+group('The transcription prompt pins the script');
+
+check('ur prompt says Urdu script',
+    str_contains(llmTranscribePrompt('ur'), 'Urdu script'));
+check('ur prompt forbids Devanagari',
+    str_contains(llmTranscribePrompt('ur'), 'never in Devanagari'));
+check('hi prompt says Devanagari',
+    str_contains(llmTranscribePrompt('hi'), 'Devanagari'));
+check('no language keeps both hints',
+    str_contains(llmTranscribePrompt(null), 'Urdu script')
+    && str_contains(llmTranscribePrompt(null), 'Devanagari'));
+
+$prompted = llmFenLlmTranscribePayload('pro', 'abc', 'voice.mp3', 'ur');
+equals('payload carries the ur prompt', llmTranscribePrompt('ur'),
+    $prompted['messages'][0]['content'][0]['text']);
+equals('payload without language still builds', llmTranscribePrompt(null),
+    llmFenLlmTranscribePayload('pro', 'abc', 'voice.mp3')['messages'][0]['content'][0]['text']);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

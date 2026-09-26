@@ -707,6 +707,7 @@ CREATE TABLE IF NOT EXISTS chatbot_configs (
     active_hours_end CHAR(5) DEFAULT NULL,
     outside_hours_message TEXT DEFAULT NULL,
     transcribe_audio TINYINT(1) NOT NULL DEFAULT 0,
+    voice_language VARCHAR(8) NOT NULL DEFAULT 'auto',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -975,6 +976,22 @@ SET @add_delay := (
 PREPARE stmt_add_delay FROM @add_delay;
 EXECUTE stmt_add_delay;
 DEALLOCATE PREPARE stmt_add_delay;
+
+-- Which language the tenant's customers speak, used to script-lock the
+-- transcription prompt: Urdu and Hindi sound the same when spoken, and the
+-- model picks a script for the transcript (and then for the reply) — wrong
+-- script means Urdu speakers are answered in Hindi. 'auto' resolves per
+-- customer: their phone's country code, then the tenant's timezone.
+SET @add_voice_lang := (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE chatbot_configs ADD COLUMN voice_language VARCHAR(8) NOT NULL DEFAULT ''auto''',
+        'DO 0')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chatbot_configs' AND COLUMN_NAME = 'voice_language'
+);
+PREPARE stmt_add_voice_lang FROM @add_voice_lang;
+EXECUTE stmt_add_voice_lang;
+DEALLOCATE PREPARE stmt_add_voice_lang;
 
 -- Replies parked until their delay elapses. One row per chat — the unique key
 -- is the coalescing rule: a burst of messages from the same customer overwrites
