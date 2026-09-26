@@ -229,10 +229,25 @@ equals('auto + foreign number + London', null,
 equals('unknown stored value normalises to auto', 'auto',
     chatbotNormaliseVoiceLanguage('xx'));
 
+group('The bot has one name, never the model’s');
+
+$promptBiz = chatbotSystemPrompt([], ['business_name' => 'Acme Clinic']);
+check('named, with the business', str_contains($promptBiz, 'Your name is WhatsApp Assistant')
+    && str_contains($promptBiz, 'the assistant of Acme Clinic'));
+$promptAnon = chatbotSystemPrompt([]);
+check('named, without the business', str_contains($promptAnon, 'Your name is WhatsApp Assistant')
+    && str_contains($promptAnon, 'the assistant of this business'));
+check('model identity denied', str_contains($promptAnon, 'Never say you are FenLLM'));
+
 group('The reply prompt carries the script rule');
 
 $promptUr = chatbotSystemPrompt([], ['language' => 'ur', 'from_voice' => false]);
 check('ur language -> Urdu script rule', str_contains($promptUr, 'Urdu script'));
+check('ur rule follows the message', str_contains($promptUr, 'if they write English, reply in English'));
+check('ur rule dropped the old blanket wording', !str_contains($promptUr, 'Customers here speak Urdu'));
+$promptHi = chatbotSystemPrompt([], ['language' => 'hi', 'from_voice' => false]);
+check('hi rule follows the message', str_contains($promptHi, 'if they write English, reply in English'));
+check('hi rule dropped the old blanket wording', !str_contains($promptHi, 'Customers here speak Hindi'));
 $promptVoice = chatbotSystemPrompt([], ['language' => 'ur', 'from_voice' => true]);
 check('ur + voice note mentions it', str_contains($promptVoice, 'voice note'));
 $promptNone = chatbotSystemPrompt([], ['language' => null, 'from_voice' => false]);

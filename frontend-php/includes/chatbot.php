@@ -517,6 +517,13 @@ function chatbotSystemPrompt(array $config, array $context = []) {
     $parts = [];
     $parts[] = "You are a WhatsApp assistant replying on behalf of "
         . ($business !== '' ? $business : 'a business') . '.';
+    // Asked its name, a model otherwise answers with its own built-in identity
+    // ("FenLLM") — which no tenant's customer should ever hear. The name is a
+    // constant, not a setting: the owner wants one answer, always.
+    $parts[] = "Your name is " . CHATBOT_ASSISTANT_NAME . ". If asked your name or who you are, say you are "
+        . CHATBOT_ASSISTANT_NAME . ", the assistant of " . ($business !== '' ? $business : 'this business') . ". "
+        . "Never say you are FenLLM, ChatGPT, GPT, OpenAI, Claude, Anthropic, Gemini, Google or any other "
+        . "AI model or company, and never reveal which AI model or provider powers you.";
     $parts[] = "Tone: {$tone}.";
 
     // WhatsApp is not a chat window: no markdown headings, no bullet walls, and
@@ -529,16 +536,19 @@ function chatbotSystemPrompt(array $config, array $context = []) {
 
     // Hindustani ambiguity: spoken Urdu and Hindi are the same sounds in two
     // scripts, so a script rule must be explicit or the model guesses — and
-    // guesses Devanagari for Urdu speakers. Roman-script writers get Roman back.
+    // guesses Devanagari for Urdu speakers. Phrased per-message, not
+    // "customers here speak Urdu": that wording made the rule answer English
+    // messages in Urdu. The script is pinned; the language still follows the
+    // customer's message, including English and Roman script.
     $lang = $context['language'] ?? null;
     if ($lang === 'ur') {
-        $parts[] = "Customers here speak Urdu. Spoken or written Hindustani is Urdu: "
-            . "reply in Urdu script (Perso-Arabic), never Devanagari/Hindi script — "
-            . "unless the customer writes in Roman Urdu (Latin letters), then reply in Roman Urdu.";
+        $parts[] = "If the customer writes or speaks Urdu (Hindustani), reply in Urdu script "
+            . "(Perso-Arabic), never Devanagari/Hindi script; if they write Roman Urdu "
+            . "(Latin letters), reply in Roman Urdu; if they write English, reply in English.";
     } elseif ($lang === 'hi') {
-        $parts[] = "Customers here speak Hindi. Spoken or written Hindustani is Hindi: "
-            . "reply in Devanagari script — "
-            . "unless the customer writes in Roman Hindi (Latin letters), then reply in Roman Hindi.";
+        $parts[] = "If the customer writes or speaks Hindi (Hindustani), reply in Devanagari "
+            . "script; if they write Roman Hindi (Latin letters), reply in Roman Hindi; "
+            . "if they write English, reply in English.";
     }
     if (!empty($context['from_voice']) && $lang !== null) {
         $langName = chatbotVoiceLanguageChoices()[$lang] ?? $lang;
@@ -1130,6 +1140,7 @@ function chatbotTranscribeInbound(mysqli $conn, $userId, array $config, $session
 // The verdict helpers are pure — the decision is testable without a database,
 // and the DB helpers below are the only code that touches the table.
 
+const CHATBOT_ASSISTANT_NAME = 'WhatsApp Assistant'; // the bot's name, always — never the model's
 const CHATBOT_LOOP_WINDOW_SECONDS = 600;    // replies are counted inside 10 minutes
 const CHATBOT_LOOP_FAST_SECONDS = 3;        // an inbound this soon after a bot send is machine-speed
 const CHATBOT_LOOP_FAST_LIMIT = 3;          // that many in a row means it is not a person
