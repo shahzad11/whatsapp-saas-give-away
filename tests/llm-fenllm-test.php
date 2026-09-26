@@ -102,8 +102,10 @@ group('A model transcribes by kind or by catalogue audio capability');
 
 check('fenllm max (chat + audio)', llmModelTranscribes(
     ['provider_code' => 'fenllm', 'model_code' => 'max', 'kind' => 'chat']));
-check('fenllm pro does not', !llmModelTranscribes(
+check('fenllm pro (chat + audio)', llmModelTranscribes(
     ['provider_code' => 'fenllm', 'model_code' => 'pro', 'kind' => 'chat']));
+check('fenllm basic does not', !llmModelTranscribes(
+    ['provider_code' => 'fenllm', 'model_code' => 'basic', 'kind' => 'chat']));
 check('openai whisper (kind transcribe)', llmModelTranscribes(
     ['provider_code' => 'openai', 'model_code' => 'whisper-1', 'kind' => 'transcribe']));
 
@@ -118,6 +120,7 @@ equals('model', 'max', $payload['model']);
 equals('audio part type', 'input_audio', $payload['messages'][0]['content'][1]['type']);
 equals('mp3 format', 'mp3', $payload['messages'][0]['content'][1]['input_audio']['format']);
 equals('audio is base64', base64_encode('abc'), $payload['messages'][0]['content'][1]['input_audio']['data']);
+equals('streams', true, $payload['stream']);
 equals('wav format', 'wav', llmFenLlmTranscribePayload('max', 'a', 'x.wav')['messages'][0]['content'][1]['input_audio']['format']);
 equals('ogg is refused', null, llmFenLlmTranscribePayload('max', 'a', 'x.ogg'));
 equals('unknown extension is refused', null, llmFenLlmTranscribePayload('max', 'a', 'x.bin'));
@@ -184,6 +187,38 @@ $merged = llmFenLlmBalanceMerge(
 equals('failure with no prior balance stays null', null, $merged['balance']);
 equals('failure with no prior fetched_at stays null', null, $merged['fetched_at']);
 equals('error recorded', 'Could not reach FenLLM: timed out', $merged['error']);
+
+// --- Stream parsing -------------------------------------------------------------
+
+group('A FenLLM streamed reply parses into text');
+
+// Role-only first delta, content split across several chunks, [DONE] marker.
+$sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"
+     . "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n"
+     . "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n"
+     . "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n"
+     . "data: [DONE]\n";
+equals('joined text', ['text' => 'Hello there!', 'error' => null],
+    llmFenLlmParseStream($sse));
+
+equals('CRLF endings', ['text' => 'hi', 'error' => null],
+    llmFenLlmParseStream("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\ndata: [DONE]\r\n"));
+
+$errorChunk = llmFenLlmParseStream(
+    "data: {\"error\":{\"message\":\"audio too long\"}}\ndata: [DONE]\n");
+equals('error chunk surfaces', 'audio too long', $errorChunk['error']);
+equals('error chunk leaves text empty', '', $errorChunk['text']);
+
+$plain = llmFenLlmParseStream(
+    '{"choices":[{"message":{"content":"transcript here"}}]}');
+equals('non-stream JSON reply', ['text' => 'transcript here', 'error' => null], $plain);
+
+$plainErr = llmFenLlmParseStream('{"error":{"message":"key rejected"}}');
+equals('non-stream error body', 'key rejected', $plainErr['error']);
+
+equals('garbage is empty, not a crash', ['text' => '', 'error' => null],
+    llmFenLlmParseStream('not json at all'));
+equals('empty input', ['text' => '', 'error' => null], llmFenLlmParseStream(''));
 
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

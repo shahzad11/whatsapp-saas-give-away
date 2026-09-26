@@ -197,7 +197,7 @@ if (!$adminEmail) {
     }
 
     // Adds any catalogue models an existing install is missing (pro, max) and
-    // sets FenLLM Max as the transcription default — once, so an admin's later
+    // sets FenLLM Pro as the transcription default — once, so an admin's later
     // choice is never overwritten. A no-op once everything is in place.
     try {
         [$added, $defaultSet] = llmEnsureFenLlmCatalogue($conn);
@@ -205,7 +205,7 @@ if (!$adminEmail) {
             fwrite(STDOUT, "[bootstrap] FenLLM catalogue up to date\n");
         } else {
             if ($added > 0) fwrite(STDOUT, "[bootstrap] FenLLM catalogue: added {$added} model(s)\n");
-            if ($defaultSet) fwrite(STDOUT, "[bootstrap] transcription default set to FenLLM Max\n");
+            if ($defaultSet) fwrite(STDOUT, "[bootstrap] transcription default set to FenLLM Pro\n");
         }
     } catch (Throwable $e) {
         fwrite(STDERR, "[bootstrap] FenLLM catalogue sync failed: {$e->getMessage()}\n");

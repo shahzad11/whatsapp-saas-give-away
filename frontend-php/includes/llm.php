@@ -52,11 +52,13 @@ function llmProviderCatalogue() {
             'transcribe' => true,
             // The fourth element, when present, is a capabilities list: 'audio'
             // marks a chat model that also accepts input_audio content parts,
-            // which is how FenLLM Max transcribes voice notes (it has no
-            // /audio/transcriptions endpoint — /chat/completions only).
+            // which is how FenLLM Pro and Max transcribe voice notes (there is
+            // no /audio/transcriptions endpoint — /chat/completions only).
+            // Pro is the recommended transcription model: faster and cheaper
+            // for plain transcription than Max.
             'models'     => [
                 ['basic', 'FenLLM Basic', 'chat'],
-                ['pro',   'FenLLM Pro',   'chat'],
+                ['pro',   'FenLLM Pro',   'chat', ['audio']],
                 ['max',   'FenLLM Max',   'chat', ['audio']],
             ],
         ],
@@ -235,7 +237,7 @@ function llmDeleteModel(mysqli $conn, $modelId) {
 // Can this llm_models row turn audio into text? Two ways: the row's kind is
 // 'transcribe' (a dedicated endpoint model like whisper-1), or the catalogue
 // lists the model with an 'audio' capability (a chat model that also takes
-// input_audio parts, like FenLLM Max). Needs provider_code and model_code on
+// input_audio parts, like FenLLM Pro and Max). Needs provider_code and model_code on
 // the row — llmModels() and llmModelById() both return them.
 function llmModelTranscribes(array $model) {
     if (($model['kind'] ?? '') === 'transcribe') return true;
@@ -941,7 +943,7 @@ function llmProvisionFenLlm(mysqli $conn, $email, $name, $secret) {
         $granted = llmGrantChatModelsToChatbotPlans($conn, (int)$provider['id'], false);
         // Whatever the signup returned for `model`, the rest of the catalogue
         // (pro, max) is filled in here so a fresh install ships all three and
-        // gets FenLLM Max as the transcription default.
+        // gets FenLLM Pro as the transcription default.
         llmEnsureFenLlmCatalogue($conn);
 
         if (!empty($body['sign_in_url'])) {
@@ -1027,12 +1029,13 @@ function llmEnsureFenLlmCatalogue(mysqli $conn) {
         $grant->close();
     }
 
-    // The transcription default is applied exactly once per instance: the
-    // owner wants FenLLM Max as the shipped default, but the flag keeps a
-    // later boot from stomping a choice the admin has since made.
+    // The transcription default is applied exactly once per instance: FenLLM
+    // Pro is the shipped default (faster and cheaper than Max for plain
+    // transcription), but the flag keeps a later boot from stomping a choice
+    // the admin has since made.
     $defaultSet = false;
-    if (overrideSetting($conn, 'fenllm_transcribe_default_applied') !== '1' && isset($existing['max'])) {
-        setAppSetting($conn, 'llm_transcribe_model_id', (string)$existing['max']);
+    if (overrideSetting($conn, 'fenllm_transcribe_default_applied') !== '1' && isset($existing['pro'])) {
+        setAppSetting($conn, 'llm_transcribe_model_id', (string)$existing['pro']);
         setAppSetting($conn, 'fenllm_transcribe_default_applied', '1');
         $defaultSet = true;
     }
@@ -1058,7 +1061,9 @@ function llmTranscribe(array $auth, $audioBytes, $filename = 'audio.ogg') {
 // The request body for a FenLLM transcription: an ordinary chat completion
 // whose user message carries the audio as a base64 input_audio part. $model is
 // the model_code (transcription needs a model with the 'audio' capability —
-// today that is max).
+// pro and max; basic refuses audio). 'stream' => true per FenLLM support: a
+// non-streamed audio request can sit silent past any sane timeout, while the
+// streamed reply starts emitting chunks right away.
 function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
     // FenLLM accepts mp3 and wav only — no ogg. Callers must convert first
     // (waTranscodeAudioForTranscription); anything else gets null and the
@@ -1077,7 +1082,53 @@ function llmFenLlmTranscribePayload($model, $audioBytes, $filename) {
             ],
         ]],
         'max_tokens' => 1000,
+        'stream' => true,
     ];
+}
+
+// Reads a FenLLM streamed reply (SSE `data:` chunks) into text, and — because
+// a gateway that ignores `stream` answers one ordinary JSON body — a plain
+// reply too. Returns ['text' => string, 'error' => ?string].
+function llmFenLlmParseStream(string $raw): array {
+    $text = '';
+    $error = null;
+    $sawData = false;
+
+    $chunkError = function ($e) {
+        if (is_string($e) && $e !== '') return $e;
+        if (is_array($e)) {
+            $m = $e['message'] ?? $e['code'] ?? null;
+            if (is_string($m) && $m !== '') return $m;
+        }
+        return 'stream error';
+    };
+
+    foreach (preg_split('/\r\n|\r|\n/', $raw) as $line) {
+        $line = trim($line);
+        if ($line === '' || !str_starts_with($line, 'data:')) continue;
+        $sawData = true;
+        $data = trim(substr($line, 5));
+        if ($data === '' || $data === '[DONE]') continue;
+        $chunk = json_decode($data, true);
+        if (!is_array($chunk)) continue;
+        if (isset($chunk['error'])) {
+            $error = $chunkError($chunk['error']);
+            continue;
+        }
+        $piece = $chunk['choices'][0]['delta']['content'] ?? null;
+        if (is_string($piece)) $text .= $piece;
+    }
+
+    if (!$sawData) {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+            if (isset($decoded['error'])) return ['text' => '', 'error' => $chunkError($decoded['error'])];
+            $piece = $decoded['choices'][0]['message']['content'] ?? null;
+            if (is_string($piece)) $text = $piece;
+        }
+    }
+
+    return ['text' => trim($text), 'error' => $error];
 }
 
 function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
@@ -1087,19 +1138,39 @@ function llmTranscribeFenLlm(array $auth, $audioBytes, $filename) {
                 'error' => 'FenLLM transcription needs mp3 or wav audio — the voice note was not converted.'];
     }
     $base = $auth['base_url'] ?: llmProviderCatalogue()['fenllm']['base_url'];
-    [$status, $body, $err] = llmHttpJson(rtrim($base, '/') . '/chat/completions',
-        ['Authorization: Bearer ' . $auth['key']],
-        $payload,
-        120);
+    // Not llmHttpJson: the reply is an SSE stream, not a JSON document, and
+    // audio needs its own ceiling — 180s per FenLLM support, after a real
+    // voice note timed out at 120s before the first byte arrived.
+    $ch = curl_init(rtrim($base, '/') . '/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 180,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $auth['key']],
+        CURLOPT_POSTFIELDS => json_encode($payload),
+    ]);
+    $body = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
 
-    if ($err) return ['ok' => false, 'error' => llmScrubSecret($err, $auth['key']), 'text' => ''];
+    if ($body === false || $err) {
+        return ['ok' => false, 'error' => llmScrubSecret($err ?: 'Request failed', $auth['key']), 'text' => ''];
+    }
     if ($status !== 200) {
+        $decoded = json_decode($body, true);
         return ['ok' => false, 'text' => '',
-                'error' => llmScrubSecret(llmFenLlmErrorMessage($status, $body), $auth['key'])];
+                'error' => llmScrubSecret(llmFenLlmErrorMessage($status, is_array($decoded) ? $decoded : null), $auth['key'])];
     }
 
-    $text = trim((string)($body['choices'][0]['message']['content'] ?? ''));
-    return ['ok' => $text !== '', 'text' => $text, 'error' => $text === '' ? 'Empty transcription' : null];
+    $parsed = llmFenLlmParseStream((string)$body);
+    if ($parsed['error'] !== null) {
+        return ['ok' => false, 'text' => '', 'error' => llmScrubSecret($parsed['error'], $auth['key'])];
+    }
+    return ['ok' => $parsed['text'] !== '', 'text' => $parsed['text'],
+            'error' => $parsed['text'] === '' ? 'Empty transcription' : null];
 }
 
 function llmTranscribeOpenAi(array $auth, $audioBytes, $filename) {
