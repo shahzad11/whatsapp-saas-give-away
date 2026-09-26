@@ -239,5 +239,30 @@ $promptNone = chatbotSystemPrompt([], ['language' => null, 'from_voice' => false
 check('no language -> no script rule', !str_contains($promptNone, 'Urdu script')
     && !str_contains($promptNone, 'voice note'));
 
+// --- Markdown -> WhatsApp formatting -------------------------------------------
+
+group('Model Markdown becomes WhatsApp formatting');
+
+equals('**x**', '*Paid Courses:*', chatbotWhatsAppFormat('**Paid Courses:**'));
+equals('__x__', '*x*', chatbotWhatsAppFormat('__x__'));
+equals('***x***', '*x*', chatbotWhatsAppFormat('***x***'));
+equals('~~x~~', '~old~', chatbotWhatsAppFormat('~~old~~'));
+equals('## **Fees**', '*Fees*', chatbotWhatsAppFormat('## **Fees**'));
+equals('# Title', '*Title*', chatbotWhatsAppFormat('# Title'));
+equals('link', 'Apply: https://a.b/c', chatbotWhatsAppFormat('[Apply](https://a.b/c)'));
+equals('link with url label', 'https://a.b/c', chatbotWhatsAppFormat('[https://a.b/c](https://a.b/c)'));
+equals('spaced asterisks are arithmetic', '2 ** 3', chatbotWhatsAppFormat('2 ** 3'));
+equals('single *bold* kept', '*bold*', chatbotWhatsAppFormat('*bold*'));
+equals('_it_ kept', '_it_', chatbotWhatsAppFormat('_it_'));
+equals('lists untouched', "- item\n* item\n1. item",
+    chatbotWhatsAppFormat("- item\n* item\n1. item"));
+equals('urdu bold', '*اداری کورسز:*', chatbotWhatsAppFormat('**اداری کورسز:**'));
+equals('code fence untouched', "``` **x** ```", chatbotWhatsAppFormat("``` **x** ```"));
+equals('3+ newlines collapse', "a\n\nb", chatbotWhatsAppFormat("a\n\n\n\nb"));
+equals('hr removed to an empty line', "a\n\nb", chatbotWhatsAppFormat("a\n---\nb"));
+
+check('system prompt prescribes WhatsApp formatting',
+    str_contains(chatbotSystemPrompt([]), 'single asterisks'));
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed ? 1 : 0);

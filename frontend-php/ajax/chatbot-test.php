@@ -372,6 +372,10 @@ if (trim($replyText) === '') {
     $replyText = trim((string)($config['fallback_message'] ?? 'Thanks — someone will follow up.'));
 }
 
+// The live path converts Markdown to WhatsApp formatting at assembly; the
+// preview must show what the customer gets, not what the model wrote.
+$replyText = chatbotWhatsAppFormat($replyText);
+
 echo json_encode([
     'ok' => true,
     'kind' => 'reply',

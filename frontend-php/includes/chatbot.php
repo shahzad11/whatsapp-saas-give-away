@@ -470,6 +470,43 @@ function chatbotResolveModel(mysqli $conn, $userId, array $config) {
 
 // --- What the bot is told ---------------------------------------------------
 
+// Models write Markdown; WhatsApp renders a different dialect (*bold*, _x_,
+// ~x~, real lists) and shows `**x**` or `## Fees` literally — a reply full of
+// asterisks reads as broken, not bold. This maps the common Markdown onto what
+// a phone actually renders. Fenced code blocks are exempt: their contents are
+// meant literally. Single *x* / _x_ and "- " / "1. " lists are already correct
+// and are left alone.
+function chatbotWhatsAppFormat(string $text): string {
+    $fmt = function (string $part): string {
+        // Headings first; `## **Fees**` carries its bold markers into the
+        // capture, so they are stripped there.
+        $part = preg_replace_callback(
+            '/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/mu',
+            function ($m) { return '*' . trim($m[1], " \t*") . '*'; },
+            $part);
+        // [label](url) has no WhatsApp form; "label: url" is how it reads.
+        $part = preg_replace_callback(
+            '/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/u',
+            function ($m) { return $m[1] === $m[2] ? $m[2] : $m[1] . ': ' . $m[2]; },
+            $part);
+        // Non-greedy, single-line, inner text anchored on non-space so a spaced
+        // `** 3` is arithmetic, not an attempt at bold.
+        $part = preg_replace('/\*\*\*(\S(?:.*?\S)?)\*\*\*/u', '*$1*', $part);
+        $part = preg_replace('/\*\*(\S(?:.*?\S)?)\*\*/u', '*$1*', $part);
+        $part = preg_replace('/__(\S(?:.*?\S)?)__/u', '*$1*', $part);
+        $part = preg_replace('/~~(\S(?:.*?\S)?)~~/u', '~$1~', $part);
+        // A horizontal rule is a divider WhatsApp cannot draw — drop the line.
+        $part = preg_replace('/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/m', '', $part);
+        return $part;
+    };
+
+    $out = '';
+    foreach (preg_split('/(```.*?```)/su', $text, -1, PREG_SPLIT_DELIM_CAPTURE) as $part) {
+        $out .= str_starts_with($part, '```') ? $part : $fmt($part);
+    }
+    return trim(preg_replace('/\n{3,}/', "\n\n", $out));
+}
+
 // The system prompt. Assembled rather than templated because each part is a
 // rule the tenant can see the consequences of: the knowledge base is theirs,
 // the guard rails are ours.
@@ -485,7 +522,9 @@ function chatbotSystemPrompt(array $config, array $context = []) {
     // WhatsApp is not a chat window: no markdown headings, no bullet walls, and
     // a long reply is a wall of text on a phone.
     $parts[] = "Write for WhatsApp: short paragraphs, no markdown headings or tables, "
-        . "plain sentences. Keep replies under 90 words unless the customer asks for detail.";
+        . "plain sentences. Keep replies under 90 words unless the customer asks for detail. "
+        . "For emphasis use WhatsApp formatting: *bold* with single asterisks, _italic_ — "
+        . "never **double asterisks** or # headings.";
     $parts[] = "Reply in the language the customer used.";
 
     // Hindustani ambiguity: spoken Urdu and Hindi are the same sounds in two
@@ -1515,8 +1554,11 @@ function chatbotHandleInbound(mysqli $conn, array $msg, $deferred = false) {
 
         // Prose first, then the system's own lines: the action result (a
         // confirmation, a refusal, a diary answer) and the truth check.
+        // The model's prose is converted to WhatsApp formatting at assembly —
+        // the claim/truth checks above judge the raw text, and the system's own
+        // lines are already plain.
         $replyText = trim(implode("\n\n", array_filter(
-            [$modelProse, $actionResult, $truthLine],
+            [chatbotWhatsAppFormat($modelProse), $actionResult, $truthLine],
             function ($s) { return trim((string)$s) !== ''; }
         )));
 
